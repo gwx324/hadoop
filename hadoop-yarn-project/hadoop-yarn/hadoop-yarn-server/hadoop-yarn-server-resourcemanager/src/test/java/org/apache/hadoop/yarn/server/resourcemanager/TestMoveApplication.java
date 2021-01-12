@@ -87,10 +87,10 @@ public class TestMoveApplication {
               application.getApplicationId(), "newqueue"));
       fail("Should have hit exception");
     } catch (YarnException ex) {
-      assertEquals("Move not supported", ex.getCause().getMessage());
+      assertEquals("Move not supported", ex.getMessage());
     }
   }
-  
+
   @Test (timeout = 10000)
   public void testMoveTooLate() throws Exception {
     // Submit application
@@ -124,7 +124,7 @@ public class TestMoveApplication {
       void testMoveSuccessful() throws Exception {
     MockRM rm1 = new MockRM(conf);
     rm1.start();
-    RMApp app = rm1.submitApp(1024);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(1024, rm1);
     ClientRMService clientRMService = rm1.getClientRMService();
     // FIFO scheduler does not support moves
     clientRMService
@@ -177,6 +177,14 @@ public class TestMoveApplication {
     public synchronized boolean checkAccess(UserGroupInformation callerUGI,
         QueueACL acl, String queueName) {
       return acl != QueueACL.ADMINISTER_QUEUE;
+    }
+
+    @Override
+    public void preValidateMoveApplication(ApplicationId appId, String newQueue)
+        throws YarnException {
+      if (failMove) {
+        throw new YarnException("Move not supported");
+      }
     }
   }
 }

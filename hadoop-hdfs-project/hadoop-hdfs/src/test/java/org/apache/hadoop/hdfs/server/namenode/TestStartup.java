@@ -19,8 +19,12 @@ package org.apache.hadoop.hdfs.server.namenode;
 
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption.IMPORT;
 import static org.apache.hadoop.hdfs.server.common.Util.fileAsURI;
+import static org.hamcrest.CoreMatchers.allOf;
+import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -29,12 +33,16 @@ import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.net.URI;
+import java.nio.file.Paths;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
+import java.util.stream.Collectors;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.LocalFileSystem;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
@@ -42,13 +50,17 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.permission.PermissionStatus;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.LogVerificationAppender;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.StripedFileTestUtil;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
+import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
@@ -77,8 +89,8 @@ import javax.management.ObjectName;
 public class TestStartup {
   public static final String NAME_NODE_HOST = "localhost:";
   public static final String WILDCARD_HTTP_HOST = "0.0.0.0:";
-  private static final Log LOG =
-    LogFactory.getLog(TestStartup.class.getName());
+  private static final org.slf4j.Logger LOG =
+      LoggerFactory.getLogger(TestStartup.class.getName());
   private Configuration config;
   private File hdfsDir=null;
   static final long seed = 0xAAAAEEFL;
@@ -93,7 +105,7 @@ public class TestStartup {
     config = new HdfsConfiguration();
     hdfsDir = new File(MiniDFSCluster.getBaseDirectory());
 
-    if ( hdfsDir.exists() && !FileUtil.fullyDelete(hdfsDir) ) {
+    if (hdfsDir.exists() && !FileUtil.fullyDelete(hdfsDir)) {
       throw new IOException("Could not delete hdfs directory '" + hdfsDir + "'");
     }
     LOG.info("--hdfsdir is " + hdfsDir.getAbsolutePath());
@@ -108,7 +120,7 @@ public class TestStartup {
         fileAsURI(new File(hdfsDir, "secondary")).toString());
     config.set(DFSConfigKeys.DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY,
 	       WILDCARD_HTTP_HOST + "0");
-    
+
     FileSystem.setDefaultUri(config, "hdfs://"+NAME_NODE_HOST + "0");
   }
 
@@ -414,8 +426,9 @@ public class TestStartup {
       SecondaryNameNode.main(argv);
       fail("Failed to handle runtime exceptions during SNN startup!");
     } catch (ExitException ee) {
-      GenericTestUtils.assertExceptionContains("ExitException", ee);
-      assertTrue("Didn't termiated properly ", ExitUtil.terminateCalled());
+      GenericTestUtils.assertExceptionContains(
+          ExitUtil.EXIT_EXCEPTION_MESSAGE, ee);
+      assertTrue("Didn't terminate properly ", ExitUtil.terminateCalled());
     }
   }
 
@@ -438,7 +451,7 @@ public class TestStartup {
     namenode.getNamesystem().mkdirs("/test",
         new PermissionStatus("hairong", null, FsPermission.getDefault()), true);
     NamenodeProtocols nnRpc = namenode.getRpcServer();
-    assertTrue(nnRpc.getFileInfo("/test").isDir());
+    assertTrue(nnRpc.getFileInfo("/test").isDirectory());
     nnRpc.setSafeMode(SafeModeAction.SAFEMODE_ENTER, false);
     nnRpc.saveNamespace(0, 0);
     namenode.stop();
@@ -469,7 +482,7 @@ public class TestStartup {
   private void checkNameSpace(Configuration conf) throws IOException {
     NameNode namenode = new NameNode(conf);
     NamenodeProtocols nnRpc = namenode.getRpcServer();
-    assertTrue(nnRpc.getFileInfo("/test").isDir());
+    assertTrue(nnRpc.getFileInfo("/test").isDirectory());
     nnRpc.setSafeMode(SafeModeAction.SAFEMODE_ENTER, false);
     nnRpc.saveNamespace(0, 0);
     namenode.stop();
@@ -557,7 +570,58 @@ public class TestStartup {
     } finally {
       cluster.shutdown();
     }
-}
+  }
+
+  @Test(timeout=30000)
+  public void testCorruptImageFallbackLostECPolicy() throws IOException {
+    final ErasureCodingPolicy defaultPolicy = StripedFileTestUtil
+        .getDefaultECPolicy();
+    final String policy = defaultPolicy.getName();
+    final Path f1 = new Path("/f1");
+
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(config)
+        .numDataNodes(0)
+        .format(true)
+        .build();
+    try {
+      cluster.waitActive();
+      DistributedFileSystem fs = cluster.getFileSystem();
+      fs.enableErasureCodingPolicy(policy);
+      // set root directory to use the default ec policy
+      Path srcECDir = new Path("/");
+      fs.setErasureCodingPolicy(srcECDir,
+          defaultPolicy.getName());
+
+      // create a file which will use the default ec policy
+      fs.create(f1);
+      FileStatus fs1 = fs.getFileStatus(f1);
+      assertTrue(fs1.isErasureCoded());
+      ErasureCodingPolicy fs1Policy = fs.getErasureCodingPolicy(f1);
+      assertEquals(fs1Policy, defaultPolicy);
+    } finally {
+      cluster.close();
+    }
+
+    // Delete a single md5sum
+    corruptFSImageMD5(false);
+    // Should still be able to start
+    cluster = new MiniDFSCluster.Builder(config)
+        .numDataNodes(0)
+        .format(false)
+        .build();
+    try {
+      cluster.waitActive();
+      ErasureCodingPolicy[] ecPolicies = cluster.getNameNode()
+          .getNamesystem().getErasureCodingPolicyManager().getEnabledPolicies();
+      DistributedFileSystem fs = cluster.getFileSystem();
+      // make sure the ec policy of the file is still correct
+      assertEquals(fs.getErasureCodingPolicy(f1), defaultPolicy);
+      // make sure after fsimage fallback, enabled ec policies are not cleared.
+      assertTrue(ecPolicies.length == 1);
+    } finally {
+      cluster.shutdown();
+    }
+  }
 
   /**
    * This test tests hosts include list contains host names.  After namenode
@@ -645,6 +709,53 @@ public class TestStartup {
     }
   }
 
+  @Test(timeout = 30000)
+  public void testNNFailToStartOnReadOnlyNNDir() throws Exception {
+    /* set NN dir */
+    final String nnDirStr = Paths.get(
+        hdfsDir.toString(),
+        GenericTestUtils.getMethodName(), "name").toString();
+    config.set(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY, nnDirStr);
+
+    try(MiniDFSCluster cluster = new MiniDFSCluster.Builder(config)
+        .numDataNodes(1)
+        .manageNameDfsDirs(false)
+        .build()) {
+      cluster.waitActive();
+
+      /* get and verify NN dir */
+      final Collection<URI> nnDirs = FSNamesystem.getNamespaceDirs(config);
+      assertNotNull(nnDirs);
+      assertTrue(nnDirs.iterator().hasNext());
+      assertEquals(
+          "NN dir should be created after NN startup.",
+          new File(nnDirStr),
+          new File(nnDirs.iterator().next().getPath()));
+      final File nnDir = new File(nnDirStr);
+      assertTrue(nnDir.exists());
+      assertTrue(nnDir.isDirectory());
+
+      try {
+        /* set read only */
+        assertTrue(
+            "Setting NN dir read only should succeed.",
+            FileUtil.setWritable(nnDir, false));
+        cluster.restartNameNodes();
+        fail("Restarting NN should fail on read only NN dir.");
+      } catch (InconsistentFSStateException e) {
+        assertThat(e.toString(), is(allOf(
+            containsString("InconsistentFSStateException"),
+            containsString(nnDirStr),
+            containsString("in an inconsistent state"),
+            containsString(
+                "storage directory does not exist or is not accessible."))));
+      } finally {
+        /* set back to writable in order to clean it */
+        assertTrue("Setting NN dir should succeed.",
+            FileUtil.setWritable(nnDir, true));
+      }
+    }
+  }
 
   /**
    * Verify the following scenario.
@@ -680,4 +791,27 @@ public class TestStartup {
     return;
   }
 
+  @Test(timeout = 60000)
+  public void testDirectoryPermissions() throws Exception {
+    Configuration conf = new Configuration();
+    try (MiniDFSCluster dfsCluster
+             = new MiniDFSCluster.Builder(conf).build()) {
+      dfsCluster.waitActive();
+      // name and edits
+      List<StorageDirectory> nameDirs =
+          dfsCluster.getNameNode().getFSImage().getStorage().getStorageDirs();
+      Collection<URI> nameDirUris = nameDirs.stream().map(d -> d
+          .getCurrentDir().toURI()).collect(Collectors.toList());
+      assertNotNull(nameDirUris);
+      LocalFileSystem fs = LocalFileSystem.getLocal(config);
+      FsPermission permission = new FsPermission(conf.get(
+          DFSConfigKeys.DFS_NAMENODE_NAME_DIR_PERMISSION_KEY,
+          DFSConfigKeys.DFS_NAMENODE_NAME_DIR_PERMISSION_DEFAULT));
+      for (URI uri : nameDirUris) {
+        FileStatus fileStatus = fs.getFileLinkStatus(new Path(uri));
+        assertEquals(permission.toOctal(),
+            fileStatus.getPermission().toOctal());
+      }
+    }
+  }
 }

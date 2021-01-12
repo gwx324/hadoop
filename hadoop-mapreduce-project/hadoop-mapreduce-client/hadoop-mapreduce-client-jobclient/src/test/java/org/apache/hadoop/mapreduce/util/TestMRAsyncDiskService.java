@@ -20,17 +20,16 @@ package org.apache.hadoop.mapreduce.util;
 import java.io.File;
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileUtil;
-import org.apache.hadoop.mapreduce.util.MRAsyncDiskService;
 import org.junit.Before;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -42,7 +41,8 @@ import static org.junit.Assert.fail;
  */
 public class TestMRAsyncDiskService {
 
-  public static final Log LOG = LogFactory.getLog(TestMRAsyncDiskService.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestMRAsyncDiskService.class);
   
   private static String TEST_ROOT_DIR = new Path(System.getProperty(
       "test.build.data", "/tmp")).toString();
@@ -331,8 +331,8 @@ public class TestMRAsyncDiskService {
       File toBeDeletedDir = new File(vols[0], MRAsyncDiskService.TOBEDELETED);
       String[] content = toBeDeletedDir.list();
       assertNotNull("Cannot find " + toBeDeletedDir, content);
-      assertEquals("" + toBeDeletedDir + " should be empty now.", 0,
-          content.length);
+      assertThat(content).withFailMessage(
+          toBeDeletedDir.toString() + " should be empty now.").isEmpty();
     }
   }
   

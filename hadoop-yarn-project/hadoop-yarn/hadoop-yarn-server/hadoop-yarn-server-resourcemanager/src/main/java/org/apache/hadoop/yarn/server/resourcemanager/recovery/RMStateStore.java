@@ -18,6 +18,15 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
+import java.io.ByteArrayInputStream;
+import java.security.KeyFactory;
+import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,14 +39,15 @@ import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
 
 import javax.crypto.SecretKey;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.SettableFuture;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.ipc.CallerContext;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.token.delegation.DelegationKey;
 import org.apache.hadoop.service.AbstractService;
@@ -46,11 +56,13 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
 import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationSubmissionContextPBImpl;
+import org.apache.hadoop.yarn.api.records.impl.pb.ContainerLaunchContextPBImpl;
 import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.AsyncDispatcher;
 import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.event.EventHandler;
+import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.proto.YarnProtos.ReservationAllocationStateProto;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.records.Version;
@@ -63,10 +75,12 @@ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.Applicatio
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEventType;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.AggregateAppResourceUsage;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEventType;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptMetrics;
 import org.apache.hadoop.yarn.state.InvalidStateTransitionException;
 import org.apache.hadoop.yarn.state.MultipleArcTransition;
 import org.apache.hadoop.yarn.state.StateMachine;
@@ -83,8 +97,11 @@ import org.apache.hadoop.yarn.state.StateMachineFactory;
 public abstract class RMStateStore extends AbstractService {
 
   // constants for RM App state and RMDTSecretManagerState.
-  protected static final String RM_APP_ROOT = "RMAppRoot";
+  @VisibleForTesting
+  public static final String RM_APP_ROOT = "RMAppRoot";
   protected static final String RM_DT_SECRET_MANAGER_ROOT = "RMDTSecretManagerRoot";
+  protected static final String RM_DELEGATION_TOKENS_ROOT_ZNODE_NAME =
+      "RMDelegationTokensRoot";
   protected static final String DELEGATION_KEY_PREFIX = "DelegationKey_";
   protected static final String DELEGATION_TOKEN_PREFIX = "RMDelegationToken_";
   protected static final String DELEGATION_TOKEN_SEQUENCE_NUMBER_PREFIX =
@@ -93,13 +110,19 @@ public abstract class RMStateStore extends AbstractService {
       "AMRMTokenSecretManagerRoot";
   protected static final String RESERVATION_SYSTEM_ROOT =
       "ReservationSystemRoot";
+  protected static final String PROXY_CA_ROOT = "ProxyCARoot";
+  protected static final String PROXY_CA_CERT_NODE = "caCert";
+  protected static final String PROXY_CA_PRIVATE_KEY_NODE = "caPrivateKey";
   protected static final String VERSION_NODE = "RMVersionNode";
   protected static final String EPOCH_NODE = "EpochNode";
+  protected long baseEpoch;
+  private long epochRange;
   protected ResourceManager resourceManager;
   private final ReadLock readLock;
   private final WriteLock writeLock;
 
-  public static final Log LOG = LogFactory.getLog(RMStateStore.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(RMStateStore.class);
 
   /**
    * The enum defines state of RMStateStore.
@@ -173,6 +196,10 @@ public abstract class RMStateStore extends AbstractService {
           new RemoveReservationAllocationTransition())
       .addTransition(RMStateStoreState.ACTIVE, RMStateStoreState.FENCED,
           RMStateStoreEventType.FENCED)
+      .addTransition(RMStateStoreState.ACTIVE,
+          EnumSet.of(RMStateStoreState.ACTIVE, RMStateStoreState.FENCED),
+          RMStateStoreEventType.STORE_PROXY_CA_CERT,
+          new StoreProxyCACertTransition())
       .addTransition(RMStateStoreState.FENCED, RMStateStoreState.FENCED,
           EnumSet.of(
           RMStateStoreEventType.STORE_APP,
@@ -188,7 +215,8 @@ public abstract class RMStateStore extends AbstractService {
           RMStateStoreEventType.UPDATE_DELEGATION_TOKEN,
           RMStateStoreEventType.UPDATE_AMRM_TOKEN,
           RMStateStoreEventType.STORE_RESERVATION,
-          RMStateStoreEventType.REMOVE_RESERVATION));
+          RMStateStoreEventType.REMOVE_RESERVATION,
+          RMStateStoreEventType.STORE_PROXY_CA_CERT));
 
   private final StateMachine<RMStateStoreState,
                              RMStateStoreEventType,
@@ -213,14 +241,21 @@ public abstract class RMStateStore extends AbstractService {
       LOG.info("Storing info for app: " + appId);
       try {
         store.storeApplicationStateInternal(appId, appState);
-        store.notifyApplication(new RMAppEvent(appId,
-               RMAppEventType.APP_NEW_SAVED));
+        store.notifyApplication(
+            new RMAppEvent(appId, RMAppEventType.APP_NEW_SAVED));
       } catch (Exception e) {
         LOG.error("Error storing app: " + appId, e);
-        isFenced = store.notifyStoreOperationFailedInternal(e);
+        if (e instanceof StoreLimitException) {
+          store.notifyApplication(
+              new RMAppEvent(appId, RMAppEventType.APP_SAVE_FAILED,
+                  e.getMessage()));
+        } else {
+          isFenced = store.notifyStoreOperationFailedInternal(e);
+        }
       }
       return finalState(isFenced);
     };
+
   }
 
   private static class UpdateAppTransition implements
@@ -237,21 +272,67 @@ public abstract class RMStateStore extends AbstractService {
       boolean isFenced = false;
       ApplicationStateData appState =
           ((RMStateUpdateAppEvent) event).getAppState();
+      SettableFuture<Object> result =
+          ((RMStateUpdateAppEvent) event).getResult();
       ApplicationId appId =
           appState.getApplicationSubmissionContext().getApplicationId();
       LOG.info("Updating info for app: " + appId);
       try {
+        if (isAppStateFinal(appState)) {
+          pruneAppState(appState);
+        }
         store.updateApplicationStateInternal(appId, appState);
         if (((RMStateUpdateAppEvent) event).isNotifyApplication()) {
           store.notifyApplication(new RMAppEvent(appId,
               RMAppEventType.APP_UPDATE_SAVED));
         }
+
+        if (result != null) {
+          result.set(null);
+        }
+
       } catch (Exception e) {
-        LOG.error("Error updating app: " + appId, e);
+        String msg = "Error updating app: " + appId;
+        LOG.error(msg, e);
         isFenced = store.notifyStoreOperationFailedInternal(e);
+        if (result != null) {
+          result.setException(new YarnException(msg, e));
+        }
       }
       return finalState(isFenced);
-    };
+    }
+
+    private boolean isAppStateFinal(ApplicationStateData appState) {
+      RMAppState state = appState.getState();
+      return state == RMAppState.FINISHED || state == RMAppState.FAILED ||
+          state == RMAppState.KILLED;
+    }
+
+    private void pruneAppState(ApplicationStateData appState) {
+      ApplicationSubmissionContext srcCtx =
+          appState.getApplicationSubmissionContext();
+      ApplicationSubmissionContextPBImpl context =
+          new ApplicationSubmissionContextPBImpl();
+      // most fields in the ApplicationSubmissionContext are not needed,
+      // but the following few need to be present for recovery to succeed
+      context.setApplicationId(srcCtx.getApplicationId());
+      context.setResource(srcCtx.getResource());
+      context.setQueue(srcCtx.getQueue());
+      context.setAMContainerResourceRequests(
+          srcCtx.getAMContainerResourceRequests());
+      context.setApplicationName(srcCtx.getApplicationName());
+      context.setPriority(srcCtx.getPriority());
+      context.setApplicationTags(srcCtx.getApplicationTags());
+      context.setApplicationType(srcCtx.getApplicationType());
+      context.setUnmanagedAM(srcCtx.getUnmanagedAM());
+      context.setNodeLabelExpression(srcCtx.getNodeLabelExpression());
+      ContainerLaunchContextPBImpl amContainerSpec =
+              new ContainerLaunchContextPBImpl();
+      amContainerSpec.setApplicationACLs(
+              srcCtx.getAMContainerSpec().getApplicationACLs());
+      context.setAMContainerSpec(amContainerSpec);
+      appState.setApplicationSubmissionContext(context);
+    }
   }
 
   private static class RemoveAppTransition implements
@@ -296,9 +377,7 @@ public abstract class RMStateStore extends AbstractService {
       ApplicationAttemptStateData attemptState =
           ((RMStateStoreAppAttemptEvent) event).getAppAttemptState();
       try {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Storing info for attempt: " + attemptState.getAttemptId());
-        }
+        LOG.debug("Storing info for attempt: {}", attemptState.getAttemptId());
         store.storeApplicationAttemptStateInternal(attemptState.getAttemptId(),
             attemptState);
         store.notifyApplicationAttempt(new RMAppAttemptEvent
@@ -327,9 +406,8 @@ public abstract class RMStateStore extends AbstractService {
       ApplicationAttemptStateData attemptState =
           ((RMStateUpdateAppAttemptEvent) event).getAppAttemptState();
       try {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Updating info for attempt: " + attemptState.getAttemptId());
-        }
+        LOG.debug("Updating info for attempt: {}",
+            attemptState.getAttemptId());
         store.updateApplicationAttemptStateInternal(attemptState.getAttemptId(),
             attemptState);
         store.notifyApplicationAttempt(new RMAppAttemptEvent
@@ -552,6 +630,31 @@ public abstract class RMStateStore extends AbstractService {
     }
   }
 
+  private static class StoreProxyCACertTransition implements
+      MultipleArcTransition<RMStateStore, RMStateStoreEvent,
+          RMStateStoreState> {
+    @Override
+    public RMStateStoreState transition(RMStateStore store,
+        RMStateStoreEvent event) {
+      if (!(event instanceof RMStateStoreProxyCAEvent)) {
+        // should never happen
+        LOG.error("Illegal event type: " + event.getClass());
+        return RMStateStoreState.ACTIVE;
+      }
+      boolean isFenced = false;
+      RMStateStoreProxyCAEvent caEvent = (RMStateStoreProxyCAEvent) event;
+      try {
+        LOG.info("Storing CA Certificate and Private Key");
+        store.storeProxyCACertState(
+            caEvent.getCaCert(), caEvent.getCaPrivateKey());
+      } catch (Exception e) {
+        LOG.error("Error While Storing CA Certificate and Private Key", e);
+        isFenced = store.notifyStoreOperationFailedInternal(e);
+      }
+      return finalState(isFenced);
+    }
+  }
+
   private static RMStateStoreState finalState(boolean isFenced) {
     return isFenced ? RMStateStoreState.FENCED : RMStateStoreState.ACTIVE;
   }
@@ -613,6 +716,39 @@ public abstract class RMStateStore extends AbstractService {
     }
   }
 
+  public static class ProxyCAState {
+    private X509Certificate caCert;
+    private PrivateKey caPrivateKey;
+
+    public X509Certificate getCaCert() {
+      return caCert;
+    }
+
+    public PrivateKey getCaPrivateKey() {
+      return caPrivateKey;
+    }
+
+    public void setCaCert(X509Certificate caCert) {
+      this.caCert = caCert;
+    }
+
+    public void setCaPrivateKey(PrivateKey caPrivateKey) {
+      this.caPrivateKey = caPrivateKey;
+    }
+
+    public void setCaCert(byte[] caCertData) throws CertificateException {
+      ByteArrayInputStream bais = new ByteArrayInputStream(caCertData);
+      caCert = (X509Certificate)
+          CertificateFactory.getInstance("X.509").generateCertificate(bais);
+    }
+
+    public void setCaPrivateKey(byte[] caPrivateKeyData)
+        throws NoSuchAlgorithmException, InvalidKeySpecException {
+      caPrivateKey = KeyFactory.getInstance("RSA").generatePrivate(
+          new PKCS8EncodedKeySpec(caPrivateKeyData));
+    }
+  }
+
   /**
    * State of the ResourceManager
    */
@@ -626,6 +762,8 @@ public abstract class RMStateStore extends AbstractService {
 
     private Map<String, Map<ReservationId, ReservationAllocationStateProto>>
         reservationState = new TreeMap<>();
+
+    ProxyCAState proxyCAState = new ProxyCAState();
 
     public Map<ApplicationId, ApplicationStateData> getApplicationState() {
       return appState;
@@ -643,6 +781,10 @@ public abstract class RMStateStore extends AbstractService {
         getReservationState() {
       return reservationState;
     }
+
+    public ProxyCAState getProxyCAState() {
+      return proxyCAState;
+    }
   }
     
   private Dispatcher rmDispatcher;
@@ -656,15 +798,24 @@ public abstract class RMStateStore extends AbstractService {
   }
   
   AsyncDispatcher dispatcher;
+  @SuppressWarnings("rawtypes")
+  @VisibleForTesting
+  protected EventHandler rmStateStoreEventHandler;
 
   @Override
   protected void serviceInit(Configuration conf) throws Exception{
     // create async handler
-    dispatcher = new AsyncDispatcher();
+    dispatcher = new AsyncDispatcher("RM StateStore dispatcher");
     dispatcher.init(conf);
+    rmStateStoreEventHandler = new ForwardingEventHandler();
     dispatcher.register(RMStateStoreEventType.class, 
-                        new ForwardingEventHandler());
+                        rmStateStoreEventHandler);
     dispatcher.setDrainEventsOnStop();
+    // read the base epoch value from conf
+    baseEpoch = conf.getLong(YarnConfiguration.RM_EPOCH,
+        YarnConfiguration.DEFAULT_RM_EPOCH);
+    epochRange = conf.getLong(YarnConfiguration.RM_EPOCH_RANGE,
+        YarnConfiguration.DEFAULT_RM_EPOCH_RANGE);
     initInternal(conf);
   }
 
@@ -751,7 +902,20 @@ public abstract class RMStateStore extends AbstractService {
    * Get the current epoch of RM and increment the value.
    */
   public abstract long getAndIncrementEpoch() throws Exception;
-  
+
+  /**
+   * Compute the next epoch value by incrementing by one.
+   * Wraps around if the epoch range is exceeded so that
+   * when federation is enabled epoch collisions can be avoided.
+   */
+  protected long nextEpoch(long epoch){
+    long epochVal = epoch - baseEpoch + 1;
+    if (epochRange > 0) {
+      epochVal %= epochRange;
+    }
+    return  epochVal + baseEpoch;
+  }
+
   /**
    * Blocking API
    * The derived class must recover state from the store and return a new 
@@ -774,18 +938,26 @@ public abstract class RMStateStore extends AbstractService {
     ApplicationStateData appState =
         ApplicationStateData.newInstance(app.getSubmitTime(),
             app.getStartTime(), context, app.getUser(), app.getCallerContext());
-    dispatcher.getEventHandler().handle(new RMStateStoreAppEvent(appState));
+    appState.setApplicationTimeouts(app.getApplicationTimeouts());
+    getRMStateStoreEventHandler().handle(new RMStateStoreAppEvent(appState));
   }
 
   @SuppressWarnings("unchecked")
-  public void updateApplicationState(
-      ApplicationStateData appState) {
-    dispatcher.getEventHandler().handle(new RMStateUpdateAppEvent(appState));
+  public void updateApplicationState(ApplicationStateData appState) {
+    getRMStateStoreEventHandler().handle(new RMStateUpdateAppEvent(appState));
   }
 
-  public void updateApplicationStateSynchronously(
-      ApplicationStateData appState, boolean notifyApp) {
-    handleStoreEvent(new RMStateUpdateAppEvent(appState, notifyApp));
+  @SuppressWarnings("unchecked")
+  public void updateApplicationState(ApplicationStateData appState,
+      boolean notifyApp) {
+    getRMStateStoreEventHandler().handle(new RMStateUpdateAppEvent(appState,
+        notifyApp));
+  }
+
+  public void updateApplicationStateSynchronously(ApplicationStateData appState,
+      boolean notifyApp, SettableFuture<Object> resultFuture) {
+    handleStoreEvent(
+        new RMStateUpdateAppEvent(appState, notifyApp, resultFuture));
   }
 
   public void updateFencedState() {
@@ -812,25 +984,26 @@ public abstract class RMStateStore extends AbstractService {
    */
   public void storeNewApplicationAttempt(RMAppAttempt appAttempt) {
     Credentials credentials = getCredentialsFromAppAttempt(appAttempt);
-
+    RMAppAttemptMetrics attempMetrics = appAttempt.getRMAppAttemptMetrics();
     AggregateAppResourceUsage resUsage =
-        appAttempt.getRMAppAttemptMetrics().getAggregateAppResourceUsage();
+        attempMetrics.getAggregateAppResourceUsage();
     ApplicationAttemptStateData attemptState =
         ApplicationAttemptStateData.newInstance(
             appAttempt.getAppAttemptId(),
             appAttempt.getMasterContainer(),
             credentials, appAttempt.getStartTime(),
-            resUsage.getMemorySeconds(),
-            resUsage.getVcoreSeconds());
+            resUsage.getResourceUsageSecondsMap(),
+            attempMetrics.getPreemptedResourceSecondsMap(),
+            attempMetrics.getTotalAllocatedContainers());
 
-    dispatcher.getEventHandler().handle(
+    getRMStateStoreEventHandler().handle(
       new RMStateStoreAppAttemptEvent(attemptState));
   }
 
   @SuppressWarnings("unchecked")
   public void updateApplicationAttemptState(
       ApplicationAttemptStateData attemptState) {
-    dispatcher.getEventHandler().handle(
+    getRMStateStoreEventHandler().handle(
       new RMStateUpdateAppAttemptEvent(attemptState));
   }
 
@@ -1002,7 +1175,8 @@ public abstract class RMStateStore extends AbstractService {
       appState.attempts.put(appAttempt.getAppAttemptId(), null);
     }
     
-    dispatcher.getEventHandler().handle(new RMStateStoreRemoveAppEvent(appState));
+    getRMStateStoreEventHandler().handle(
+        new RMStateStoreRemoveAppEvent(appState));
   }
 
   /**
@@ -1023,7 +1197,7 @@ public abstract class RMStateStore extends AbstractService {
   @SuppressWarnings("unchecked")
   public synchronized void removeApplicationAttempt(
       ApplicationAttemptId applicationAttemptId) {
-    dispatcher.getEventHandler().handle(
+    getRMStateStoreEventHandler().handle(
         new RMStateStoreRemoveAppAttemptEvent(applicationAttemptId));
   }
 
@@ -1066,9 +1240,7 @@ public abstract class RMStateStore extends AbstractService {
     this.writeLock.lock();
     try {
 
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Processing event of type " + event.getType());
-      }
+      LOG.debug("Processing event of type {}", event.getType());
 
       final RMStateStoreState oldState = getRMStateStoreState();
 
@@ -1105,21 +1277,18 @@ public abstract class RMStateStore extends AbstractService {
       Exception failureCause) {
     boolean isFenced = false;
     LOG.error("State store operation failed ", failureCause);
+
     if (HAUtil.isHAEnabled(getConfig())) {
-      LOG.warn("State-store fenced ! Transitioning RM to standby");
+      rmDispatcher.getEventHandler().handle(
+          new RMFatalEvent(RMFatalEventType.STATE_STORE_FENCED,
+              failureCause));
       isFenced = true;
-      Thread standByTransitionThread =
-          new Thread(new StandByTransitionThread());
-      standByTransitionThread.setName("StandByTransitionThread Handler");
-      standByTransitionThread.start();
-    } else if (YarnConfiguration.shouldRMFailFast(getConfig())) {
-      LOG.fatal("Fail RM now due to state-store error!");
+    } else {
       rmDispatcher.getEventHandler().handle(
           new RMFatalEvent(RMFatalEventType.STATE_STORE_OP_FAILED,
               failureCause));
-    } else {
-      LOG.warn("Skip the state-store error.");
     }
+
     return isFenced;
   }
  
@@ -1176,14 +1345,6 @@ public abstract class RMStateStore extends AbstractService {
     this.resourceManager = rm;
   }
 
-  private class StandByTransitionThread implements Runnable {
-    @Override
-    public void run() {
-      LOG.info("RMStateStore has been fenced");
-      resourceManager.handleTransitionToStandBy();
-    }
-  }
-
   public RMStateStoreState getRMStateStoreState() {
     this.readLock.lock();
     try {
@@ -1192,4 +1353,26 @@ public abstract class RMStateStore extends AbstractService {
       this.readLock.unlock();
     }
   }
+
+  @SuppressWarnings("rawtypes")
+  protected EventHandler getRMStateStoreEventHandler() {
+    return dispatcher.getEventHandler();
+  }
+
+  /**
+   * ProxyCAManager calls this to store the CA Certificate and Private Key.
+   */
+  public void storeProxyCACert(X509Certificate caCert,
+      PrivateKey caPrivateKey) {
+    handleStoreEvent(new RMStateStoreProxyCAEvent(caCert, caPrivateKey,
+        RMStateStoreEventType.STORE_PROXY_CA_CERT));
+  }
+
+  /**
+   * Blocking API
+   * Derived classes must implement this method to store the CA Certificate
+   * and Private Key
+   */
+  protected abstract void storeProxyCACertState(
+      X509Certificate caCert, PrivateKey caPrivateKey) throws Exception;
 }

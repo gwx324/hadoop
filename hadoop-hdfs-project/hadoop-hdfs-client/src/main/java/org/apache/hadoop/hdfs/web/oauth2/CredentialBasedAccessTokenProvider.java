@@ -26,10 +26,9 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.web.URLConnectionFactory;
+import org.apache.hadoop.util.JsonSerialization;
 import org.apache.hadoop.util.Timer;
 import org.apache.http.HttpStatus;
-import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.jackson.map.ObjectReader;
 
 import java.io.IOException;
 import java.util.Map;
@@ -55,8 +54,6 @@ import static org.apache.hadoop.hdfs.web.oauth2.Utils.notNull;
 @InterfaceStability.Evolving
 public abstract class CredentialBasedAccessTokenProvider
     extends AccessTokenProvider {
-  private static final ObjectReader READER =
-      new ObjectMapper().reader(Map.class);
 
   public static final String OAUTH_CREDENTIAL_KEY
       = "dfs.webhdfs.oauth2.credential";
@@ -123,7 +120,8 @@ public abstract class CredentialBasedAccessTokenProvider
             + responseBody.code() + ", text = " + responseBody.toString());
       }
 
-      Map<?, ?> response = READER.readValue(responseBody.body().string());
+      Map<?, ?> response = JsonSerialization.mapReader().readValue(
+          responseBody.body().string());
 
       String newExpiresIn = response.get(EXPIRES_IN).toString();
       timer.setExpiresIn(newExpiresIn);

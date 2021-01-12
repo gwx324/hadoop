@@ -37,7 +37,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Tests that the configuration flag that controls support for ACLs is off by
@@ -160,10 +160,7 @@ public class TestAclConfigFlag {
   private void initCluster(boolean format, boolean aclsEnabled)
       throws Exception {
     Configuration conf = new Configuration();
-    // not explicitly setting to false, should be false by default
-    if (aclsEnabled) {
-      conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY, true);
-    }
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY, aclsEnabled);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).format(format)
       .build();
     cluster.waitActive();

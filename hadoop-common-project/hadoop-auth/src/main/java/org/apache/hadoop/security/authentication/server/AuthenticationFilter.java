@@ -19,6 +19,7 @@ import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
 import org.apache.hadoop.security.authentication.client.KerberosAuthenticator;
 import org.apache.hadoop.security.authentication.util.*;
+import org.eclipse.jetty.server.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -142,7 +143,7 @@ public class AuthenticationFilter implements Filter {
   private String cookieDomain;
   private String cookiePath;
   private boolean isCookiePersistent;
-  private boolean isInitializedByTomcat;
+  private boolean destroySecretProvider;
 
   /**
    * <p>Initializes the authentication filter and signer secret provider.</p>
@@ -165,15 +166,9 @@ public class AuthenticationFilter implements Filter {
           PseudoAuthenticationHandler.TYPE + "|" + 
           KerberosAuthenticationHandler.TYPE + "|<class>");
     }
-    if (authHandlerName.toLowerCase(Locale.ENGLISH).equals(
-        PseudoAuthenticationHandler.TYPE)) {
-      authHandlerClassName = PseudoAuthenticationHandler.class.getName();
-    } else if (authHandlerName.toLowerCase(Locale.ENGLISH).equals(
-        KerberosAuthenticationHandler.TYPE)) {
-      authHandlerClassName = KerberosAuthenticationHandler.class.getName();
-    } else {
-      authHandlerClassName = authHandlerName;
-    }
+    authHandlerClassName =
+        AuthenticationHandlerUtil
+            .getAuthenticationHandlerClassName(authHandlerName);
     maxInactiveInterval = Long.parseLong(config.getProperty(
         AUTH_TOKEN_MAX_INACTIVE_INTERVAL, "-1")); // By default, disable.
     if (maxInactiveInterval > 0) {
@@ -215,7 +210,7 @@ public class AuthenticationFilter implements Filter {
         secretProvider = constructSecretProvider(
             filterConfig.getServletContext(),
             config, false);
-        isInitializedByTomcat = true;
+        destroySecretProvider = true;
       } catch (Exception ex) {
         throw new ServletException(ex);
       }
@@ -362,7 +357,7 @@ public class AuthenticationFilter implements Filter {
       authHandler.destroy();
       authHandler = null;
     }
-    if (secretProvider != null && isInitializedByTomcat) {
+    if (secretProvider != null && destroySecretProvider) {
       secretProvider.destroy();
       secretProvider = null;
     }
@@ -438,6 +433,9 @@ public class AuthenticationFilter implements Filter {
       for (Cookie cookie : cookies) {
         if (cookie.getName().equals(AuthenticatedURL.AUTH_COOKIE)) {
           tokenStr = cookie.getValue();
+          if (tokenStr.isEmpty()) {
+            throw new AuthenticationException("Unauthorized access");
+          }
           try {
             tokenStr = signer.verifyAndExtract(tokenStr);
           } catch (SignerException ex) {
@@ -449,7 +447,8 @@ public class AuthenticationFilter implements Filter {
     }
     if (tokenStr != null) {
       token = AuthenticationToken.parse(tokenStr);
-      if (!token.getType().equals(authHandler.getType())) {
+      boolean match = verifyTokenType(getAuthenticationHandler(), token);
+      if (!match) {
         throw new AuthenticationException("Invalid AuthenticationToken type");
       }
       if (token.isExpired()) {
@@ -457,6 +456,38 @@ public class AuthenticationFilter implements Filter {
       }
     }
     return token;
+  }
+
+  /**
+   * This method verifies if the specified token type matches one of the the
+   * token types supported by a specified {@link AuthenticationHandler}. This
+   * method is specifically designed to work with
+   * {@link CompositeAuthenticationHandler} implementation which supports
+   * multiple authentication schemes while the {@link AuthenticationHandler}
+   * interface supports a single type via
+   * {@linkplain AuthenticationHandler#getType()} method.
+   *
+   * @param handler The authentication handler whose supported token types
+   *                should be used for verification.
+   * @param token   The token whose type needs to be verified.
+   * @return true   If the token type matches one of the supported token types
+   *         false  Otherwise
+   */
+  protected boolean verifyTokenType(AuthenticationHandler handler,
+      AuthenticationToken token) {
+    if(!(handler instanceof CompositeAuthenticationHandler)) {
+      return handler.getType().equals(token.getType());
+    }
+    boolean match = false;
+    Collection<String> tokenTypes =
+        ((CompositeAuthenticationHandler) handler).getTokenTypes();
+    for (String tokenType : tokenTypes) {
+      if (tokenType.equals(token.getType())) {
+        match = true;
+        break;
+      }
+    }
+    return match;
   }
 
   /**
@@ -486,6 +517,10 @@ public class AuthenticationFilter implements Filter {
       AuthenticationToken token;
       try {
         token = getToken(httpRequest);
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Got token {} from httpRequest {}", token,
+              getRequestURL(httpRequest));
+        }
       }
       catch (AuthenticationException ex) {
         LOG.warn("AuthenticationToken ignored: " + ex.getMessage());
@@ -496,8 +531,8 @@ public class AuthenticationFilter implements Filter {
       if (authHandler.managementOperation(token, httpRequest, httpResponse)) {
         if (token == null) {
           if (LOG.isDebugEnabled()) {
-            LOG.debug("Request [{}] triggering authentication",
-                getRequestURL(httpRequest));
+            LOG.debug("Request [{}] triggering authentication. handler: {}",
+                getRequestURL(httpRequest), authHandler.getClass());
           }
           token = authHandler.authenticate(httpRequest, httpResponse);
           if (token != null && token != AuthenticationToken.ANONYMOUS) {
@@ -558,6 +593,10 @@ public class AuthenticationFilter implements Filter {
           doFilter(filterChain, httpRequest, httpResponse);
         }
       } else {
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("managementOperation returned false for request {}."
+                  + " token: {}", getRequestURL(httpRequest), token);
+        }
         unauthorizedResponse = false;
       }
     } catch (AuthenticationException ex) {
@@ -581,11 +620,20 @@ public class AuthenticationFilter implements Filter {
                 KerberosAuthenticator.WWW_AUTHENTICATE))) {
           errCode = HttpServletResponse.SC_FORBIDDEN;
         }
+        // After Jetty 9.4.21, sendError() no longer allows a custom message.
+        // use setStatusWithReason() to set a custom message.
+        String reason;
         if (authenticationEx == null) {
-          httpResponse.sendError(errCode, "Authentication required");
+          reason = "Authentication required";
         } else {
-          httpResponse.sendError(errCode, authenticationEx.getMessage());
+          reason = authenticationEx.getMessage();
         }
+
+        if (httpResponse instanceof Response) {
+          ((Response)httpResponse).setStatusWithReason(errCode, reason);
+        }
+
+        httpResponse.sendError(errCode, reason);
       }
     }
   }
@@ -643,7 +691,7 @@ public class AuthenticationFilter implements Filter {
     if (expires >= 0 && isCookiePersistent) {
       Date date = new Date(expires);
       SimpleDateFormat df = new SimpleDateFormat("EEE, " +
-              "dd-MMM-yyyy HH:mm:ss zzz");
+              "dd-MMM-yyyy HH:mm:ss zzz", Locale.US);
       df.setTimeZone(TimeZone.getTimeZone("GMT"));
       sb.append("; Expires=").append(df.format(date));
     }

@@ -44,36 +44,51 @@ import java.io.IOException;
  * Make sure we correctly update the quota usage with the striped blocks.
  */
 public class TestQuotaWithStripedBlocks {
-  private static final int BLOCK_SIZE = 1024 * 1024;
-  private static final long DISK_QUOTA = BLOCK_SIZE * 10;
-  private static final ErasureCodingPolicy ecPolicy =
-      ErasureCodingPolicyManager.getSystemDefaultPolicy();
-  private static final int NUM_DATA_BLOCKS = ecPolicy.getNumDataUnits();
-  private static final int NUM_PARITY_BLOCKS = ecPolicy.getNumParityUnits();
-  private static final int GROUP_SIZE = NUM_DATA_BLOCKS + NUM_PARITY_BLOCKS;
-  private static final Path ecDir = new Path("/ec");
+  private int blockSize;
+  private ErasureCodingPolicy ecPolicy;
+  private int dataBlocks;
+  private int parityBlocsk;
+  private int groupSize;
+  private int cellSize;
+  private Path ecDir;
+  private long diskQuota;
 
   private MiniDFSCluster cluster;
   private FSDirectory dir;
   private DistributedFileSystem dfs;
+
+  public ErasureCodingPolicy getEcPolicy() {
+    return StripedFileTestUtil.getDefaultECPolicy();
+  }
 
   @Rule
   public Timeout globalTimeout = new Timeout(300000);
 
   @Before
   public void setUp() throws IOException {
+    blockSize = 1024 * 1024;
+    ecPolicy = getEcPolicy();
+    dataBlocks = ecPolicy.getNumDataUnits();
+    parityBlocsk = ecPolicy.getNumParityUnits();
+    groupSize = dataBlocks + parityBlocsk;
+    cellSize = ecPolicy.getCellSize();
+    ecDir = new Path("/ec");
+    diskQuota = blockSize * (groupSize + 1);
+
     final Configuration conf = new Configuration();
-    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCK_SIZE);
-    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(GROUP_SIZE).build();
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(groupSize).build();
     cluster.waitActive();
 
     dir = cluster.getNamesystem().getFSDirectory();
     dfs = cluster.getFileSystem();
+    dfs.enableErasureCodingPolicy(ecPolicy.getName());
 
     dfs.mkdirs(ecDir);
-    dfs.getClient().setErasureCodingPolicy(ecDir.toString(), ecPolicy);
-    dfs.setQuota(ecDir, Long.MAX_VALUE - 1, DISK_QUOTA);
-    dfs.setQuotaByStorageType(ecDir, StorageType.DISK, DISK_QUOTA);
+    dfs.getClient()
+        .setErasureCodingPolicy(ecDir.toString(), ecPolicy.getName());
+    dfs.setQuota(ecDir, Long.MAX_VALUE - 1, diskQuota);
+    dfs.setQuotaByStorageType(ecDir, StorageType.DISK, diskQuota);
     dfs.setStoragePolicy(ecDir, HdfsConstants.HOT_STORAGE_POLICY_NAME);
   }
 
@@ -109,8 +124,8 @@ public class TestQuotaWithStripedBlocks {
       final long diskUsed = dirNode.getDirectoryWithQuotaFeature()
           .getSpaceConsumed().getTypeSpaces().get(StorageType.DISK);
       // When we add a new block we update the quota using the full block size.
-      Assert.assertEquals(BLOCK_SIZE * GROUP_SIZE, spaceUsed);
-      Assert.assertEquals(BLOCK_SIZE * GROUP_SIZE, diskUsed);
+      Assert.assertEquals(blockSize * groupSize, spaceUsed);
+      Assert.assertEquals(blockSize * groupSize, diskUsed);
 
       dfs.getClient().getNamenode().complete(file.toString(),
           dfs.getClient().getClientName(), previous, fileNode.getId());
@@ -120,9 +135,9 @@ public class TestQuotaWithStripedBlocks {
       final long actualDiskUsed = dirNode.getDirectoryWithQuotaFeature()
           .getSpaceConsumed().getTypeSpaces().get(StorageType.DISK);
       // In this case the file's real size is cell size * block group size.
-      Assert.assertEquals(StripedFileTestUtil.BLOCK_STRIPED_CELL_SIZE * GROUP_SIZE,
+      Assert.assertEquals(cellSize * groupSize,
           actualSpaceUsed);
-      Assert.assertEquals(StripedFileTestUtil.BLOCK_STRIPED_CELL_SIZE * GROUP_SIZE,
+      Assert.assertEquals(cellSize * groupSize,
           actualDiskUsed);
     } finally {
       IOUtils.cleanup(null, out);

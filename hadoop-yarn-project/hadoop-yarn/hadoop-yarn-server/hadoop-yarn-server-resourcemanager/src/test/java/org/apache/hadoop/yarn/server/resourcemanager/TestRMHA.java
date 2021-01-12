@@ -18,6 +18,11 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
+import java.util.function.Supplier;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateSchedulerEvent;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -28,14 +33,15 @@ import java.net.InetSocketAddress;
 
 import javax.ws.rs.core.MediaType;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.HAServiceProtocol;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.ha.HAServiceProtocol.StateChangeRequestInfo;
 import org.apache.hadoop.ha.HealthCheckFailedException;
 import org.apache.hadoop.ha.ServiceFailedException;
+import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.AccessControlException;
@@ -67,9 +73,10 @@ import com.sun.jersey.api.client.WebResource;
 import com.sun.jersey.api.client.config.DefaultClientConfig;
 
 public class TestRMHA {
-  private Log LOG = LogFactory.getLog(TestRMHA.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestRMHA.class);
   private Configuration configuration;
   private MockRM rm = null;
+  private MockNM nm = null;
   private RMApp app = null;
   private RMAppAttempt attempt = null;
   private static final String STATE_ERR =
@@ -134,8 +141,8 @@ public class TestRMHA {
 
     try {
       rm.getNewAppId();
-      rm.registerNode("127.0.0.1:1", 2048);
-      app = rm.submitApp(1024);
+      nm = rm.registerNode("127.0.0.1:1", 2048);
+      app = MockRMAppSubmitter.submitWithMemory(1024, rm);
       attempt = app.getCurrentAppAttempt();
       rm.waitForState(attempt.getAppAttemptId(), RMAppAttemptState.SCHEDULED);
     } catch (Exception e) {
@@ -160,9 +167,10 @@ public class TestRMHA {
 
     ClientResponse response =
         webResource.path("ws").path("v1").path("cluster").path("apps")
-          .path(path).accept(MediaType.APPLICATION_JSON)
-          .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+            .path(path).accept(MediaType.APPLICATION_JSON)
+            .get(ClientResponse.class);
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
 
     assertEquals("incorrect number of elements", 1, json.length());
@@ -176,13 +184,13 @@ public class TestRMHA {
    * 1. Standby: Should be a no-op
    * 2. Active: Active services should start
    * 3. Active: Should be a no-op.
-   *    While active, submit a couple of jobs
+   * While active, submit a couple of jobs
    * 4. Standby: Active services should stop
    * 5. Active: Active services should start
    * 6. Stop the RM: All services should stop and RM should not be ready to
    * become Active
    */
-  @Test (timeout = 30000)
+  @Test(timeout = 30000)
   public void testFailoverAndTransitions() throws Exception {
     configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
     Configuration conf = new YarnConfiguration(configuration);
@@ -202,37 +210,37 @@ public class TestRMHA {
     checkMonitorHealth();
     checkStandbyRMFunctionality();
     verifyClusterMetrics(0, 0, 0, 0, 0, 0);
-    
+
     // 1. Transition to Standby - must be a no-op
     rm.adminService.transitionToStandby(requestInfo);
     checkMonitorHealth();
     checkStandbyRMFunctionality();
     verifyClusterMetrics(0, 0, 0, 0, 0, 0);
-    
+
     // 2. Transition to active
     rm.adminService.transitionToActive(requestInfo);
     checkMonitorHealth();
     checkActiveRMFunctionality();
     verifyClusterMetrics(1, 1, 1, 1, 2048, 1);
-    
+
     // 3. Transition to active - no-op
     rm.adminService.transitionToActive(requestInfo);
     checkMonitorHealth();
     checkActiveRMFunctionality();
     verifyClusterMetrics(1, 2, 2, 2, 2048, 2);
-    
+
     // 4. Transition to standby
     rm.adminService.transitionToStandby(requestInfo);
     checkMonitorHealth();
     checkStandbyRMFunctionality();
     verifyClusterMetrics(0, 0, 0, 0, 0, 0);
-   
+
     // 5. Transition to active to check Active->Standby->Active works
     rm.adminService.transitionToActive(requestInfo);
     checkMonitorHealth();
     checkActiveRMFunctionality();
     verifyClusterMetrics(1, 1, 1, 1, 2048, 1);
-    
+
     // 6. Stop the RM. All services should stop and RM should not be ready to
     // become active
     rm.stop();
@@ -338,7 +346,7 @@ public class TestRMHA {
     rm.adminService.transitionToStandby(requestInfo);
     rm.adminService.transitionToActive(requestInfo);
     rm.adminService.transitionToStandby(requestInfo);
-    
+
     MyCountingDispatcher dispatcher =
         (MyCountingDispatcher) rm.getRMContext().getDispatcher();
     assertTrue(!dispatcher.isStopped());
@@ -346,24 +354,24 @@ public class TestRMHA {
     rm.adminService.transitionToActive(requestInfo);
     assertEquals(errorMessageForEventHandler, expectedEventHandlerCount,
         ((MyCountingDispatcher) rm.getRMContext().getDispatcher())
-        .getEventHandlerCount());
+            .getEventHandlerCount());
     assertEquals(errorMessageForService, expectedServiceCount,
         rm.getServices().size());
 
-    
+
     // Keep the dispatcher reference before transitioning to standby
     dispatcher = (MyCountingDispatcher) rm.getRMContext().getDispatcher();
-    
-    
+
+
     rm.adminService.transitionToStandby(requestInfo);
     assertEquals(errorMessageForEventHandler, expectedEventHandlerCount,
         ((MyCountingDispatcher) rm.getRMContext().getDispatcher())
-        .getEventHandlerCount());
+            .getEventHandlerCount());
     assertEquals(errorMessageForService, expectedServiceCount,
         rm.getServices().size());
 
     assertTrue(dispatcher.isStopped());
-    
+
     rm.stop();
   }
 
@@ -374,17 +382,18 @@ public class TestRMHA {
     rm = new MockRM(conf);
     rm.init(conf);
 
-    assertEquals(conf.get(YarnConfiguration.RM_HA_ID), RM2_NODE_ID);
+    assertThat(conf.get(YarnConfiguration.RM_HA_ID)).isEqualTo(RM2_NODE_ID);
 
     //test explicitly lookup HA-ID
     configuration.set(YarnConfiguration.RM_HA_ID, RM1_NODE_ID);
     conf = new YarnConfiguration(configuration);
     rm = new MockRM(conf);
     rm.init(conf);
-    assertEquals(conf.get(YarnConfiguration.RM_HA_ID), RM1_NODE_ID);
+    assertThat(conf.get(YarnConfiguration.RM_HA_ID)).isEqualTo(RM1_NODE_ID);
 
     //test if RM_HA_ID can not be found
-    configuration.set(YarnConfiguration.RM_HA_IDS, RM1_NODE_ID+ "," + RM3_NODE_ID);
+    configuration
+        .set(YarnConfiguration.RM_HA_IDS, RM1_NODE_ID + "," + RM3_NODE_ID);
     configuration.unset(YarnConfiguration.RM_HA_ID);
     conf = new YarnConfiguration(configuration);
     try {
@@ -411,7 +420,7 @@ public class TestRMHA {
     configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
     Configuration conf = new YarnConfiguration(configuration);
 
-    MemoryRMStateStore memStore = new MemoryRMStateStore() {
+    MemoryRMStateStore memStore = new MockMemoryRMStateStore() {
       int count = 0;
 
       @Override
@@ -456,15 +465,14 @@ public class TestRMHA {
     checkActiveRMFunctionality();
   }
 
-  @Test(timeout = 90000)
+  @Test
   public void testTransitionedToStandbyShouldNotHang() throws Exception {
     configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
     Configuration conf = new YarnConfiguration(configuration);
 
-    MemoryRMStateStore memStore = new MemoryRMStateStore() {
+    MemoryRMStateStore memStore = new MockMemoryRMStateStore() {
       @Override
-      public synchronized void updateApplicationState(
-          ApplicationStateData appState) {
+      public void updateApplicationState(ApplicationStateData appState) {
         notifyStoreOperationFailed(new StoreFencedException());
       }
     };
@@ -527,12 +535,10 @@ public class TestRMHA {
     configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
     configuration.setBoolean(YarnConfiguration.RECOVERY_ENABLED, true);
     Configuration conf = new YarnConfiguration(configuration);
-
-    MemoryRMStateStore memStore = new MemoryRMStateStore();
-    memStore.init(conf);
+    conf.set(YarnConfiguration.RM_STORE, MemoryRMStateStore.class.getName());
 
     // 1. start RM
-    rm = new MockRM(conf, memStore);
+    rm = new MockRM(conf);
     rm.init(conf);
     rm.start();
 
@@ -549,9 +555,20 @@ public class TestRMHA {
     verifyClusterMetrics(1, 1, 1, 1, 2048, 1);
     assertEquals(1, rm.getRMContext().getRMNodes().size());
     assertEquals(1, rm.getRMContext().getRMApps().size());
+    Assert.assertNotNull("Node not registered", nm);
+
+    rm.adminService.transitionToStandby(requestInfo);
+    checkMonitorHealth();
+    checkStandbyRMFunctionality();
+    // race condition causes to register/node heartbeat node even after service
+    // is stopping/stopped. New RMContext is being created on every transition
+    // to standby, so metrics should be 0 which indicates new context reference
+    // has taken.
+    nm.registerNode();
+    verifyClusterMetrics(0, 0, 0, 0, 0, 0);
 
     // 3. Create new RM
-    rm = new MockRM(conf, memStore) {
+    rm = new MockRM(conf, rm.getRMStateStore()) {
       @Override
       protected ResourceTrackerService createResourceTrackerService() {
         return new ResourceTrackerService(this.rmContext,
@@ -590,7 +607,7 @@ public class TestRMHA {
     rm = new MockRM(configuration) {
       @Override
       protected AdminService createAdminService() {
-        return new AdminService(this, getRMContext()) {
+        return new AdminService(this) {
           int counter = 0;
           @Override
           protected void setConfig(Configuration conf) {
@@ -622,7 +639,7 @@ public class TestRMHA {
             HAServiceProtocol.RequestSource.REQUEST_BY_USER);
     FailFastDispatcher dispatcher =
         ((FailFastDispatcher) rm.rmContext.getDispatcher());
-    // Verify transistion to transitionToStandby
+    // Verify transition to transitionToStandby
     rm.adminService.transitionToStandby(requestInfo);
     assertEquals("Fatal Event should be 0", 0, dispatcher.getEventCount());
     assertEquals("HA state should be in standBy State", HAServiceState.STANDBY,
@@ -630,7 +647,7 @@ public class TestRMHA {
     try {
       // Verify refreshAll call failure and check fail Event is dispatched
       rm.adminService.transitionToActive(requestInfo);
-      Assert.fail("Transistion to Active should have failed for refreshAll()");
+      Assert.fail("Transition to Active should have failed for refreshAll()");
     } catch (Exception e) {
       assertTrue("Service fail Exception expected",
           e instanceof ServiceFailedException);
@@ -644,6 +661,85 @@ public class TestRMHA {
     assertEquals(HAServiceState.ACTIVE, rm.getRMContext().getHAServiceState());
     rm.adminService.transitionToStandby(requestInfo);
     assertEquals(HAServiceState.STANDBY, rm.getRMContext().getHAServiceState());
+  }
+
+  @Test
+  public void testOpportunisticAllocatorAfterFailover() throws Exception {
+    configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+    configuration.setBoolean(YarnConfiguration.RECOVERY_ENABLED, true);
+    Configuration conf = new YarnConfiguration(configuration);
+    conf.set(YarnConfiguration.RM_STORE, MemoryRMStateStore.class.getName());
+    conf.setBoolean(
+        YarnConfiguration.OPPORTUNISTIC_CONTAINER_ALLOCATION_ENABLED, true);
+    // 1. start RM
+    rm = new MockRM(conf);
+    rm.init(conf);
+    rm.start();
+
+    StateChangeRequestInfo requestInfo = new StateChangeRequestInfo(
+        HAServiceProtocol.RequestSource.REQUEST_BY_USER);
+    // 2. Transition to active
+    rm.adminService.transitionToActive(requestInfo);
+    // 3. Transition to standby
+    rm.adminService.transitionToStandby(requestInfo);
+    // 4. Transition to active
+    rm.adminService.transitionToActive(requestInfo);
+
+    MockNM nm1 = rm.registerNode("h1:1234", 8 * 1024);
+    RMNode rmNode1 = rm.getRMContext().getRMNodes().get(nm1.getNodeId());
+    rmNode1.getRMContext().getDispatcher().getEventHandler()
+        .handle(new NodeUpdateSchedulerEvent(rmNode1));
+    OpportunisticContainerAllocatorAMService appMaster =
+        (OpportunisticContainerAllocatorAMService) rm.getRMContext()
+            .getApplicationMasterService();
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return appMaster.getLeastLoadedNodes().size() == 1;
+      }
+    }, 100, 3000);
+    rm.stop();
+    Assert.assertEquals(1, appMaster.getLeastLoadedNodes().size());
+
+  }
+
+  @Test
+  public void testResourceProfilesManagerAfterRMWentStandbyThenBackToActive()
+      throws Exception {
+    configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+    configuration.setBoolean(YarnConfiguration.RECOVERY_ENABLED, true);
+    Configuration conf = new YarnConfiguration(configuration);
+    conf.set(YarnConfiguration.RM_STORE, MemoryRMStateStore.class.getName());
+
+    // 1. start RM
+    rm = new MockRM(conf);
+    rm.init(conf);
+    rm.start();
+
+    StateChangeRequestInfo requestInfo = new StateChangeRequestInfo(
+        HAServiceProtocol.RequestSource.REQUEST_BY_USER);
+    checkMonitorHealth();
+    checkStandbyRMFunctionality();
+
+    // 2. Transition to active
+    rm.adminService.transitionToActive(requestInfo);
+    checkMonitorHealth();
+    checkActiveRMFunctionality();
+
+    // 3. Transition to standby
+    rm.adminService.transitionToStandby(requestInfo);
+    checkMonitorHealth();
+    checkStandbyRMFunctionality();
+
+    // 4. Transition to active
+    rm.adminService.transitionToActive(requestInfo);
+    checkMonitorHealth();
+    checkActiveRMFunctionality();
+
+    // 5. Check ResourceProfilesManager
+    Assert.assertNotNull(
+        "ResourceProfilesManager should not be null!",
+        rm.getRMContext().getResourceProfilesManager());
   }
 
   public void innerTestHAWithRMHostName(boolean includeBindHost) {
@@ -759,7 +855,7 @@ public class TestRMHA {
     }
 
     @Override
-    public EventHandler getEventHandler() {
+    public EventHandler<Event> getEventHandler() {
       return null;
     }
 

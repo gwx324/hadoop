@@ -17,15 +17,18 @@
  */
 package org.apache.hadoop.crypto.key.kms.server;
 
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
+import org.apache.hadoop.crypto.key.kms.KMSDelegationToken;
+import org.apache.hadoop.http.HtmlQuoting;
 import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
 import org.apache.hadoop.security.authentication.server.PseudoAuthenticationHandler;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticationFilter;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticationHandler;
 import org.apache.hadoop.security.token.delegation.web.KerberosDelegationTokenAuthenticationHandler;
 import org.apache.hadoop.security.token.delegation.web.PseudoDelegationTokenAuthenticationHandler;
+import org.eclipse.jetty.server.Response;
 
 import javax.servlet.FilterChain;
 import javax.servlet.FilterConfig;
@@ -53,16 +56,22 @@ public class KMSAuthenticationFilter
   @Override
   protected Properties getConfiguration(String configPrefix,
       FilterConfig filterConfig) {
-    Properties props = new Properties();
+
     Configuration conf = KMSWebApp.getConfiguration();
-    for (Map.Entry<String, String> entry : conf) {
-      String name = entry.getKey();
-      if (name.startsWith(CONFIG_PREFIX)) {
-        String value = conf.get(name);
-        name = name.substring(CONFIG_PREFIX.length());
-        props.setProperty(name, value);
-      }
+    return getKMSConfiguration(conf);
+  }
+
+  @VisibleForTesting
+  Properties getKMSConfiguration(Configuration conf) {
+    Properties props = new Properties();
+
+    Map<String, String> propsWithPrefixMap = conf.getPropsWithPrefix(
+        CONFIG_PREFIX);
+
+    for (Map.Entry<String, String> entry : propsWithPrefixMap.entrySet()) {
+      props.setProperty(entry.getKey(), entry.getValue());
     }
+
     String authType = props.getProperty(AUTH_TYPE);
     if (authType.equals(PseudoAuthenticationHandler.TYPE)) {
       props.setProperty(AUTH_TYPE,
@@ -72,7 +81,7 @@ public class KMSAuthenticationFilter
           KerberosDelegationTokenAuthenticationHandler.class.getName());
     }
     props.setProperty(DelegationTokenAuthenticationHandler.TOKEN_KIND,
-        KMSClientProvider.TOKEN_KIND_STR);
+        KMSDelegationToken.TOKEN_KIND_STR);
     return props;
   }
 
@@ -105,7 +114,19 @@ public class KMSAuthenticationFilter
     public void sendError(int sc, String msg) throws IOException {
       statusCode = sc;
       this.msg = msg;
-      super.sendError(sc, msg);
+
+      ServletResponse response = getResponse();
+
+      // After Jetty 9.4.21, sendError() no longer allows a custom message.
+      // use setStatusWithReason() to set a custom message.
+      if (response instanceof Response) {
+        ((Response) response).setStatusWithReason(sc, msg);
+      } else {
+        KMS.LOG.warn("The wrapped response object is instance of {}" +
+            ", not org.eclipse.jetty.server.Response. Can't set custom error " +
+            "message", response.getClass());
+      }
+      super.sendError(sc, HtmlQuoting.quoteHtmlChars(msg));
     }
 
     @Override
@@ -114,7 +135,19 @@ public class KMSAuthenticationFilter
       super.sendError(sc);
     }
 
+    /**
+     * Calls setStatus(int sc, String msg) on the wrapped
+     * {@link HttpServletResponseWrapper} object.
+     *
+     * @param sc the status code
+     * @param sm the status message
+     * @deprecated {@link HttpServletResponseWrapper#setStatus(int, String)} is
+     * deprecated. To set a status code use {@link #setStatus(int)}, to send an
+     * error with a description use {@link #sendError(int, String)}
+     */
     @Override
+    @Deprecated
+    @SuppressWarnings("deprecation")
     public void setStatus(int sc, String sm) {
       statusCode = sc;
       msg = sm;
@@ -145,9 +178,13 @@ public class KMSAuthenticationFilter
         requestURL.append("?").append(queryString);
       }
 
-      KMSWebApp.getKMSAudit().unauthenticated(
-          request.getRemoteHost(), method, requestURL.toString(),
-          kmsResponse.msg);
+      if (!method.equals("OPTIONS")) {
+        // an HTTP OPTIONS request is made as part of the SPNEGO authentication
+        // sequence. We do not need to audit log it, since it doesn't belong
+        // to KMS context. KMS server doesn't handle OPTIONS either.
+        KMSWebApp.getKMSAudit().unauthenticated(request.getRemoteHost(), method,
+            requestURL.toString(), kmsResponse.msg);
+      }
     }
   }
 

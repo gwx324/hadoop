@@ -37,8 +37,8 @@ import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 /**
  * Manage Incremental Block Reports (IBRs).
@@ -51,6 +51,11 @@ class IncrementalBlockReportManager {
   private static class PerStorageIBR {
     /** The blocks in this IBR. */
     final Map<Block, ReceivedDeletedBlockInfo> blocks = Maps.newHashMap();
+
+    private DataNodeMetrics dnMetrics;
+    PerStorageIBR(final DataNodeMetrics dnMetrics) {
+      this.dnMetrics = dnMetrics;
+    }
 
     /**
      * Remove the given block from this IBR
@@ -76,6 +81,25 @@ class IncrementalBlockReportManager {
     /** Put the block to this IBR. */
     void put(ReceivedDeletedBlockInfo rdbi) {
       blocks.put(rdbi.getBlock(), rdbi);
+      increaseBlocksCounter(rdbi);
+    }
+
+    private void increaseBlocksCounter(
+        final ReceivedDeletedBlockInfo receivedDeletedBlockInfo) {
+      switch (receivedDeletedBlockInfo.getStatus()) {
+      case RECEIVING_BLOCK:
+        dnMetrics.incrBlocksReceivingInPendingIBR();
+        break;
+      case RECEIVED_BLOCK:
+        dnMetrics.incrBlocksReceivedInPendingIBR();
+        break;
+      case DELETED_BLOCK:
+        dnMetrics.incrBlocksDeletedInPendingIBR();
+        break;
+      default:
+        break;
+      }
+      dnMetrics.incrBlocksInPendingIBR();
     }
 
     /**
@@ -114,10 +138,14 @@ class IncrementalBlockReportManager {
 
   /** The timestamp of the last IBR. */
   private volatile long lastIBR;
+  private DataNodeMetrics dnMetrics;
 
-  IncrementalBlockReportManager(final long ibrInterval) {
+  IncrementalBlockReportManager(
+      final long ibrInterval,
+      final DataNodeMetrics dnMetrics) {
     this.ibrInterval = ibrInterval;
     this.lastIBR = monotonicNow() - ibrInterval;
+    this.dnMetrics = dnMetrics;
   }
 
   boolean sendImmediately() {
@@ -147,6 +175,10 @@ class IncrementalBlockReportManager {
         reports.add(new StorageReceivedDeletedBlocks(entry.getKey(), rdbi));
       }
     }
+
+    /* set blocks to zero */
+    this.dnMetrics.resetBlocksInPendingIBR();
+
     readyToSend = false;
     return reports.toArray(new StorageReceivedDeletedBlocks[reports.size()]);
   }
@@ -162,7 +194,7 @@ class IncrementalBlockReportManager {
 
   /** Send IBRs to namenode. */
   void sendIBRs(DatanodeProtocol namenode, DatanodeRegistration registration,
-      String bpid, DataNodeMetrics metrics) throws IOException {
+      String bpid, String nnRpcLatencySuffix) throws IOException {
     // Generate a list of the pending reports for each storage under the lock
     final StorageReceivedDeletedBlocks[] reports = generateIBRs();
     if (reports.length == 0) {
@@ -180,14 +212,19 @@ class IncrementalBlockReportManager {
       namenode.blockReceivedAndDeleted(registration, bpid, reports);
       success = true;
     } finally {
-      metrics.addIncrementalBlockReport(monotonicNow() - startTime);
+
       if (success) {
+        dnMetrics.addIncrementalBlockReport(monotonicNow() - startTime,
+            nnRpcLatencySuffix);
         lastIBR = startTime;
       } else {
         // If we didn't succeed in sending the report, put all of the
         // blocks back onto our queue, but only in the case where we
         // didn't put something newer in the meantime.
         putMissing(reports);
+        LOG.warn("Failed to call blockReceivedAndDeleted: {}, nnId: {}"
+            + ", duration(ms): {}", Arrays.toString(reports),
+            nnRpcLatencySuffix, monotonicNow() - startTime);
       }
     }
   }
@@ -199,7 +236,7 @@ class IncrementalBlockReportManager {
       // This is the first time we are adding incremental BR state for
       // this storage so create a new map. This is required once per
       // storage, per service actor.
-      perStorage = new PerStorageIBR();
+      perStorage = new PerStorageIBR(dnMetrics);
       pendingIBRs.put(storage, perStorage);
     }
     return perStorage;

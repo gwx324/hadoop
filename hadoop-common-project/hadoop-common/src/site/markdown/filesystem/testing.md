@@ -28,7 +28,7 @@ remote server providing the filesystem.
 
 These filesystem bindings must be defined in an XML configuration file, usually
 `hadoop-common-project/hadoop-common/src/test/resources/contract-test-options.xml`.
-This file is excluded should not be checked in.
+This file is excluded and should not be checked in.
 
 ### ftp://
 
@@ -122,7 +122,7 @@ new contract class, then creating a new non-abstract test class for every test
 suite that you wish to test.
 
 1. Do not try and add these tests into Hadoop itself. They won't be added to
-the soutce tree. The tests must live with your own filesystem source.
+the source tree. The tests must live with your own filesystem source.
 1. Create a package in your own test source tree (usually) under `contract`,
 for the files and tests.
 1. Subclass `AbstractFSContract` for your own contract implementation.
@@ -195,21 +195,21 @@ equivalent. Furthermore, the build MUST be configured to never bundle this file 
 In addition, `src/test/resources/auth-keys.xml` will need to be created.  It can be a copy of `contract-test-options.xml`.
 The `AbstractFSContract` class automatically loads this resource file if present; specific keys for specific test cases can be added.
 
-As an example, here are what S3N test keys look like:
+As an example, here are what S3A test keys look like:
 
     <configuration>
       <property>
-        <name>fs.contract.test.fs.s3n</name>
-        <value>s3n://tests3contract</value>
+        <name>fs.contract.test.fs.s3a</name>
+        <value>s3a://tests3contract</value>
       </property>
 
       <property>
-        <name>fs.s3n.awsAccessKeyId</name>
+        <name>fs.s3a.access.key</name>
         <value>DONOTPCOMMITTHISKEYTOSCM</value>
       </property>
 
       <property>
-        <name>fs.s3n.awsSecretAccessKey</name>
+        <name>fs.s3a.secret.key</name>
         <value>DONOTEVERSHARETHISSECRETKEY!</value>
       </property>
     </configuration>

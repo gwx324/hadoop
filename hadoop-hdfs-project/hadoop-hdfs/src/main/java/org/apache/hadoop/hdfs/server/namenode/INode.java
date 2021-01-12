@@ -17,36 +17,38 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import java.io.PrintStream;
-import java.io.PrintWriter;
-import java.io.StringWriter;
-import java.util.List;
-import java.util.Map;
-
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.permission.PermissionStatus;
+import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockStoragePolicySuite;
-import org.apache.hadoop.hdfs.DFSUtil;
-import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockUnderConstructionFeature;
 import org.apache.hadoop.hdfs.server.namenode.INodeReference.DstReference;
+import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithCount;
 import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithName;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+import org.apache.hadoop.hdfs.server.namenode.visitor.NamespaceVisitor;
 import org.apache.hadoop.hdfs.util.Diff;
+import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.util.ChunkedArrayList;
 import org.apache.hadoop.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import java.io.PrintStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.util.List;
+import java.util.Map;
 
 /**
  * We keep an in-memory representation of the file/block hierarchy.
@@ -55,7 +57,7 @@ import com.google.common.base.Preconditions;
  */
 @InterfaceAudience.Private
 public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
-  public static final Log LOG = LogFactory.getLog(INode.class);
+  public static final Logger LOG = LoggerFactory.getLogger(INode.class);
 
   /** parent is either an {@link INodeDirectory} or an {@link INodeReference}.*/
   private INode parent = null;
@@ -75,7 +77,7 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
   }
 
   /** Get the {@link PermissionStatus} */
-  abstract PermissionStatus getPermissionStatus(int snapshotId);
+  public abstract PermissionStatus getPermissionStatus(int snapshotId);
 
   /** The same as getPermissionStatus(null). */
   final PermissionStatus getPermissionStatus() {
@@ -221,6 +223,27 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
    */
   public INodeAttributes getSnapshotINode(final int snapshotId) {
     return this;
+  }
+
+  /** Is this inode in the current state? */
+  public boolean isInCurrentState() {
+    if (isRoot()) {
+      return true;
+    }
+    final INodeDirectory parentDir = getParent();
+    if (parentDir == null) {
+      return false; // this inode is only referenced in snapshots
+    }
+    if (!parentDir.isInCurrentState()) {
+      return false;
+    }
+    final INode child = parentDir.getChild(getLocalNameBytes(),
+            Snapshot.CURRENT_STATE_ID);
+    if (this == child) {
+      return true;
+    }
+    return child != null && child.isReference() &&
+        this.equals(child.asReference().getReferredINode());
   }
 
   /** Is this inode in the latest snapshot? */
@@ -418,7 +441,8 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
   public abstract void destroyAndCollectBlocks(ReclaimContext reclaimContext);
 
   /** Compute {@link ContentSummary}. Blocking call */
-  public final ContentSummary computeContentSummary(BlockStoragePolicySuite bsps) {
+  public final ContentSummary computeContentSummary(
+      BlockStoragePolicySuite bsps) throws AccessControlException {
     return computeAndConvertContentSummary(Snapshot.CURRENT_STATE_ID,
         new ContentSummaryComputationContext(bsps));
   }
@@ -427,9 +451,10 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
    * Compute {@link ContentSummary}. 
    */
   public final ContentSummary computeAndConvertContentSummary(int snapshotId,
-      ContentSummaryComputationContext summary) {
-    ContentCounts counts = computeContentSummary(snapshotId, summary)
-        .getCounts();
+      ContentSummaryComputationContext summary) throws AccessControlException {
+    computeContentSummary(snapshotId, summary);
+    final ContentCounts counts = summary.getCounts();
+    final ContentCounts snapshotCounts = summary.getSnapshotCounts();
     final QuotaCounts q = getQuotaCounts();
     return new ContentSummary.Builder().
         length(counts.getLength()).
@@ -440,6 +465,11 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
         spaceQuota(q.getStorageSpace()).
         typeConsumed(counts.getTypeSpaces()).
         typeQuota(q.getTypeSpaces().asArray()).
+        snapshotLength(snapshotCounts.getLength()).
+        snapshotFileCount(snapshotCounts.getFileCount()).
+        snapshotDirectoryCount(snapshotCounts.getDirectoryCount()).
+        snapshotSpaceConsumed(snapshotCounts.getStoragespace()).
+        erasureCodingPolicy(summary.getErasureCodingPolicyName(this)).
         build();
   }
 
@@ -455,26 +485,16 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
    * @return The same objects as summary.
    */
   public abstract ContentSummaryComputationContext computeContentSummary(
-      int snapshotId, ContentSummaryComputationContext summary);
+      int snapshotId, ContentSummaryComputationContext summary)
+      throws AccessControlException;
 
 
   /**
    * Check and add namespace/storagespace/storagetype consumed to itself and the ancestors.
-   * @throws QuotaExceededException if quote is violated.
    */
-  public void addSpaceConsumed(QuotaCounts counts, boolean verify)
-    throws QuotaExceededException {
-    addSpaceConsumed2Parent(counts, verify);
-  }
-
-  /**
-   * Check and add namespace/storagespace/storagetype consumed to itself and the ancestors.
-   * @throws QuotaExceededException if quote is violated.
-   */
-  void addSpaceConsumed2Parent(QuotaCounts counts, boolean verify)
-    throws QuotaExceededException {
+  public void addSpaceConsumed(QuotaCounts counts) {
     if (parent != null) {
-      parent.addSpaceConsumed(counts, verify);
+      parent.addSpaceConsumed(counts);
     }
   }
 
@@ -525,8 +545,8 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
    * 2. For a {@link WithName} node, since the node must be in a snapshot, we 
    * only count the quota usage for those nodes that still existed at the 
    * creation time of the snapshot associated with the {@link WithName} node.
-   * We do not count in the size of the diff list.  
-   * <pre>
+   * We do not count in the size of the diff list.
+   * </pre>
    *
    * @param bsps Block storage policy suite to calculate intended storage type usage
    * @param blockStoragePolicyId block storage policy id of the current INode
@@ -590,6 +610,18 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
     return DFSUtil.bytes2String(path);
   }
 
+  public boolean isDeleted() {
+    INode pInode = this;
+    while (pInode != null && !pInode.isRoot()) {
+      pInode = pInode.getParent();
+    }
+    if (pInode == null) {
+      return true;
+    } else {
+      return !pInode.isRoot();
+    }
+  }
+
   public byte[][] getPathComponents() {
     int n = 0;
     for (INode inode = this; inode != null; inode = inode.getParent()) {
@@ -630,8 +662,14 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
   }
 
   @VisibleForTesting
+  public String getFullPathAndObjectString() {
+    return getFullPathName() + "(" + getId() + ", " + getObjectString() + ")";
+  }
+
+  @VisibleForTesting
   public String toDetailString() {
-    return toString() + "(" + getObjectString() + "), " + getParentString();
+    return toString() + "(" + getId() + ", " + getObjectString()
+        + ", " + getParentString() + ")";
   }
 
   /** @return the parent directory */
@@ -646,6 +684,18 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
    */
   public INodeReference getParentReference() {
     return parent == null || !parent.isReference()? null: (INodeReference)parent;
+  }
+
+  /**
+   * @return true if this is a reference and the reference count is 1;
+   *         otherwise, return false.
+   */
+  public boolean isLastReference() {
+    final INodeReference ref = getParentReference();
+    if (!(ref instanceof WithCount)) {
+      return false;
+    }
+    return ((WithCount)ref).getReferenceCount() == 1;
   }
 
   /** Set parent directory */
@@ -715,8 +765,11 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
   /**
    * Set last access time of inode.
    */
-  public final INode setAccessTime(long accessTime, int latestSnapshotId) {
-    recordModification(latestSnapshotId);
+  public final INode setAccessTime(long accessTime, int latestSnapshotId,
+      boolean skipCaptureAccessTimeOnlyChangeInSnapshot) {
+    if (!skipCaptureAccessTimeOnlyChangeInSnapshot) {
+      recordModification(latestSnapshotId);
+    }
     setAccessTime(accessTime);
     return this;
   }
@@ -771,8 +824,17 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
     return StringUtils.split(path, Path.SEPARATOR_CHAR);
   }
 
-  private static void checkAbsolutePath(final String path) {
-    if (path == null || !path.startsWith(Path.SEPARATOR)) {
+  /**
+   * Verifies if the path informed is a valid absolute path.
+   * @param path the absolute path to validate.
+   * @return true if the path is valid.
+   */
+  static boolean isValidAbsolutePath(final String path){
+    return path != null && path.startsWith(Path.SEPARATOR);
+  }
+
+  static void checkAbsolutePath(final String path) {
+    if (!isValidAbsolutePath(path)) {
       throw new AssertionError("Absolute path required, but got '"
           + path + "'");
     }
@@ -1037,6 +1099,17 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
       assert toDelete != null : "toDelete is null";
       toDelete.delete();
       toDeleteList.add(toDelete);
+      // If the file is being truncated
+      // the copy-on-truncate block should also be collected for deletion
+      BlockUnderConstructionFeature uc = toDelete.getUnderConstructionFeature();
+      if(uc == null) {
+        return;
+      }
+      BlockInfo truncateBlock = uc.getTruncateBlock();
+      if(truncateBlock == null || truncateBlock.equals(toDelete)) {
+        return;
+      }
+      addDeleteBlock(truncateBlock);
     }
 
     public void addUpdateReplicationFactor(BlockInfo block, short targetRepl) {
@@ -1049,6 +1122,14 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
     public void clear() {
       toDeleteList.clear();
     }
+  }
+
+  /** Accept a visitor to visit this {@link INode}. */
+  public void accept(NamespaceVisitor visitor, int snapshot) {
+    final Class<?> clazz = visitor != null? visitor.getClass()
+        : NamespaceVisitor.class;
+    throw new UnsupportedOperationException(getClass().getSimpleName()
+        + " does not support " + clazz.getSimpleName());
   }
 
   /** 

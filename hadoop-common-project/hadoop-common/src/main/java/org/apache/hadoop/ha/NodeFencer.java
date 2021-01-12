@@ -22,15 +22,15 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.util.ReflectionUtils;
 
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class parses the configured list of fencing methods, and
@@ -44,7 +44,7 @@ import com.google.common.collect.Lists;
  * <code>com.example.foo.MyMethod</code>
  * The class provided must implement the {@link FenceMethod} interface.
  * The fencing methods that ship with Hadoop may also be referred to
- * by shortened names:<p>
+ * by shortened names:<br>
  * <ul>
  * <li><code>shell(/path/to/some/script.sh args...)</code></li>
  * <li><code>sshfence(...)</code> (see {@link SshFenceByTcpPort})
@@ -61,7 +61,7 @@ public class NodeFencer {
   private static final Pattern HASH_COMMENT_RE =
     Pattern.compile("#.*$");
 
-  private static final Log LOG = LogFactory.getLog(NodeFencer.class);
+  private static final Logger LOG = LoggerFactory.getLogger(NodeFencer.class);
 
   /**
    * Standard fencing methods included with Hadoop.
@@ -69,7 +69,8 @@ public class NodeFencer {
   private static final Map<String, Class<? extends FenceMethod>> STANDARD_METHODS =
     ImmutableMap.<String, Class<? extends FenceMethod>>of(
         "shell", ShellCommandFencer.class,
-        "sshfence", SshFenceByTcpPort.class);
+        "sshfence", SshFenceByTcpPort.class,
+        "powershell", PowerShellFencer.class);
   
   private final List<FenceMethodWithArg> methods;
   
@@ -88,15 +89,32 @@ public class NodeFencer {
   }
 
   public boolean fence(HAServiceTarget fromSvc) {
+    return fence(fromSvc, null);
+  }
+
+  public boolean fence(HAServiceTarget fromSvc, HAServiceTarget toSvc) {
     LOG.info("====== Beginning Service Fencing Process... ======");
     int i = 0;
     for (FenceMethodWithArg method : methods) {
       LOG.info("Trying method " + (++i) + "/" + methods.size() +": " + method);
       
       try {
-        if (method.method.tryFence(fromSvc, method.arg)) {
-          LOG.info("====== Fencing successful by method " + method + " ======");
-          return true;
+        // only true when target node is given, AND fencing on it failed
+        boolean toSvcFencingFailed = false;
+        // if target is given, try to fence on target first. Only if fencing
+        // on target succeeded, do fencing on source node.
+        if (toSvc != null) {
+          toSvcFencingFailed = !method.method.tryFence(toSvc, method.arg);
+        }
+        if (toSvcFencingFailed) {
+          LOG.error("====== Fencing on target failed, skipping fencing "
+              + "on source ======");
+        } else {
+          if (method.method.tryFence(fromSvc, method.arg)) {
+            LOG.info("====== Fencing successful by method "
+                + method + " ======");
+            return true;
+          }
         }
       } catch (BadFencingConfigurationException e) {
         LOG.error("Fencing method " + method + " misconfigured", e);

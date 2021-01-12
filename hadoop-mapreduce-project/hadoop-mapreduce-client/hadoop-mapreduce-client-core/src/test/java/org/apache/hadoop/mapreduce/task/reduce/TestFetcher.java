@@ -25,16 +25,14 @@ import java.net.HttpURLConnection;
 import org.apache.hadoop.fs.ChecksumException;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapred.MapOutputFile;
 import org.apache.hadoop.mapreduce.MRJobConfig;
-import org.apache.hadoop.mapreduce.TaskID;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.rules.TestName;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.*;
-import static org.mockito.Matchers.*;
 import static org.mockito.Mockito.*;
 
 import java.io.ByteArrayInputStream;
@@ -48,8 +46,7 @@ import java.util.ArrayList;
 
 import javax.crypto.SecretKey;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.io.ReadaheadPool;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.Counters;
 import org.apache.hadoop.mapred.IFileInputStream;
@@ -64,14 +61,14 @@ import org.apache.hadoop.util.Time;
 import org.junit.Test;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
-
-import com.nimbusds.jose.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Test that the Fetcher does what we expect it to.
  */
 public class TestFetcher {
-  private static final Log LOG = LogFactory.getLog(TestFetcher.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestFetcher.class);
   JobConf job = null;
   JobConf jobWithRetry = null;
   TaskAttemptID id = null;
@@ -96,6 +93,8 @@ public class TestFetcher {
   @SuppressWarnings("unchecked") // mocked generics
   public void setup() {
     LOG.info(">>>> " + name.getMethodName());
+    // to avoid threading issues with JUnit 4.13+
+    ReadaheadPool.resetInstance();
     job = new JobConf();
     job.setBoolean(MRJobConfig.SHUFFLE_FETCH_RETRY_ENABLED, false);
     jobWithRetry = new JobConf();
@@ -173,6 +172,27 @@ public class TestFetcher {
     verify(ss).copyFailed(map1ID, host, false, false);
     verify(ss).copyFailed(map2ID, host, false, false);
     
+    verify(ss).putBackKnownMapOutput(any(MapHost.class), eq(map1ID));
+    verify(ss).putBackKnownMapOutput(any(MapHost.class), eq(map2ID));
+  }
+
+  @Test
+  public void testCopyFromHostConnectionRejected() throws Exception {
+    when(connection.getResponseCode())
+        .thenReturn(Fetcher.TOO_MANY_REQ_STATUS_CODE);
+
+    Fetcher<Text, Text> fetcher = new FakeFetcher<>(job, id, ss, mm, r, metrics,
+        except, key, connection);
+    fetcher.copyFromHost(host);
+
+    assertThat(ss.hostFailureCount(host.getHostName()))
+        .withFailMessage("No host failure is expected.").isEqualTo(0);
+    assertThat(ss.fetchFailureCount(map1ID))
+        .withFailMessage("No fetch failure is expected.").isEqualTo(0);
+    assertThat(ss.fetchFailureCount(map2ID))
+        .withFailMessage("No fetch failure is expected.").isEqualTo(0);
+
+    verify(ss).penalize(eq(host), anyLong());
     verify(ss).putBackKnownMapOutput(any(MapHost.class), eq(map1ID));
     verify(ss).putBackKnownMapOutput(any(MapHost.class), eq(map2ID));
   }
@@ -453,7 +473,10 @@ public class TestFetcher {
 
     underTest.copyFromHost(host);
     verify(allErrs).increment(1);
-    verify(ss).copyFailed(map1ID, host, false, false);
+    verify(ss, times(1)).copyFailed(map1ID, host, false, false);
+    verify(ss, times(1)).copyFailed(map2ID, host, false, false);
+    verify(ss, times(1)).putBackKnownMapOutput(any(MapHost.class), eq(map1ID));
+    verify(ss, times(1)).putBackKnownMapOutput(any(MapHost.class), eq(map2ID));
   }
 
   @Test

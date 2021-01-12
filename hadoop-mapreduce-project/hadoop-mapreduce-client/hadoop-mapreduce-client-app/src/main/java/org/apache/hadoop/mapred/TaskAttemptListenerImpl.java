@@ -22,12 +22,12 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.ipc.ProtocolSignature;
@@ -38,6 +38,8 @@ import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TypeConverter;
 import org.apache.hadoop.mapreduce.checkpoint.TaskCheckpointID;
 import org.apache.hadoop.mapreduce.security.token.JobTokenSecretManager;
+import org.apache.hadoop.mapreduce.util.MRJobConfUtil;
+import org.apache.hadoop.mapreduce.v2.api.records.TaskAttemptId;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskId;
 import org.apache.hadoop.mapreduce.v2.app.AppContext;
 import org.apache.hadoop.mapreduce.v2.app.TaskAttemptListener;
@@ -47,6 +49,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.Task;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptDiagnosticsUpdateEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptEventType;
+import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptFailEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptStatusUpdateEvent.TaskAttemptStatus;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptStatusUpdateEvent;
 import org.apache.hadoop.mapreduce.v2.app.rm.RMHeartbeatHandler;
@@ -56,7 +59,12 @@ import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.authorize.PolicyProvider;
 import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.util.StringInterner;
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * This class is responsible for talking to the task umblical.
@@ -66,13 +74,13 @@ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
  * This class HAS to be in this package to access package private 
  * methods/classes.
  */
-@SuppressWarnings({"unchecked"})
 public class TaskAttemptListenerImpl extends CompositeService 
     implements TaskUmbilicalProtocol, TaskAttemptListener {
 
   private static final JvmTask TASK_FOR_INVALID_JVM = new JvmTask(null, true);
 
-  private static final Log LOG = LogFactory.getLog(TaskAttemptListenerImpl.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TaskAttemptListenerImpl.class);
 
   private AppContext context;
   private Server server;
@@ -83,6 +91,17 @@ public class TaskAttemptListenerImpl extends CompositeService
   private ConcurrentMap<WrappedJvmID, org.apache.hadoop.mapred.Task>
     jvmIDToActiveAttemptMap
       = new ConcurrentHashMap<WrappedJvmID, org.apache.hadoop.mapred.Task>();
+
+  private ConcurrentMap<TaskAttemptId,
+      AtomicReference<TaskAttemptStatus>> attemptIdToStatus
+        = new ConcurrentHashMap<>();
+
+  /**
+   * A Map to keep track of the history of logging each task attempt.
+   */
+  private ConcurrentHashMap<TaskAttemptID, TaskProgressLogPair>
+      taskAttemptLogProgressStamps = new ConcurrentHashMap<>();
+
   private Set<WrappedJvmID> launchedJVMs = Collections
       .newSetFromMap(new ConcurrentHashMap<WrappedJvmID, Boolean>());
 
@@ -112,10 +131,12 @@ public class TaskAttemptListenerImpl extends CompositeService
 
   @Override
   protected void serviceInit(Configuration conf) throws Exception {
-   registerHeartbeatHandler(conf);
-   commitWindowMs = conf.getLong(MRJobConfig.MR_AM_COMMIT_WINDOW_MS,
-       MRJobConfig.DEFAULT_MR_AM_COMMIT_WINDOW_MS);
-   super.serviceInit(conf);
+    registerHeartbeatHandler(conf);
+    commitWindowMs = conf.getLong(MRJobConfig.MR_AM_COMMIT_WINDOW_MS,
+        MRJobConfig.DEFAULT_MR_AM_COMMIT_WINDOW_MS);
+    // initialize the delta threshold for logging the task progress.
+    MRJobConfUtil.setTaskLogProgressDeltaThresholds(conf);
+    super.serviceInit(conf);
   }
 
   @Override
@@ -134,15 +155,14 @@ public class TaskAttemptListenerImpl extends CompositeService
   protected void startRpcServer() {
     Configuration conf = getConfig();
     try {
-      server = 
-          new RPC.Builder(conf).setProtocol(TaskUmbilicalProtocol.class)
-            .setInstance(this).setBindAddress("0.0.0.0")
-            .setPort(0).setNumHandlers(
-                conf.getInt(MRJobConfig.MR_AM_TASK_LISTENER_THREAD_COUNT, 
-                    MRJobConfig.DEFAULT_MR_AM_TASK_LISTENER_THREAD_COUNT))
-                    .setVerbose(false).setSecretManager(jobTokenSecretManager)
-                    .build();
-      
+      server = new RPC.Builder(conf).setProtocol(TaskUmbilicalProtocol.class)
+          .setInstance(this).setBindAddress("0.0.0.0")
+          .setPortRangeConfig(MRJobConfig.MR_AM_JOB_CLIENT_PORT_RANGE)
+          .setNumHandlers(
+          conf.getInt(MRJobConfig.MR_AM_TASK_LISTENER_THREAD_COUNT, 
+          MRJobConfig.DEFAULT_MR_AM_TASK_LISTENER_THREAD_COUNT))
+          .setVerbose(false).setSecretManager(jobTokenSecretManager).build();
+
       // Enable service authorization?
       if (conf.getBoolean(
           CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, 
@@ -260,7 +280,7 @@ public class TaskAttemptListenerImpl extends CompositeService
 
   @Override
   public void done(TaskAttemptID taskAttemptID) throws IOException {
-    LOG.info("Done acknowledgement from " + taskAttemptID.toString());
+    LOG.info("Done acknowledgment from " + taskAttemptID.toString());
 
     org.apache.hadoop.mapreduce.v2.api.records.TaskAttemptId attemptID =
         TypeConverter.toYarn(taskAttemptID);
@@ -272,10 +292,10 @@ public class TaskAttemptListenerImpl extends CompositeService
   }
 
   @Override
-  public void fatalError(TaskAttemptID taskAttemptID, String msg)
+  public void fatalError(TaskAttemptID taskAttemptID, String msg, boolean fastFail)
       throws IOException {
     // This happens only in Child and in the Task.
-    LOG.fatal("Task: " + taskAttemptID + " - exited : " + msg);
+    LOG.error("Task: " + taskAttemptID + " - exited : " + msg);
     reportDiagnosticInfo(taskAttemptID, "Error: " + msg);
 
     org.apache.hadoop.mapreduce.v2.api.records.TaskAttemptId attemptID =
@@ -285,14 +305,14 @@ public class TaskAttemptListenerImpl extends CompositeService
     preemptionPolicy.handleFailedContainer(attemptID);
 
     context.getEventHandler().handle(
-        new TaskAttemptEvent(attemptID, TaskAttemptEventType.TA_FAILMSG));
+        new TaskAttemptFailEvent(attemptID, fastFail));
   }
 
   @Override
   public void fsError(TaskAttemptID taskAttemptID, String message)
       throws IOException {
     // This happens only in Child.
-    LOG.fatal("Task: " + taskAttemptID + " - failed due to FSError: "
+    LOG.error("Task: " + taskAttemptID + " - failed due to FSError: "
         + message);
     reportDiagnosticInfo(taskAttemptID, "FSError: " + message);
 
@@ -303,7 +323,7 @@ public class TaskAttemptListenerImpl extends CompositeService
     preemptionPolicy.handleFailedContainer(attemptID);
 
     context.getEventHandler().handle(
-        new TaskAttemptEvent(attemptID, TaskAttemptEventType.TA_FAILMSG));
+        new TaskAttemptFailEvent(attemptID));
   }
 
   @Override
@@ -362,6 +382,20 @@ public class TaskAttemptListenerImpl extends CompositeService
     AMFeedback feedback = new AMFeedback();
     feedback.setTaskFound(true);
 
+    AtomicReference<TaskAttemptStatus> lastStatusRef =
+        attemptIdToStatus.get(yarnAttemptID);
+    if (lastStatusRef == null) {
+      // The task is not known, but it could be in the process of tearing
+      // down gracefully or receiving a thread dump signal. Tolerate unknown
+      // tasks as long as they have unregistered recently.
+      if (!taskHeartbeatHandler.hasRecentlyUnregistered(yarnAttemptID)) {
+        LOG.error("Status update was called with illegal TaskAttemptId: "
+            + yarnAttemptID);
+        feedback.setTaskFound(false);
+      }
+      return feedback;
+    }
+
     // Propagating preemption to the task if TASK_PREEMPTION is enabled
     if (getConfig().getBoolean(MRJobConfig.TASK_PREEMPTION, false)
         && preemptionPolicy.isPreempted(yarnAttemptID)) {
@@ -386,8 +420,10 @@ public class TaskAttemptListenerImpl extends CompositeService
     taskAttemptStatus.id = yarnAttemptID;
     // Task sends the updated progress to the TT.
     taskAttemptStatus.progress = taskStatus.getProgress();
-    LOG.info("Progress of TaskAttempt " + taskAttemptID + " is : "
-        + taskStatus.getProgress());
+    // log the new progress
+    taskAttemptLogProgressStamps.computeIfAbsent(taskAttemptID,
+        k -> new TaskProgressLogPair(taskAttemptID))
+        .update(taskStatus.getProgress());
     // Task sends the updated state-string to the TT.
     taskAttemptStatus.stateString = taskStatus.getStateString();
     // Task sends the updated phase to the TT.
@@ -437,9 +473,8 @@ public class TaskAttemptListenerImpl extends CompositeService
 //    // isn't ever changed by the Task itself.
 //    taskStatus.getIncludeCounters();
 
-    context.getEventHandler().handle(
-        new TaskAttemptStatusUpdateEvent(taskAttemptStatus.id,
-            taskAttemptStatus));
+    coalesceStatusUpdate(yarnAttemptID, taskAttemptStatus, lastStatusRef);
+
     return feedback;
   }
 
@@ -520,6 +555,8 @@ public class TaskAttemptListenerImpl extends CompositeService
     launchedJVMs.add(jvmId);
 
     taskHeartbeatHandler.register(attemptID);
+
+    attemptIdToStatus.put(attemptID, new AtomicReference<>());
   }
 
   @Override
@@ -541,6 +578,8 @@ public class TaskAttemptListenerImpl extends CompositeService
 
     //unregister this attempt
     taskHeartbeatHandler.unregister(attemptID);
+
+    attemptIdToStatus.remove(attemptID);
   }
 
   @Override
@@ -563,4 +602,115 @@ public class TaskAttemptListenerImpl extends CompositeService
     preemptionPolicy.setCheckpointID(tid, cid);
   }
 
+  private void coalesceStatusUpdate(TaskAttemptId yarnAttemptID,
+      TaskAttemptStatus taskAttemptStatus,
+      AtomicReference<TaskAttemptStatus> lastStatusRef) {
+    List<TaskAttemptId> fetchFailedMaps = taskAttemptStatus.fetchFailedMaps;
+    TaskAttemptStatus lastStatus = null;
+    boolean done = false;
+    while (!done) {
+      lastStatus = lastStatusRef.get();
+      if (lastStatus != null && lastStatus.fetchFailedMaps != null) {
+        // merge fetchFailedMaps from the previous update
+        if (taskAttemptStatus.fetchFailedMaps == null) {
+          taskAttemptStatus.fetchFailedMaps = lastStatus.fetchFailedMaps;
+        } else {
+          taskAttemptStatus.fetchFailedMaps =
+              new ArrayList<>(lastStatus.fetchFailedMaps.size() +
+                  fetchFailedMaps.size());
+          taskAttemptStatus.fetchFailedMaps.addAll(
+              lastStatus.fetchFailedMaps);
+          taskAttemptStatus.fetchFailedMaps.addAll(
+              fetchFailedMaps);
+        }
+      }
+
+      // lastStatusRef may be changed by either the AsyncDispatcher when
+      // it processes the update, or by another IPC server handler
+      done = lastStatusRef.compareAndSet(lastStatus, taskAttemptStatus);
+      if (!done) {
+        LOG.info("TaskAttempt " + yarnAttemptID +
+            ": lastStatusRef changed by another thread, retrying...");
+        // let's revert taskAttemptStatus.fetchFailedMaps
+        taskAttemptStatus.fetchFailedMaps = fetchFailedMaps;
+      }
+    }
+
+    boolean asyncUpdatedNeeded = (lastStatus == null);
+    if (asyncUpdatedNeeded) {
+      context.getEventHandler().handle(
+          new TaskAttemptStatusUpdateEvent(taskAttemptStatus.id,
+              lastStatusRef));
+    }
+  }
+
+  @VisibleForTesting
+  ConcurrentMap<TaskAttemptId,
+      AtomicReference<TaskAttemptStatus>> getAttemptIdToStatus() {
+    return attemptIdToStatus;
+  }
+
+  /**
+   * Entity to keep track of the taskAttempt, last time it was logged,
+   * and the
+   * progress that has been logged.
+   */
+  class TaskProgressLogPair {
+
+    /**
+     * The taskAttemptId of that history record.
+     */
+    private final TaskAttemptID taskAttemptID;
+    /**
+     * Timestamp of last time the progress was logged.
+     */
+    private volatile long logTimeStamp;
+    /**
+     * Snapshot of the last logged progress.
+     */
+    private volatile double prevProgress;
+
+    TaskProgressLogPair(final TaskAttemptID attemptID) {
+      taskAttemptID = attemptID;
+      prevProgress = 0.0;
+      logTimeStamp = 0;
+    }
+
+    private void resetLog(final boolean doLog,
+        final float progress, final double processedProgress,
+        final long timestamp) {
+      if (doLog) {
+        prevProgress = processedProgress;
+        logTimeStamp = timestamp;
+        LOG.info("Progress of TaskAttempt " + taskAttemptID + " is : "
+            + progress);
+      } else {
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Progress of TaskAttempt " + taskAttemptID + " is : "
+              + progress);
+        }
+      }
+    }
+
+    public void update(final float progress) {
+      final double processedProgress =
+          MRJobConfUtil.convertTaskProgressToFactor(progress);
+      final double diffProgress = processedProgress - prevProgress;
+      final long currentTime = Time.monotonicNow();
+      boolean result =
+          (Double.compare(diffProgress,
+              MRJobConfUtil.getTaskProgressMinDeltaThreshold()) >= 0);
+      if (!result) {
+        // check if time has expired.
+        result = ((currentTime - logTimeStamp)
+            >= MRJobConfUtil.getTaskProgressWaitDeltaTimeThreshold());
+      }
+      // It is helpful to log the progress when it reaches 1.0F.
+      if (Float.compare(progress, 1.0f) == 0) {
+        result = true;
+        taskAttemptLogProgressStamps.remove(taskAttemptID);
+      }
+      resetLog(result, progress, processedProgress, currentTime);
+    }
+  }
 }

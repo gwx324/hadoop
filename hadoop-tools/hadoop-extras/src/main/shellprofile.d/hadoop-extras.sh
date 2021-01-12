@@ -18,7 +18,7 @@
 if ! declare -f hadoop_subcommand_distch >/dev/null 2>/dev/null; then
 
   if [[ "${HADOOP_SHELL_EXECNAME}" = hadoop ]]; then
-    hadoop_add_subcommand "distch" "distributed metadata changer"
+    hadoop_add_subcommand "distch" client "distributed metadata changer"
   fi
 
   # this can't be indented otherwise shelldocs won't get it
@@ -32,8 +32,6 @@ function hadoop_subcommand_distch
   # shellcheck disable=SC2034
   HADOOP_CLASSNAME=org.apache.hadoop.tools.DistCh
   hadoop_add_to_classpath_tools hadoop-extras
-  hadoop_debug "Appending HADOOP_CLIENT_OPTS onto HADOOP_OPTS"
-  HADOOP_OPTS="${HADOOP_OPTS} ${HADOOP_CLIENT_OPTS}"
 }
 
 fi

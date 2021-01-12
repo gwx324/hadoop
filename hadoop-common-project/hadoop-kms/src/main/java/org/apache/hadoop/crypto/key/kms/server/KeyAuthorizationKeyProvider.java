@@ -32,9 +32,9 @@ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Strings;
-import com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Strings;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
 
 /**
  * A {@link KeyProvider} proxy that checks whether the current user derived via
@@ -211,6 +211,17 @@ public class KeyAuthorizationKeyProvider extends KeyProviderCryptoExtension {
   }
 
   @Override
+  public void invalidateCache(String name) throws IOException {
+    writeLock.lock();
+    try {
+      doAccessCheck(name, KeyOpType.MANAGEMENT);
+      provider.invalidateCache(name);
+    } finally {
+      writeLock.unlock();
+    }
+  }
+
+  @Override
   public void warmUpEncryptedKeys(String... names) throws IOException {
     readLock.lock();
     try {
@@ -259,6 +270,38 @@ public class KeyAuthorizationKeyProvider extends KeyProviderCryptoExtension {
       doAccessCheck(
           encryptedKeyVersion.getEncryptionKeyName(), KeyOpType.DECRYPT_EEK);
       return provider.decryptEncryptedKey(encryptedKeyVersion);
+    } finally {
+      readLock.unlock();
+    }
+  }
+
+  @Override
+  public EncryptedKeyVersion reencryptEncryptedKey(EncryptedKeyVersion ekv)
+      throws IOException, GeneralSecurityException {
+    readLock.lock();
+    try {
+      verifyKeyVersionBelongsToKey(ekv);
+      doAccessCheck(ekv.getEncryptionKeyName(), KeyOpType.GENERATE_EEK);
+      return provider.reencryptEncryptedKey(ekv);
+    } finally {
+      readLock.unlock();
+    }
+  }
+
+  @Override
+  public void reencryptEncryptedKeys(List<EncryptedKeyVersion> ekvs)
+      throws IOException, GeneralSecurityException {
+    if (ekvs.isEmpty()) {
+      return;
+    }
+    readLock.lock();
+    try {
+      for (EncryptedKeyVersion ekv : ekvs) {
+        verifyKeyVersionBelongsToKey(ekv);
+      }
+      final String keyName = ekvs.get(0).getEncryptionKeyName();
+      doAccessCheck(keyName, KeyOpType.GENERATE_EEK);
+      provider.reencryptEncryptedKeys(ekvs);
     } finally {
       readLock.unlock();
     }
@@ -359,7 +402,7 @@ public class KeyAuthorizationKeyProvider extends KeyProviderCryptoExtension {
 
   @Override
   public String toString() {
-    return provider.toString();
+    return this.getClass().getName()+": "+provider.toString();
   }
 
 }

@@ -18,12 +18,12 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.allocator;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.yarn.api.records.Container;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AppSchedulingInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.activities.ActivitiesLogger;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.activities.ActivitiesManager;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.activities.ActivityDiagnosticConstant;
@@ -33,6 +33,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSAssign
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.SchedulingMode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerNode;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.CandidateNodeSet;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
@@ -42,9 +43,11 @@ import org.apache.hadoop.yarn.util.resource.Resources;
  * extensible.
  */
 public abstract class AbstractContainerAllocator {
-  private static final Log LOG = LogFactory.getLog(AbstractContainerAllocator.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(AbstractContainerAllocator.class);
 
   FiCaSchedulerApp application;
+  AppSchedulingInfo appInfo;
   final ResourceCalculator rc;
   final RMContext rmContext;
   ActivitiesManager activitiesManager;
@@ -58,6 +61,8 @@ public abstract class AbstractContainerAllocator {
       ResourceCalculator rc, RMContext rmContext,
       ActivitiesManager activitiesManager) {
     this.application = application;
+    this.appInfo =
+        application == null ? null : application.getAppSchedulingInfo();
     this.rc = rc;
     this.rmContext = rmContext;
     this.activitiesManager = activitiesManager;
@@ -77,75 +82,72 @@ public abstract class AbstractContainerAllocator {
     // Handle excess reservation
     assignment.setExcessReservation(result.getContainerToBeUnreserved());
 
+    assignment.setRequestLocalityType(result.requestLocalityType);
+
     // If we allocated something
     if (Resources.greaterThan(rc, clusterResource,
         result.getResourceToBeAllocated(), Resources.none())) {
       Resource allocatedResource = result.getResourceToBeAllocated();
-      Container updatedContainer = result.getUpdatedContainer();
+      RMContainer updatedContainer = result.getUpdatedContainer();
 
       assignment.setResource(allocatedResource);
       assignment.setType(result.getContainerNodeType());
 
       if (result.getAllocationState() == AllocationState.RESERVED) {
-        // This is a reserved container
-        LOG.info("Reserved container " + " application="
-            + application.getApplicationId() + " resource=" + allocatedResource
-            + " queue=" + this.toString() + " cluster=" + clusterResource);
+        if (LOG.isDebugEnabled()) {
+          // This is a reserved container
+          // Since re-reservation could happen again and again for already
+          // reserved containers. only do this in debug log.
+          LOG.debug("Reserved container " + " application=" + application
+              .getApplicationId() + " resource=" + allocatedResource + " queue="
+              + appInfo.getQueueName() + " cluster=" + clusterResource);
+        }
         assignment.getAssignmentInformation().addReservationDetails(
-            updatedContainer.getId(),
-            application.getCSLeafQueue().getQueuePath());
+            updatedContainer, application.getCSLeafQueue().getQueuePath());
         assignment.getAssignmentInformation().incrReservations();
         Resources.addTo(assignment.getAssignmentInformation().getReserved(),
             allocatedResource);
 
         if (rmContainer != null) {
-          ActivitiesLogger.APP.recordAppActivityWithAllocation(
-              activitiesManager, node, application, updatedContainer,
-              ActivityState.RE_RESERVED);
           ActivitiesLogger.APP.finishSkippedAppAllocationRecording(
               activitiesManager, application.getApplicationId(),
               ActivityState.SKIPPED, ActivityDiagnosticConstant.EMPTY);
         } else {
-          ActivitiesLogger.APP.recordAppActivityWithAllocation(
-              activitiesManager, node, application, updatedContainer,
-              ActivityState.RESERVED);
           ActivitiesLogger.APP.finishAllocatedAppAllocationRecording(
               activitiesManager, application.getApplicationId(),
-              updatedContainer.getId(), ActivityState.RESERVED,
+              updatedContainer.getContainerId(), ActivityState.RESERVED,
               ActivityDiagnosticConstant.EMPTY);
         }
       } else if (result.getAllocationState() == AllocationState.ALLOCATED){
         // This is a new container
         // Inform the ordering policy
-        LOG.info("assignedContainer" + " application attempt="
-            + application.getApplicationAttemptId() + " container="
-            + updatedContainer.getId() + " queue=" + this + " clusterResource="
-            + clusterResource + " type=" + assignment.getType());
-
-        application
-            .getCSLeafQueue()
-            .getOrderingPolicy()
-            .containerAllocated(application,
-                application.getRMContainer(updatedContainer.getId()));
+        LOG.info("assignedContainer" + " application attempt=" + application
+            .getApplicationAttemptId() + " container=" + updatedContainer
+            .getContainerId() + " queue=" + appInfo.getQueueName()
+            + " clusterResource=" + clusterResource
+            + " type=" + assignment.getType() + " requestedPartition="
+            + updatedContainer.getNodeLabelExpression());
 
         assignment.getAssignmentInformation().addAllocationDetails(
-            updatedContainer.getId(),
-            application.getCSLeafQueue().getQueuePath());
+            updatedContainer, application.getCSLeafQueue().getQueuePath());
         assignment.getAssignmentInformation().incrAllocations();
         Resources.addTo(assignment.getAssignmentInformation().getAllocated(),
             allocatedResource);
 
         if (rmContainer != null) {
           assignment.setFulfilledReservation(true);
+          assignment.setFulfilledReservedContainer(rmContainer);
         }
 
         ActivitiesLogger.APP.recordAppActivityWithAllocation(activitiesManager,
             node, application, updatedContainer, ActivityState.ALLOCATED);
         ActivitiesLogger.APP.finishAllocatedAppAllocationRecording(
             activitiesManager, application.getApplicationId(),
-            updatedContainer.getId(), ActivityState.ACCEPTED,
+            updatedContainer.getContainerId(), ActivityState.ALLOCATED,
             ActivityDiagnosticConstant.EMPTY);
 
+        // Update unformed resource
+        application.incUnconfirmedRes(allocatedResource);
       }
 
       assignment.setContainersToKill(result.getToKillContainers());
@@ -154,6 +156,9 @@ public abstract class AbstractContainerAllocator {
         assignment.setSkippedType(
             CSAssignment.SkippedType.QUEUE_LIMIT);
       }
+      ActivitiesLogger.APP.finishSkippedAppAllocationRecording(
+          activitiesManager, application.getApplicationId(),
+          ActivityState.SKIPPED, ActivityDiagnosticConstant.EMPTY);
     }
 
     return assignment;
@@ -170,8 +175,16 @@ public abstract class AbstractContainerAllocator {
    * <li>Do allocation: this will decide/create allocated/reserved
    * container, this will also update metrics</li>
    * </ul>
+   *
+   * @param clusterResource clusterResource
+   * @param candidates CandidateNodeSet
+   * @param schedulingMode scheduling mode (exclusive or nonexclusive)
+   * @param resourceLimits resourceLimits
+   * @param reservedContainer reservedContainer
+   * @return CSAssignemnt proposal
    */
   public abstract CSAssignment assignContainers(Resource clusterResource,
-      FiCaSchedulerNode node, SchedulingMode schedulingMode,
-      ResourceLimits resourceLimits, RMContainer reservedContainer);
+      CandidateNodeSet<FiCaSchedulerNode> candidates,
+      SchedulingMode schedulingMode, ResourceLimits resourceLimits,
+      RMContainer reservedContainer);
 }

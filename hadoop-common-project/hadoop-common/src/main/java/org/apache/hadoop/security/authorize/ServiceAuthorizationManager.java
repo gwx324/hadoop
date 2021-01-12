@@ -23,19 +23,18 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
-import org.apache.hadoop.security.KerberosInfo;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.MachineList;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * An authorization manager which handles service-level authorization
@@ -69,8 +68,9 @@ public class ServiceAuthorizationManager {
   public static final String SERVICE_AUTHORIZATION_CONFIG = 
     "hadoop.security.authorization";
   
-  public static final Log AUDITLOG =
-    LogFactory.getLog("SecurityLogger."+ServiceAuthorizationManager.class.getName());
+  public static final Logger AUDITLOG =
+      LoggerFactory.getLogger(
+          "SecurityLogger." + ServiceAuthorizationManager.class.getName());
 
   private static final String AUTHZ_SUCCESSFUL_FOR = "Authorization successful for ";
   private static final String AUTHZ_FAILED_FOR = "Authorization failed for ";
@@ -96,23 +96,23 @@ public class ServiceAuthorizationManager {
       throw new AuthorizationException("Protocol " + protocol + 
                                        " is not known.");
     }
-    
-    // get client principal key to verify (if available)
-    KerberosInfo krbInfo = SecurityUtil.getKerberosInfo(protocol, conf);
-    String clientPrincipal = null; 
-    if (krbInfo != null) {
-      String clientKey = krbInfo.clientPrincipal();
-      if (clientKey != null && !clientKey.isEmpty()) {
-        try {
-          clientPrincipal = SecurityUtil.getServerPrincipal(
-              conf.get(clientKey), addr);
-        } catch (IOException e) {
-          throw (AuthorizationException) new AuthorizationException(
-              "Can't figure out Kerberos principal name for connection from "
-                  + addr + " for user=" + user + " protocol=" + protocol)
-              .initCause(e);
+
+    String clientPrincipal = null;
+    if (UserGroupInformation.isSecurityEnabled()) {
+      // get client principal key to verify (if available)
+      clientPrincipal = SecurityUtil.getClientPrincipal(protocol, conf);
+      try {
+        if (clientPrincipal != null) {
+          clientPrincipal =
+              SecurityUtil.getServerPrincipal(clientPrincipal, addr);
         }
+      } catch (IOException e) {
+        throw (AuthorizationException) new AuthorizationException(
+            "Can't figure out Kerberos principal name for connection from "
+                + addr + " for user=" + user + " protocol=" + protocol)
+            .initCause(e);
       }
+
     }
     if((clientPrincipal != null && !clientPrincipal.equals(user.getUserName())) || 
        acls.length != 2  || !acls[0].isUserAllowed(user) || acls[1].isUserAllowed(user)) {

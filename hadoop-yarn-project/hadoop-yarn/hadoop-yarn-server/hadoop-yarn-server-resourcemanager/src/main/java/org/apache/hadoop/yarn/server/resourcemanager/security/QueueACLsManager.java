@@ -18,33 +18,27 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.security;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.QueueACL;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.security.AccessRequest;
 import org.apache.hadoop.yarn.security.YarnAuthorizationProvider;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
-
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
 import java.util.List;
 
-public class QueueACLsManager {
+@SuppressWarnings("checkstyle:visibilitymodifier")
+public abstract class QueueACLsManager {
 
-  private static final Log LOG = LogFactory.getLog(QueueACLsManager.class);
-
-  private ResourceScheduler scheduler;
-  private boolean isACLsEnable;
-  private YarnAuthorizationProvider authorizer;
+  ResourceScheduler scheduler;
+  boolean isACLsEnable;
+  YarnAuthorizationProvider authorizer;
 
   @VisibleForTesting
-  public QueueACLsManager() {
+  public QueueACLsManager(Configuration conf) {
     this(null, new Configuration());
   }
 
@@ -55,29 +49,42 @@ public class QueueACLsManager {
     this.authorizer = YarnAuthorizationProvider.getInstance(conf);
   }
 
-  public boolean checkAccess(UserGroupInformation callerUGI, QueueACL acl,
-      RMApp app, String remoteAddress, List<String> forwardedAddresses) {
-    if (!isACLsEnable) {
-      return true;
-    }
-
+  /**
+   * Get queue acl manager corresponding to the scheduler.
+   * @param scheduler the scheduler for which the queue acl manager is required
+   * @param conf
+   * @return {@link QueueACLsManager}
+   */
+  public static QueueACLsManager getQueueACLsManager(
+      ResourceScheduler scheduler, Configuration conf) {
     if (scheduler instanceof CapacityScheduler) {
-      CSQueue queue = ((CapacityScheduler) scheduler).getQueue(app.getQueue());
-      if (queue == null) {
-        // Application exists but the associated queue does not exist.
-        // This may be due to queue is removed after RM restarts. Here, we choose
-        // to allow users to be able to view the apps for removed queue.
-        LOG.error("Queue " + app.getQueue() + " does not exist for " + app
-            .getApplicationId());
-        return true;
-      }
-      return authorizer.checkPermission(
-          new AccessRequest(queue.getPrivilegedEntity(), callerUGI,
-              SchedulerUtils.toAccessType(acl),
-              app.getApplicationId().toString(), app.getName(),
-              remoteAddress, forwardedAddresses));
+      return new CapacityQueueACLsManager(scheduler, conf);
+    } else if (scheduler instanceof FairScheduler) {
+      return new FairQueueACLsManager(scheduler, conf);
     } else {
-      return scheduler.checkAccess(callerUGI, acl, app.getQueue());
+      return new GenericQueueACLsManager(scheduler, conf);
     }
   }
+
+  public abstract boolean checkAccess(UserGroupInformation callerUGI,
+      QueueACL acl, RMApp app, String remoteAddress,
+      List<String> forwardedAddresses);
+
+  /**
+   * Check access to a targetQueue in the case of a move of an application.
+   * The application cannot contain the destination queue since it has not
+   * been moved yet, thus need to pass it in separately.
+   *
+   * @param callerUGI the caller UGI
+   * @param acl the acl for the Queue to check
+   * @param app the application to move
+   * @param remoteAddress server ip address
+   * @param forwardedAddresses forwarded adresses
+   * @param targetQueue the name of the queue to move the application to
+   * @return true: if submission is allowed and queue exists,
+   *         false: in all other cases (also non existing target queue)
+   */
+  public abstract boolean checkAccess(UserGroupInformation callerUGI,
+      QueueACL acl, RMApp app, String remoteAddress,
+      List<String> forwardedAddresses, String targetQueue);
 }

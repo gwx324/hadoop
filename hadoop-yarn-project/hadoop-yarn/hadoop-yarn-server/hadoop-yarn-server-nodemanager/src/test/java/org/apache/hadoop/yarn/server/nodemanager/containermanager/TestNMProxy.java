@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.server.nodemanager.containermanager;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.SocketException;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -28,6 +29,7 @@ import org.apache.hadoop.io.retry.UnreliableInterface;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.test.LambdaTestUtils;
 import org.apache.hadoop.yarn.api.ContainerManagementProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesResponse;
@@ -56,40 +58,30 @@ public class TestNMProxy extends BaseContainerManagerTest {
   }
 
   int retryCount = 0;
-  boolean shouldThrowNMNotYetReadyException = false;
 
   @Before
   public void setUp() throws Exception {
     containerManager.start();
-    containerManager.setBlockNewContainerRequests(false);
   }
 
   @Override
   protected ContainerManagerImpl
       createContainerManager(DeletionService delSrvc) {
-    return new ContainerManagerImpl(context, exec, delSrvc, nodeStatusUpdater,
-      metrics, dirsHandler) {
+    return new ContainerManagerImpl(context, exec, delSrvc,
+        getNodeStatusUpdater(), metrics, dirsHandler) {
 
       @Override
       public StartContainersResponse startContainers(
           StartContainersRequest requests) throws YarnException, IOException {
         if (retryCount < 5) {
           retryCount++;
-          if (shouldThrowNMNotYetReadyException) {
-            // This causes super to throw an NMNotYetReadyException
-            containerManager.setBlockNewContainerRequests(true);
+          if (isRetryPolicyRetryForEver()) {
+            // Throw non network exception
+            throw new IOException(
+                new UnreliableInterface.UnreliableException());
           } else {
-            if (isRetryPolicyRetryForEver()) {
-              // Throw non network exception
-              throw new IOException(
-                  new UnreliableInterface.UnreliableException());
-            } else {
-              throw new java.net.ConnectException("start container exception");
-            }
+            throw new java.net.ConnectException("start container exception");
           }
-        } else {
-          // This stops super from throwing an NMNotYetReadyException
-          containerManager.setBlockNewContainerRequests(false);
         }
         return super.startContainers(requests);
       }
@@ -131,25 +123,16 @@ public class TestNMProxy extends BaseContainerManagerTest {
 
     ContainerManagementProtocol proxy = getNMProxy(conf);
 
-    retryCount = 0;
-    shouldThrowNMNotYetReadyException = false;
     proxy.startContainers(allRequests);
     Assert.assertEquals(5, retryCount);
 
     retryCount = 0;
-    shouldThrowNMNotYetReadyException = false;
     proxy.stopContainers(Records.newRecord(StopContainersRequest.class));
     Assert.assertEquals(5, retryCount);
 
     retryCount = 0;
-    shouldThrowNMNotYetReadyException = false;
     proxy.getContainerStatuses(Records
       .newRecord(GetContainerStatusesRequest.class));
-    Assert.assertEquals(5, retryCount);
-
-    retryCount = 0;
-    shouldThrowNMNotYetReadyException = true;
-    proxy.startContainers(allRequests);
     Assert.assertEquals(5, retryCount);
   }
 
@@ -162,7 +145,6 @@ public class TestNMProxy extends BaseContainerManagerTest {
 
     ContainerManagementProtocol proxy = getNMProxy(conf);
 
-    shouldThrowNMNotYetReadyException = false;
     retryCount = 0;
     proxy.startContainers(allRequests);
   }
@@ -181,15 +163,10 @@ public class TestNMProxy extends BaseContainerManagerTest {
         IPC_CLIENT_CONNECT_MAX_RETRIES_ON_SOCKET_TIMEOUTS_KEY, 100);
     // connect to some dummy address so that it can trigger
     // connection failure and RPC level retires.
-    newConf.set(YarnConfiguration.NM_ADDRESS, "1234");
+    newConf.set(YarnConfiguration.NM_ADDRESS, "127.0.0.1:1");
     ContainerManagementProtocol proxy = getNMProxy(newConf);
-    try {
-      proxy.startContainers(allRequests);
-      Assert.fail("should get socket exception");
-    } catch (IOException e) {
-      // socket exception should be thrown immediately, without RPC retries.
-      Assert.assertTrue(e instanceof java.net.SocketException);
-    }
+    LambdaTestUtils.intercept(SocketException.class,
+        () -> proxy.startContainers(allRequests));
   }
 
   private ContainerManagementProtocol getNMProxy(Configuration conf) {

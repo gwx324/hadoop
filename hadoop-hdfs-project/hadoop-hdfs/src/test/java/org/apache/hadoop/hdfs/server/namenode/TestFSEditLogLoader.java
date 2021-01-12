@@ -19,10 +19,13 @@ package org.apache.hadoop.hdfs.server.namenode;
 
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
 
 import java.io.BufferedInputStream;
 import java.io.File;
@@ -47,8 +50,10 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
+import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyState;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
@@ -57,16 +62,19 @@ import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogLoader.EditLogValidation;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.GenericTestUtils.LogCapturer;
 import org.apache.hadoop.test.PathUtils;
-import org.apache.log4j.Level;
+import org.apache.hadoop.util.FakeTimer;
+import org.slf4j.event.Level;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
-import com.google.common.collect.Maps;
-import com.google.common.io.Files;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.io.Files;
 
 @RunWith(Parameterized.class)
 public class TestFSEditLogLoader {
@@ -91,16 +99,17 @@ public class TestFSEditLogLoader {
   }
 
   static {
-    GenericTestUtils.setLogLevel(FSImage.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(FSEditLogLoader.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(FSImage.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(FSEditLogLoader.LOG, Level.TRACE);
   }
 
   private static final File TEST_DIR = PathUtils.getTestDir(TestFSEditLogLoader.class);
 
   private static final int NUM_DATA_NODES = 0;
+  private static final String FAKE_EDIT_STREAM_NAME = "FAKE_STREAM";
 
-  private static final ErasureCodingPolicy testECPolicy
-      = StripedFileTestUtil.TEST_EC_POLICY;
+  private final ErasureCodingPolicy testECPolicy
+      = StripedFileTestUtil.getDefaultECPolicy();
 
   @Test
   public void testDisplayRecentEditLogOpCodes() throws IOException {
@@ -157,7 +166,7 @@ public class TestFSEditLogLoader {
     // start a cluster 
     Configuration conf = getConf();
     // Replicate and heartbeat fast to shave a few seconds off test
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
 
     MiniDFSCluster cluster = null;
@@ -465,6 +474,7 @@ public class TestFSEditLogLoader {
       cluster.waitActive();
       DistributedFileSystem fs = cluster.getFileSystem();
       FSNamesystem fns = cluster.getNamesystem();
+      fs.enableErasureCodingPolicy(testECPolicy.getName());
 
       String testDir = "/ec";
       String testFile = "testfile_001";
@@ -474,13 +484,13 @@ public class TestFSEditLogLoader {
       long blkId = 1;
       long blkNumBytes = 1024;
       long timestamp = 1426222918;
-      short blockNum = StripedFileTestUtil.NUM_DATA_BLOCKS;
-      short parityNum = StripedFileTestUtil.NUM_PARITY_BLOCKS;
+      short blockNum = (short) testECPolicy.getNumDataUnits();
+      short parityNum = (short) testECPolicy.getNumParityUnits();
 
       //set the storage policy of the directory
       fs.mkdir(new Path(testDir), new FsPermission("755"));
       fs.getClient().getNamenode().setErasureCodingPolicy(
-          testDir, testECPolicy);
+          testDir, testECPolicy.getName());
 
       // Create a file with striped block
       Path p = new Path(testFilePath);
@@ -538,6 +548,7 @@ public class TestFSEditLogLoader {
       cluster.waitActive();
       DistributedFileSystem fs = cluster.getFileSystem();
       FSNamesystem fns = cluster.getNamesystem();
+      fs.enableErasureCodingPolicy(testECPolicy.getName());
 
       String testDir = "/ec";
       String testFile = "testfile_002";
@@ -547,13 +558,13 @@ public class TestFSEditLogLoader {
       long blkId = 1;
       long blkNumBytes = 1024;
       long timestamp = 1426222918;
-      short blockNum = StripedFileTestUtil.NUM_DATA_BLOCKS;
-      short parityNum = StripedFileTestUtil.NUM_PARITY_BLOCKS;
+      short blockNum = (short) testECPolicy.getNumDataUnits();
+      short parityNum = (short) testECPolicy.getNumParityUnits();
 
       //set the storage policy of the directory
       fs.mkdir(new Path(testDir), new FsPermission("755"));
       fs.getClient().getNamenode().setErasureCodingPolicy(
-          testDir, testECPolicy);
+          testDir, testECPolicy.getName());
 
       //create a file with striped blocks
       Path p = new Path(testFilePath);
@@ -710,4 +721,130 @@ public class TestFSEditLogLoader {
       }
     }
   }
+
+  @Test
+  public void testErasureCodingPolicyOperations() throws IOException {
+    // start a cluster
+    Configuration conf = new HdfsConfiguration();
+    final int blockSize = 16 * 1024;
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
+    MiniDFSCluster cluster = null;
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(9)
+          .build();
+      cluster.waitActive();
+      DistributedFileSystem fs = cluster.getFileSystem();
+
+      // 1. add new policy
+      ECSchema schema = new ECSchema("rs", 5, 3);
+      int cellSize = 2 * 1024;
+      ErasureCodingPolicy newPolicy =
+          new ErasureCodingPolicy(schema, cellSize, (byte) 0);
+      ErasureCodingPolicy[] policyArray = new ErasureCodingPolicy[]{newPolicy};
+      AddErasureCodingPolicyResponse[] responses =
+          fs.addErasureCodingPolicies(policyArray);
+      assertEquals(1, responses.length);
+      assertTrue(responses[0].isSucceed());
+      newPolicy = responses[0].getPolicy();
+
+      // Restart NameNode without saving namespace
+      cluster.restartNameNodes();
+      cluster.waitActive();
+
+      // check if new policy is reapplied through edit log
+      ErasureCodingPolicy ecPolicy =
+          ErasureCodingPolicyManager.getInstance().getByID(newPolicy.getId());
+      assertEquals(ErasureCodingPolicyState.DISABLED,
+          DFSTestUtil.getECPolicyState(ecPolicy));
+
+      // 2. enable policy
+      fs.enableErasureCodingPolicy(newPolicy.getName());
+      cluster.restartNameNodes();
+      cluster.waitActive();
+      ecPolicy =
+          ErasureCodingPolicyManager.getInstance().getByID(newPolicy.getId());
+      assertEquals(ErasureCodingPolicyState.ENABLED,
+          DFSTestUtil.getECPolicyState(ecPolicy));
+
+      // create a new file, use the policy
+      final Path dirPath = new Path("/striped");
+      final Path filePath = new Path(dirPath, "file");
+      final int fileLength = blockSize * newPolicy.getNumDataUnits();
+      fs.mkdirs(dirPath);
+      fs.setErasureCodingPolicy(dirPath, newPolicy.getName());
+      final byte[] bytes = StripedFileTestUtil.generateBytes(fileLength);
+      DFSTestUtil.writeFile(fs, filePath, bytes);
+
+      // 3. disable policy
+      fs.disableErasureCodingPolicy(newPolicy.getName());
+      cluster.restartNameNodes();
+      cluster.waitActive();
+      ecPolicy =
+          ErasureCodingPolicyManager.getInstance().getByID(newPolicy.getId());
+      assertEquals(ErasureCodingPolicyState.DISABLED,
+          DFSTestUtil.getECPolicyState(ecPolicy));
+      // read file
+      DFSTestUtil.readFileAsBytes(fs, filePath);
+
+      // 4. remove policy
+      fs.removeErasureCodingPolicy(newPolicy.getName());
+      cluster.restartNameNodes();
+      cluster.waitActive();
+      ecPolicy =
+          ErasureCodingPolicyManager.getInstance().getByID(newPolicy.getId());
+      assertEquals(ErasureCodingPolicyState.REMOVED,
+          DFSTestUtil.getECPolicyState(ecPolicy));
+      // read file
+      DFSTestUtil.readFileAsBytes(fs, filePath);
+
+      cluster.shutdown();
+      cluster = null;
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  @Test
+  public void setLoadFSEditLogThrottling() throws Exception {
+    FSNamesystem namesystem = mock(FSNamesystem.class);
+    namesystem.dir = mock(FSDirectory.class);
+
+    FakeTimer timer = new FakeTimer();
+    FSEditLogLoader loader = new FSEditLogLoader(namesystem, 0, timer);
+
+    LogCapturer capture = LogCapturer.captureLogs(FSImage.LOG);
+    loader.loadFSEdits(getFakeEditLogInputStream(1, 10), 1);
+    assertTrue(capture.getOutput().contains("Start loading edits file " +
+        FAKE_EDIT_STREAM_NAME));
+    assertTrue(capture.getOutput().contains("Loaded 1 edits file(s)"));
+    assertFalse(capture.getOutput().contains("suppressed"));
+
+    timer.advance(FSEditLogLoader.LOAD_EDIT_LOG_INTERVAL_MS / 2);
+    capture.clearOutput();
+    loader.loadFSEdits(getFakeEditLogInputStream(11, 20), 11);
+    assertFalse(capture.getOutput().contains("Start loading edits file"));
+    assertFalse(capture.getOutput().contains("edits file(s)"));
+
+    timer.advance(FSEditLogLoader.LOAD_EDIT_LOG_INTERVAL_MS);
+    capture.clearOutput();
+    loader.loadFSEdits(getFakeEditLogInputStream(21, 30), 21);
+    assertTrue(capture.getOutput().contains("Start loading edits file " +
+        FAKE_EDIT_STREAM_NAME));
+    assertTrue(capture.getOutput().contains("suppressed logging 1 times"));
+    assertTrue(capture.getOutput().contains("Loaded 2 edits file(s)"));
+    assertTrue(capture.getOutput().contains("total size 2.0"));
+  }
+
+  private EditLogInputStream getFakeEditLogInputStream(long startTx, long endTx)
+      throws IOException {
+    EditLogInputStream fakeStream = mock(EditLogInputStream.class);
+    when(fakeStream.getName()).thenReturn(FAKE_EDIT_STREAM_NAME);
+    when(fakeStream.getFirstTxId()).thenReturn(startTx);
+    when(fakeStream.getLastTxId()).thenReturn(endTx);
+    when(fakeStream.length()).thenReturn(1L);
+    return fakeStream;
+  }
+
 }

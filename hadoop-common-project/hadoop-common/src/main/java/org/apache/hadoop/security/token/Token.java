@@ -18,23 +18,24 @@
 
 package org.apache.hadoop.security.token;
 
-import com.google.common.collect.Maps;
-import com.google.protobuf.ByteString;
-import com.google.common.primitives.Bytes;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Bytes;
 
 import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.*;
-import org.apache.hadoop.security.proto.SecurityProtos.TokenProto;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.*;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.Map;
+import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.UUID;
 
@@ -44,7 +45,7 @@ import java.util.UUID;
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
 public class Token<T extends TokenIdentifier> implements Writable {
-  public static final Log LOG = LogFactory.getLog(Token.class);
+  public static final Logger LOG = LoggerFactory.getLogger(Token.class);
 
   private static Map<Text, Class<? extends TokenIdentifier>> tokenKindMap;
 
@@ -65,6 +66,14 @@ public class Token<T extends TokenIdentifier> implements Writable {
     identifier = id.getBytes();
     kind = id.getKind();
     service = new Text();
+  }
+
+  public void setID(byte[] bytes) {
+    identifier = bytes;
+  }
+
+  public void setPassword(byte[] newPassword) {
+    password = newPassword;
   }
 
   /**
@@ -107,32 +116,6 @@ public class Token<T extends TokenIdentifier> implements Writable {
   }
 
   /**
-   * Construct a Token from a TokenProto.
-   * @param tokenPB the TokenProto object
-   */
-  public Token(TokenProto tokenPB) {
-    this.identifier = tokenPB.getIdentifier().toByteArray();
-    this.password = tokenPB.getPassword().toByteArray();
-    this.kind = new Text(tokenPB.getKindBytes().toByteArray());
-    this.service = new Text(tokenPB.getServiceBytes().toByteArray());
-  }
-
-  /**
-   * Construct a TokenProto from this Token instance.
-   * @return a new TokenProto object holding copies of data in this instance
-   */
-  public TokenProto toTokenProto() {
-    return TokenProto.newBuilder().
-        setIdentifier(ByteString.copyFrom(this.getIdentifier())).
-        setPassword(ByteString.copyFrom(this.getPassword())).
-        setKindBytes(ByteString.copyFrom(
-            this.getKind().getBytes(), 0, this.getKind().getLength())).
-        setServiceBytes(ByteString.copyFrom(
-            this.getService().getBytes(), 0, this.getService().getLength())).
-        build();
-  }
-
-  /**
    * Get the token identifier's byte representation.
    * @return the token identifier's byte representation
    */
@@ -146,14 +129,25 @@ public class Token<T extends TokenIdentifier> implements Writable {
     synchronized (Token.class) {
       if (tokenKindMap == null) {
         tokenKindMap = Maps.newHashMap();
-        for (TokenIdentifier id : ServiceLoader.load(TokenIdentifier.class)) {
-          tokenKindMap.put(id.getKind(), id.getClass());
+        // start the service load process; it's only in the "next()" calls
+        // where implementations are loaded.
+        final Iterator<TokenIdentifier> tokenIdentifiers =
+            ServiceLoader.load(TokenIdentifier.class).iterator();
+        while (tokenIdentifiers.hasNext()) {
+          try {
+            TokenIdentifier id = tokenIdentifiers.next();
+            tokenKindMap.put(id.getKind(), id.getClass());
+          } catch (ServiceConfigurationError | LinkageError e) {
+            // failure to load a token implementation
+            // log at debug and continue.
+            LOG.debug("Failed to load token identifier implementation", e);
+          }
         }
       }
       cls = tokenKindMap.get(kind);
     }
     if (cls == null) {
-      LOG.debug("Cannot find class for token kind " + kind);
+      LOG.debug("Cannot find class for token kind {}", kind);
       return null;
     }
     return cls;
@@ -162,8 +156,9 @@ public class Token<T extends TokenIdentifier> implements Writable {
   /**
    * Get the token identifier object, or null if it could not be constructed
    * (because the class could not be loaded, for example).
-   * @return the token identifier, or null
-   * @throws IOException
+   * @return the token identifier, or null if there was no class found for it
+   * @throws IOException failure to unmarshall the data
+   * @throws RuntimeException if the token class could not be instantiated.
    */
   @SuppressWarnings("unchecked")
   public T decodeIdentifier() throws IOException {
@@ -223,22 +218,66 @@ public class Token<T extends TokenIdentifier> implements Writable {
   }
 
   /**
+   * Whether this is a private token.
+   * @return false always for non-private tokens
+   */
+  public boolean isPrivate() {
+    return false;
+  }
+
+  /**
+   * Whether this is a private clone of a public token.
+   * @param thePublicService the public service name
+   * @return false always for non-private tokens
+   */
+  public boolean isPrivateCloneOf(Text thePublicService) {
+    return false;
+  }
+
+  /**
+   * Create a private clone of a public token.
+   * @param newService the new service name
+   * @return a private token
+   */
+  public Token<T> privateClone(Text newService) {
+    return new PrivateToken<>(this, newService);
+  }
+
+  /**
    * Indicates whether the token is a clone.  Used by HA failover proxy
    * to indicate a token should not be visible to the user via
    * UGI.getCredentials()
    */
-  @InterfaceAudience.Private
-  @InterfaceStability.Unstable
-  public static class PrivateToken<T extends TokenIdentifier> extends Token<T> {
+  static class PrivateToken<T extends TokenIdentifier> extends Token<T> {
     final private Text publicService;
 
-    public PrivateToken(Token<T> token) {
-      super(token);
-      publicService = new Text(token.getService());
+    PrivateToken(Token<T> publicToken, Text newService) {
+      super(publicToken.identifier, publicToken.password, publicToken.kind,
+          newService);
+      assert !publicToken.isPrivate();
+      publicService = publicToken.service;
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Cloned private token {} from {}", this, publicToken);
+      }
     }
 
-    public Text getPublicService() {
-      return publicService;
+    /**
+     * Whether this is a private token.
+     * @return true always for private tokens
+     */
+    @Override
+    public boolean isPrivate() {
+      return true;
+    }
+
+    /**
+     * Whether this is a private clone of a public token.
+     * @param thePublicService the public service name
+     * @return true when the public service is the same as specified
+     */
+    @Override
+    public boolean isPrivateCloneOf(Text thePublicService) {
+      return publicService.equals(thePublicService);
     }
 
     @Override
@@ -314,6 +353,10 @@ public class Token<T extends TokenIdentifier> implements Writable {
    */
   private static void decodeWritable(Writable obj,
                                      String newValue) throws IOException {
+    if (newValue == null) {
+      throw new HadoopIllegalArgumentException(
+              "Invalid argument, newValue is null");
+    }
     Base64 decoder = new Base64(0, null, true);
     DataInputBuffer buf = new DataInputBuffer();
     byte[] decoded = decoder.decode(newValue);
@@ -393,11 +436,11 @@ public class Token<T extends TokenIdentifier> implements Writable {
   @Override
   public String toString() {
     StringBuilder buffer = new StringBuilder();
-    buffer.append("Kind: ");
-    buffer.append(kind.toString());
-    buffer.append(", Service: ");
-    buffer.append(service.toString());
-    buffer.append(", Ident: ");
+    buffer.append("Kind: ")
+        .append(kind.toString())
+        .append(", Service: ")
+        .append(service.toString())
+        .append(", Ident: ");
     identifierToString(buffer);
     return buffer.toString();
   }
@@ -416,14 +459,22 @@ public class Token<T extends TokenIdentifier> implements Writable {
     }
     renewer = TRIVIAL_RENEWER;
     synchronized (renewers) {
-      for (TokenRenewer canidate : renewers) {
-        if (canidate.handleKind(this.kind)) {
-          renewer = canidate;
-          return renewer;
+      Iterator<TokenRenewer> it = renewers.iterator();
+      while (it.hasNext()) {
+        try {
+          TokenRenewer candidate = it.next();
+          if (candidate.handleKind(this.kind)) {
+            renewer = candidate;
+            return renewer;
+          }
+        } catch (ServiceConfigurationError e) {
+          // failure to load a token implementation
+          // log at debug and continue.
+          LOG.debug("Failed to load token renewer implementation", e);
         }
       }
     }
-    LOG.warn("No TokenRenewer defined for token kind " + this.kind);
+    LOG.warn("No TokenRenewer defined for token kind {}", kind);
     return renewer;
   }
 
@@ -460,7 +511,7 @@ public class Token<T extends TokenIdentifier> implements Writable {
    * A trivial renewer for token kinds that aren't managed. Sub-classes need
    * to implement getKind for their token kind.
    */
-  @InterfaceAudience.LimitedPrivate({"HDFS", "MapReduce"})
+  @InterfaceAudience.Public
   @InterfaceStability.Evolving
   public static class TrivialRenewer extends TokenRenewer {
 

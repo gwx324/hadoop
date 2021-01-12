@@ -32,6 +32,7 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.protocol.SnapshotAccessControlException;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
@@ -39,35 +40,40 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
 import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 public class TestOfflineImageViewerWithStripedBlocks {
-  private static int dataBlocks = StripedFileTestUtil.NUM_DATA_BLOCKS;
-  private static int parityBlocks = StripedFileTestUtil.NUM_PARITY_BLOCKS;
+  private final ErasureCodingPolicy ecPolicy =
+      StripedFileTestUtil.getDefaultECPolicy();
+  private int dataBlocks = ecPolicy.getNumDataUnits();
+  private int parityBlocks = ecPolicy.getNumParityUnits();
 
   private static MiniDFSCluster cluster;
   private static DistributedFileSystem fs;
-  private static final int cellSize = StripedFileTestUtil.BLOCK_STRIPED_CELL_SIZE;
-  private static final int stripesPerBlock = 3;
-  private static final int blockSize = cellSize * stripesPerBlock;
+  private final int cellSize = ecPolicy.getCellSize();
+  private final int stripesPerBlock = 3;
+  private final int blockSize = cellSize * stripesPerBlock;
 
-  @BeforeClass
-  public static void setup() throws IOException {
+  @Before
+  public void setup() throws IOException {
     int numDNs = dataBlocks + parityBlocks + 2;
     Configuration conf = new Configuration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDNs).build();
     cluster.waitActive();
-    cluster.getFileSystem().getClient().setErasureCodingPolicy("/", null);
+    cluster.getFileSystem().getClient().setErasureCodingPolicy("/",
+        StripedFileTestUtil.getDefaultECPolicy().getName());
     fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(
+        StripedFileTestUtil.getDefaultECPolicy().getName());
     Path eczone = new Path("/eczone");
     fs.mkdirs(eczone);
   }
 
-  @AfterClass
-  public static void tearDown() {
+  @After
+  public void tearDown() {
     if (cluster != null) {
       cluster.shutdown();
     }
@@ -140,6 +146,8 @@ public class TestOfflineImageViewerWithStripedBlocks {
     // Verify space consumed present in BlockInfoStriped
     FSDirectory fsdir = cluster.getNamesystem().getFSDirectory();
     INodeFile fileNode = fsdir.getINode4Write(file.toString()).asFile();
+    assertEquals(StripedFileTestUtil.getDefaultECPolicy().getId(),
+        fileNode.getErasureCodingPolicyID());
     assertTrue("Invalid block size", fileNode.getBlocks().length > 0);
     long actualFileSize = 0;
     for (BlockInfo blockInfo : fileNode.getBlocks()) {

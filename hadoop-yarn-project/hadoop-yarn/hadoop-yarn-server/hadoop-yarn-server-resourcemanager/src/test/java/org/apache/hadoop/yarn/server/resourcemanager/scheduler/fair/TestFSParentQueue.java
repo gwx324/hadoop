@@ -18,12 +18,12 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
 
+import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.PlacementManager;
 import org.apache.hadoop.yarn.util.SystemClock;
+import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.junit.Before;
 import org.junit.Test;
-
-import java.util.HashSet;
-import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.mock;
@@ -31,28 +31,27 @@ import static org.mockito.Mockito.when;
 
 public class TestFSParentQueue {
 
-  private FairSchedulerConfiguration conf;
   private QueueManager queueManager;
-  private Set<FSQueue> notEmptyQueues;
 
   @Before
-  public void setUp() throws Exception {
-    conf = new FairSchedulerConfiguration();
-    FairScheduler scheduler = mock(FairScheduler.class);
-    AllocationConfiguration allocConf = new AllocationConfiguration(conf);
-    when(scheduler.getAllocationConfiguration()).thenReturn(allocConf);
-    when(scheduler.getConf()).thenReturn(conf);
+  public void setUp() {
+    FairSchedulerConfiguration conf = new FairSchedulerConfiguration();
+    RMContext rmContext = mock(RMContext.class);
     SystemClock clock = SystemClock.getInstance();
+    PlacementManager placementManager = new PlacementManager();
+    FairScheduler scheduler = mock(FairScheduler.class);
+    when(scheduler.getRMContext()).thenReturn(rmContext);
+    when(scheduler.getConfig()).thenReturn(conf);
+    when(scheduler.getConf()).thenReturn(conf);
+    when(scheduler.getResourceCalculator()).thenReturn(
+        new DefaultResourceCalculator());
     when(scheduler.getClock()).thenReturn(clock);
-    notEmptyQueues = new HashSet<FSQueue>();
-    queueManager = new QueueManager(scheduler) {
-      @Override
-      public boolean isEmpty(FSQueue queue) {
-        return !notEmptyQueues.contains(queue);
-      }
-    };
+    when(rmContext.getQueuePlacementManager()).thenReturn(placementManager);
+    AllocationConfiguration allocConf = new AllocationConfiguration(scheduler);
+    when(scheduler.getAllocationConfiguration()).thenReturn(allocConf);
+    queueManager = new QueueManager(scheduler);
     FSQueueMetrics.forQueue("root", null, true, conf);
-    queueManager.initialize(conf);
+    queueManager.initialize();
   }
 
   @Test

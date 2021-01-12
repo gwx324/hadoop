@@ -18,7 +18,7 @@
 if ! declare -f mapred_subcommand_streaming >/dev/null 2>/dev/null; then
 
   if [[ "${HADOOP_SHELL_EXECNAME}" = mapred ]]; then
-    hadoop_add_subcommand "streaming" "launch a mapreduce streaming job"
+    hadoop_add_subcommand "streaming" client "launch a mapreduce streaming job"
   fi
 
 ## @description  streaming command for mapred
@@ -46,10 +46,6 @@ function mapred_subcommand_streaming
   done
 
   IFS=${oldifs}
-
-  hadoop_debug "Appending HADOOP_CLIENT_OPTS onto HADOOP_OPTS"
-  HADOOP_OPTS="${HADOOP_OPTS} ${HADOOP_CLIENT_OPTS}"
-
 }
 
 fi

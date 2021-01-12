@@ -22,8 +22,11 @@ import java.io.IOException;
 import java.util.Timer;
 import java.util.TimerTask;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.yarn.logaggregation.filecontroller.LogAggregationFileControllerFactory;
+import org.apache.hadoop.yarn.logaggregation.filecontroller.LogAggregationFileController;
+import org.apache.hadoop.yarn.util.Apps;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
@@ -41,16 +44,16 @@ import org.apache.hadoop.yarn.client.ClientRMProxy;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * A service that periodically deletes aggregated logs.
  */
 @InterfaceAudience.LimitedPrivate({"yarn", "mapreduce"})
 public class AggregatedLogDeletionService extends AbstractService {
-  private static final Log LOG = LogFactory.getLog(AggregatedLogDeletionService.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(AggregatedLogDeletionService.class);
   
   private Timer timer = null;
   private long checkIntervalMsecs;
@@ -66,10 +69,12 @@ public class AggregatedLogDeletionService extends AbstractService {
     public LogDeletionTask(Configuration conf, long retentionSecs, ApplicationClientProtocol rmClient) {
       this.conf = conf;
       this.retentionMillis = retentionSecs * 1000;
-      this.suffix = LogAggregationUtils.getRemoteNodeLogDirSuffix(conf);
-      this.remoteRootLogDir =
-        new Path(conf.get(YarnConfiguration.NM_REMOTE_APP_LOG_DIR,
-            YarnConfiguration.DEFAULT_NM_REMOTE_APP_LOG_DIR));
+      this.suffix = LogAggregationUtils.getBucketSuffix();
+      LogAggregationFileControllerFactory factory =
+          new LogAggregationFileControllerFactory(conf);
+      LogAggregationFileController fileController =
+          factory.getFileControllerForWrite();
+      this.remoteRootLogDir = fileController.getRemoteRootLogDir();
       this.rmClient = rmClient;
     }
     
@@ -81,53 +86,81 @@ public class AggregatedLogDeletionService extends AbstractService {
         FileSystem fs = remoteRootLogDir.getFileSystem(conf);
         for(FileStatus userDir : fs.listStatus(remoteRootLogDir)) {
           if(userDir.isDirectory()) {
-            Path userDirPath = new Path(userDir.getPath(), suffix);
-            deleteOldLogDirsFrom(userDirPath, cutoffMillis, fs, rmClient);
+            for (FileStatus suffixDir : fs.listStatus(userDir.getPath())) {
+              Path suffixDirPath = suffixDir.getPath();
+              if (suffixDir.isDirectory() && suffixDirPath.getName().
+                  startsWith(suffix)) {
+                for (FileStatus bucketDir : fs.listStatus(suffixDirPath)) {
+                  if (bucketDir.isDirectory()) {
+                    deleteOldLogDirsFrom(bucketDir.getPath(), cutoffMillis,
+                        fs, rmClient);
+                  }
+                }
+              }
+            }
           }
         }
-      } catch (IOException e) {
-        logIOException("Error reading root log dir this deletion " +
-        		"attempt is being aborted", e);
+      } catch (Throwable t) {
+        logException("Error reading root log dir this deletion " +
+            "attempt is being aborted", t);
       }
       LOG.info("aggregated log deletion finished.");
     }
     
     private static void deleteOldLogDirsFrom(Path dir, long cutoffMillis, 
         FileSystem fs, ApplicationClientProtocol rmClient) {
+      FileStatus[] appDirs;
       try {
-        for(FileStatus appDir : fs.listStatus(dir)) {
-          if(appDir.isDirectory() && 
-              appDir.getModificationTime() < cutoffMillis) {
-            boolean appTerminated =
-                isApplicationTerminated(ApplicationId.fromString(appDir
-                  .getPath().getName()), rmClient);
-            if(appTerminated && shouldDeleteLogDir(appDir, cutoffMillis, fs)) {
-              try {
-                LOG.info("Deleting aggregated logs in "+appDir.getPath());
-                fs.delete(appDir.getPath(), true);
-              } catch (IOException e) {
-                logIOException("Could not delete "+appDir.getPath(), e);
-              }
-            } else if (!appTerminated){
-              try {
-                for(FileStatus node: fs.listStatus(appDir.getPath())) {
-                  if(node.getModificationTime() < cutoffMillis) {
-                    try {
-                      fs.delete(node.getPath(), true);
-                    } catch (IOException ex) {
-                      logIOException("Could not delete "+appDir.getPath(), ex);
-                    }
-                  }
+        appDirs = fs.listStatus(dir);
+      } catch (IOException e) {
+        logException("Could not read the contents of " + dir, e);
+        return;
+      }
+      for (FileStatus appDir : appDirs) {
+        deleteAppDirLogs(cutoffMillis, fs, rmClient, appDir);
+      }
+    }
+
+    private static void deleteAppDirLogs(long cutoffMillis, FileSystem fs,
+                                         ApplicationClientProtocol rmClient,
+                                         FileStatus appDir) {
+      try {
+        if (appDir.isDirectory() &&
+            appDir.getModificationTime() < cutoffMillis) {
+          ApplicationId appId = ApplicationId.fromString(
+              appDir.getPath().getName());
+          boolean appTerminated = isApplicationTerminated(appId, rmClient);
+          if (!appTerminated) {
+            // Application is still running
+            FileStatus[] logFiles;
+            try {
+              logFiles = fs.listStatus(appDir.getPath());
+            } catch (IOException e) {
+              logException("Error reading the contents of "
+                  + appDir.getPath(), e);
+              return;
+            }
+            for (FileStatus node : logFiles) {
+              if (node.getModificationTime() < cutoffMillis) {
+                try {
+                  fs.delete(node.getPath(), true);
+                } catch (IOException ex) {
+                  logException("Could not delete " + appDir.getPath(), ex);
                 }
-              } catch(IOException e) {
-                logIOException(
-                  "Error reading the contents of " + appDir.getPath(), e);
               }
+            }
+          } else if (shouldDeleteLogDir(appDir, cutoffMillis, fs)) {
+            // Application is no longer running
+            try {
+              LOG.info("Deleting aggregated logs in " + appDir.getPath());
+              fs.delete(appDir.getPath(), true);
+            } catch (IOException e) {
+              logException("Could not delete " + appDir.getPath(), e);
             }
           }
         }
-      } catch (IOException e) {
-        logIOException("Could not read the contents of " + dir, e);
+      } catch (Exception e) {
+        logException("Could not delete " + appDir.getPath(), e);
       }
     }
 
@@ -142,7 +175,7 @@ public class AggregatedLogDeletionService extends AbstractService {
           }
         }
       } catch(IOException e) {
-        logIOException("Error reading the contents of " + dir.getPath(), e);
+        logException("Error reading the contents of " + dir.getPath(), e);
         shouldDelete = false;
       }
       return shouldDelete;
@@ -162,9 +195,7 @@ public class AggregatedLogDeletionService extends AbstractService {
         throw new IOException(e);
       }
       YarnApplicationState currentState = appReport.getYarnApplicationState();
-      return currentState == YarnApplicationState.FAILED
-          || currentState == YarnApplicationState.KILLED
-          || currentState == YarnApplicationState.FINISHED;
+      return Apps.isApplicationFinalState(currentState);
     }
 
     public ApplicationClientProtocol getRMClient() {
@@ -172,14 +203,14 @@ public class AggregatedLogDeletionService extends AbstractService {
     }
   }
   
-  private static void logIOException(String comment, IOException e) {
-    if(e instanceof AccessControlException) {
-      String message = e.getMessage();
+  private static void logException(String comment, Throwable t) {
+    if(t instanceof AccessControlException) {
+      String message = t.getMessage();
       //TODO fix this after HADOOP-8661
       message = message.split("\n")[0];
       LOG.warn(comment + " " + message);
     } else {
-      LOG.error(comment, e);
+      LOG.error(comment, t);
     }
   }
   
@@ -240,7 +271,7 @@ public class AggregatedLogDeletionService extends AbstractService {
       return;
     }
     setLogAggCheckIntervalMsecs(retentionSecs);
-    task = new LogDeletionTask(conf, retentionSecs, creatRMClient());
+    task = new LogDeletionTask(conf, retentionSecs, createRMClient());
     timer = new Timer();
     timer.scheduleAtFixedRate(task, 0, checkIntervalMsecs);
   }
@@ -263,7 +294,7 @@ public class AggregatedLogDeletionService extends AbstractService {
   // We have already marked ApplicationClientProtocol.getApplicationReport
   // as @Idempotent, it will automatically take care of RM restart/failover.
   @VisibleForTesting
-  protected ApplicationClientProtocol creatRMClient() throws IOException {
+  protected ApplicationClientProtocol createRMClient() throws IOException {
     return ClientRMProxy.createRMProxy(getConfig(),
       ApplicationClientProtocol.class);
   }

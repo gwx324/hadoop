@@ -22,17 +22,15 @@ import java.io.*;
 import java.util.*;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.DF;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.util.Shell;
+import org.junit.AssumptionViolatedException;
 import org.junit.Test;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
-
-import org.apache.hadoop.fs.LocalFileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.server.datanode.DataNode.DataNodeDiskChecker;
 
 public class TestDataDirs {
 
@@ -48,14 +46,15 @@ public class TestDataDirs {
 
     File dir5 = new File("/dir5");
     File dir6 = new File("/dir6");
+    File dir7 = new File("/dir7");
     // Verify that a valid string is correctly parsed, and that storage
     // type is not case-sensitive and we are able to handle white-space between
     // storage type and URI.
     String locations1 = "[disk]/dir0,[DISK]/dir1,[sSd]/dir2,[disK]/dir3," +
-            "[ram_disk]/dir4,[disk]/dir5, [disk] /dir6, [disk] ";
+            "[ram_disk]/dir4,[disk]/dir5, [disk] /dir6, [disk] , [nvdimm]/dir7";
     conf.set(DFS_DATANODE_DATA_DIR_KEY, locations1);
     locations = DataNode.getStorageLocations(conf);
-    assertThat(locations.size(), is(8));
+    assertThat(locations.size(), is(9));
     assertThat(locations.get(0).getStorageType(), is(StorageType.DISK));
     assertThat(locations.get(0).getUri(), is(dir0.toURI()));
     assertThat(locations.get(1).getStorageType(), is(StorageType.DISK));
@@ -74,6 +73,9 @@ public class TestDataDirs {
     // not asserting the 8th URI since it is incomplete and it in the
     // test set to make sure that we don't fail if we get URIs like that.
     assertThat(locations.get(7).getStorageType(), is(StorageType.DISK));
+
+    assertThat(locations.get(8).getStorageType(), is(StorageType.NVDIMM));
+    assertThat(locations.get(8).getUri(), is(dir7.toURI()));
 
     // Verify that an unrecognized storage type result in an exception.
     String locations2 = "[BadMediaType]/dir0,[ssd]/dir1,[disk]/dir2";
@@ -97,24 +99,33 @@ public class TestDataDirs {
     assertThat(locations.get(1).getUri(), is(dir1.toURI()));
   }
 
-  @Test(timeout = 30000)
-  public void testDataDirValidation() throws Throwable {
+  @Test
+  public void testDataDirFileSystem() throws Exception {
+    if (Shell.MAC) {
+      throw new AssumptionViolatedException("Not supported on MAC OS");
+    }
+    Configuration conf = new Configuration();
+    String archiveDir = "/home";
+    String location = "[DISK]/dir1,[ARCHIVE]" + archiveDir;
+    conf.set(DFS_DATANODE_DATA_DIR_KEY, location);
 
-    DataNodeDiskChecker diskChecker = mock(DataNodeDiskChecker.class);
-    doThrow(new IOException()).doThrow(new IOException()).doNothing()
-        .when(diskChecker)
-        .checkDir(any(LocalFileSystem.class), any(Path.class));
-    LocalFileSystem fs = mock(LocalFileSystem.class);
-    AbstractList<StorageLocation> locations = new ArrayList<StorageLocation>();
+    // NO any filesystem is set, should do as before
+    List<StorageLocation> locations = DataNode.getStorageLocations(conf);
+    assertEquals(2, locations.size());
 
-    locations.add(StorageLocation.parse("file:/p1/"));
-    locations.add(StorageLocation.parse("file:/p2/"));
-    locations.add(StorageLocation.parse("file:/p3/"));
+    // Set the filesystem of archive as NOT existing filesystem
+    // the archive directory should not be added.
+    conf.set("dfs.datanode.storagetype.ARCHIVE.filesystem",
+        "nothis_filesystem");
+    locations = DataNode.getStorageLocations(conf);
+    assertEquals(1, locations.size());
 
-    List<StorageLocation> checkedLocations =
-        DataNode.checkStorageLocations(locations, fs, diskChecker);
-    assertEquals("number of valid data dirs", 1, checkedLocations.size());
-    String validDir = checkedLocations.iterator().next().getFile().getPath();
-    assertThat("p3 should be valid", new File("/p3/").getPath(), is(validDir));
+    // Set the filesystem of archive as right filesystem
+    // the archive directory should be added.
+    DF df = new DF(new File(archiveDir), conf);
+    String fsInfo = df.getFilesystem();
+    conf.set("dfs.datanode.storagetype.ARCHIVE.filesystem", fsInfo);
+    locations = DataNode.getStorageLocations(conf);
+    assertEquals(2, locations.size());
   }
 }

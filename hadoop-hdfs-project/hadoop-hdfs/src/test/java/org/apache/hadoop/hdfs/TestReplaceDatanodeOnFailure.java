@@ -17,14 +17,14 @@
  */
 package org.apache.hadoop.hdfs;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -45,7 +45,8 @@ import org.junit.Test;
  * This class tests that data nodes are correctly replaced on failure.
  */
 public class TestReplaceDatanodeOnFailure {
-  static final Log LOG = LogFactory.getLog(TestReplaceDatanodeOnFailure.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(TestReplaceDatanodeOnFailure.class);
 
   static final String DIR = "/" + TestReplaceDatanodeOnFailure.class.getSimpleName() + "/";
   static final short REPLICATION = 3;
@@ -118,7 +119,8 @@ public class TestReplaceDatanodeOnFailure {
   public void testReplaceDatanodeOnFailure() throws Exception {
     final Configuration conf = new HdfsConfiguration();
     // do not consider load factor when selecting a data node
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY, false);
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
+        false);
     //always replace a datanode
     ReplaceDatanodeOnFailure.write(Policy.ALWAYS, true, conf);
 

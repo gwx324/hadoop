@@ -20,23 +20,32 @@ package org.apache.hadoop.yarn.util;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileFilter;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
-import java.io.InputStreamReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.math.BigInteger;
 import java.nio.charset.Charset;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.io.filefilter.AndFileFilter;
+import org.apache.commons.io.filefilter.DirectoryFileFilter;
+import org.apache.commons.io.filefilter.RegexFileFilter;
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -52,13 +61,13 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 @InterfaceStability.Unstable
 public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
 
-  static final Log LOG = LogFactory
-      .getLog(ProcfsBasedProcessTree.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(ProcfsBasedProcessTree.class);
 
   private static final String PROCFS = "/proc/";
 
   private static final Pattern PROCFS_STAT_FILE_FORMAT = Pattern.compile(
-      "^([\\d-]+)\\s\\(([^)]+)\\)\\s[^\\s]\\s([\\d-]+)\\s([\\d-]+)\\s" +
+      "^([\\d-]+)\\s\\((.*)\\)\\s[^\\s]\\s([\\d-]+)\\s([\\d-]+)\\s" +
       "([\\d-]+)\\s([\\d-]+\\s){7}(\\d+)\\s(\\d+)\\s([\\d-]+\\s){7}(\\d+)\\s" +
       "(\\d+)(\\s[\\d-]+){15}");
 
@@ -85,8 +94,9 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
     }
 
     public static MemInfo getMemInfoByName(String name) {
+      String searchName = StringUtils.trimToNull(name);
       for (MemInfo info : MemInfo.values()) {
-        if (info.name.trim().equalsIgnoreCase(name.trim())) {
+        if (info.name.trim().equalsIgnoreCase(searchName)) {
           return info;
         }
       }
@@ -170,7 +180,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
         return false;
       }
     } catch (SecurityException se) {
-      LOG.warn("Failed to get Operating System name. " + se);
+      LOG.warn("Failed to get Operating System name.", se);
       return false;
     }
     return true;
@@ -214,12 +224,12 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
       // Add each process to its parent.
       for (Map.Entry<String, ProcessInfo> entry : allProcessInfo.entrySet()) {
         String pID = entry.getKey();
-        if (!pID.equals("1")) {
+        if (!"1".equals(pID)) {
           ProcessInfo pInfo = entry.getValue();
           String ppid = pInfo.getPpid();
           // If parent is init and process is not session leader,
           // attach to sessionID
-          if (ppid.equals("1")) {
+          if ("1".equals(ppid)) {
               String sid = pInfo.getSessionId().toString();
               if (!pID.equals(sid)) {
                  ppid = sid;
@@ -233,8 +243,8 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
       }
 
       // now start constructing the process-tree
-      LinkedList<ProcessInfo> pInfoQueue = new LinkedList<ProcessInfo>();
-      pInfoQueue.addAll(me.getChildren());
+      List<ProcessInfo> children = me.getChildren();
+      Queue<ProcessInfo> pInfoQueue = new ArrayDeque<ProcessInfo>(children);
       while (!pInfoQueue.isEmpty()) {
         ProcessInfo pInfo = pInfoQueue.remove();
         if (!processTree.containsKey(pInfo.getPid())) {
@@ -254,12 +264,10 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
         }
       }
 
-      if (LOG.isDebugEnabled()) {
-        // Log.debug the ProcfsBasedProcessTree
-        LOG.debug(this.toString());
-      }
+      LOG.debug("{}", this);
+
       if (smapsEnabled) {
-        //Update smaps info
+        // Update smaps info
         processSMAPTree.clear();
         for (ProcessInfo p : processTree.values()) {
           if (p != null) {
@@ -296,9 +304,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
       "\t|- %s %s %d %d %s %d %d %d %d %s%n";
 
   public List<String> getCurrentProcessIDs() {
-    List<String> currentPIDs = new ArrayList<String>();
-    currentPIDs.addAll(processTree.keySet());
-    return currentPIDs;
+    return Collections.unmodifiableList(new ArrayList<>(processTree.keySet()));
   }
 
   /**
@@ -327,24 +333,17 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
 
   @Override
   public long getVirtualMemorySize(int olderThanAge) {
-    long total = UNAVAILABLE;
+    long total = 0L;
+    boolean isAvailable = false;
     for (ProcessInfo p : processTree.values()) {
       if (p != null) {
-        if (total == UNAVAILABLE ) {
-          total = 0;
-        }
+        isAvailable = true;
         if (p.getAge() > olderThanAge) {
           total += p.getVmem();
         }
       }
     }
-    return total;
-  }
-
-  @Override
-  @SuppressWarnings("deprecation")
-  public long getCumulativeVmem(int olderThanAge) {
-    return getVirtualMemorySize(olderThanAge);
+    return isAvailable ? total : UNAVAILABLE;
   }
 
   @Override
@@ -358,20 +357,14 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
     boolean isAvailable = false;
     long totalPages = 0;
     for (ProcessInfo p : processTree.values()) {
-      if ((p != null) ) {
+      if (p != null) {
+        isAvailable = true;
         if (p.getAge() > olderThanAge) {
           totalPages += p.getRssmemPage();
         }
-        isAvailable = true;
       }
     }
     return isAvailable ? totalPages * PAGE_SIZE : UNAVAILABLE; // convert # pages to byte
-  }
-
-  @Override
-  @SuppressWarnings("deprecation")
-  public long getCumulativeRssmem(int olderThanAge) {
-    return getRssMemorySize(olderThanAge);
   }
 
   /**
@@ -406,20 +399,14 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
                 continue;
               }
 
-              total +=
-                  Math.min(info.sharedDirty, info.pss) + info.privateDirty
-                      + info.privateClean;
-              if (LOG.isDebugEnabled()) {
-                LOG.debug(" total(" + olderThanAge + "): PID : " + p.getPid()
-                    + ", SharedDirty : " + info.sharedDirty + ", PSS : "
-                    + info.pss + ", Private_Dirty : " + info.privateDirty
-                    + ", Private_Clean : " + info.privateClean + ", total : "
-                    + (total * KB_TO_BYTES));
-              }
+              // Account for anonymous to know the amount of
+              // memory reclaimable by killing the process
+              total += info.anonymous;
+
+              LOG.debug(" total({}): PID : {}, info : {}, total : {}",
+                  olderThanAge, p.getPid(), info, (total * KB_TO_BYTES));
             }
-          }
-          if (LOG.isDebugEnabled()) {
-            LOG.debug(procMemInfo.toString());
+            LOG.debug("{}", procMemInfo);
           }
         }
       }
@@ -440,9 +427,9 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
     boolean isAvailable = false;
     for (ProcessInfo p : processTree.values()) {
       if (p != null) {
-        incJiffies += p.getDtime();
         // data is available
         isAvailable = true;
+        incJiffies += p.getDtime();
       }
     }
     if (isAvailable) {
@@ -478,6 +465,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
   @Override
   public float getCpuUsagePercent() {
     BigInteger processTotalJiffies = getTotalProcessJiffies();
+    LOG.debug("Process {} jiffies:{}", pid, processTotalJiffies);
     cpuTimeTracker.updateElapsedJiffies(processTotalJiffies,
         clock.getTime());
     return cpuTimeTracker.getCpuTrackerUsagePercent();
@@ -494,18 +482,17 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
    * Get the list of all processes in the system.
    */
   private List<String> getProcessList() {
-    String[] processDirs = (new File(procfsDir)).list();
-    List<String> processList = new ArrayList<String>();
+    List<String> processList = Collections.emptyList();
+    FileFilter procListFileFilter = new AndFileFilter(
+        DirectoryFileFilter.INSTANCE, new RegexFileFilter(numberPattern));
 
-    for (String dir : processDirs) {
-      Matcher m = numberPattern.matcher(dir);
-      if (!m.matches()) continue;
-      try {
-        if ((new File(procfsDir, dir)).isDirectory()) {
-          processList.add(dir);
-        }
-      } catch (SecurityException s) {
-        // skip this process
+    File dir = new File(procfsDir);
+    File[] processDirs = dir.listFiles(procListFileFilter);
+
+    if (ArrayUtils.isNotEmpty(processDirs)) {
+      processList = new ArrayList<String>(processDirs.length);
+      for (File processDir : processDirs) {
+        processList.add(processDir.getName());
       }
     }
     return processList;
@@ -557,7 +544,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
         ret = null;
       }
     } catch (IOException io) {
-      LOG.warn("Error reading the stream " + io);
+      LOG.warn("Error reading the stream", io);
       ret = null;
     } finally {
       // Close the streams
@@ -566,10 +553,10 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
         try {
           in.close();
         } catch (IOException i) {
-          LOG.warn("Error closing the stream " + in);
+          LOG.warn("Error closing the stream", i);
         }
       } catch (IOException i) {
-        LOG.warn("Error closing the stream " + fReader);
+        LOG.warn("Error closing the stream", i);
       }
     }
 
@@ -739,14 +726,14 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
           ret = "N/A";
         } else {
           ret = ret.replace('\0', ' '); // Replace each null char with a space
-          if (ret.equals("")) {
+          if (ret.isEmpty()) {
             // The cmdline might be empty because the process is swapped out or
             // is a zombie.
             ret = "N/A";
           }
         }
       } catch (IOException io) {
-        LOG.warn("Error reading the stream " + io);
+        LOG.warn("Error reading the stream", io);
         ret = "N/A";
       } finally {
         // Close the streams
@@ -755,10 +742,10 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
           try {
             in.close();
           } catch (IOException i) {
-            LOG.warn("Error closing the stream " + in);
+            LOG.warn("Error closing the stream", i);
           }
         } catch (IOException i) {
-          LOG.warn("Error closing the stream " + fReader);
+          LOG.warn("Error closing the stream", i);
         }
       }
 
@@ -801,10 +788,11 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
           if (memInfo.find()) {
             String key = memInfo.group(1).trim();
             String value = memInfo.group(2).replace(KB, "").trim();
-            if (LOG.isDebugEnabled()) {
-              LOG.debug("MemInfo : " + key + " : Value  : " + value);
+            LOG.debug("MemInfo : {} : Value  : {}", key, value);
+
+            if (memoryMappingInfo != null) {
+              memoryMappingInfo.setMemInfo(key, value);
             }
-            memoryMappingInfo.setMemInfo(key, value);
           }
         } catch (Throwable t) {
           LOG
@@ -812,11 +800,11 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
         }
       }
     } catch (FileNotFoundException f) {
-      LOG.error(f.getMessage());
+      LOG.error(f.toString());
     } catch (IOException e) {
-      LOG.error(e.getMessage());
+      LOG.error(e.toString());
     } catch (Throwable t) {
-      LOG.error(t.getMessage());
+      LOG.error(t.toString());
     } finally {
       IOUtils.closeQuietly(in);
     }
@@ -846,7 +834,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
       StringBuilder sb = new StringBuilder();
       for (ProcessSmapMemoryInfo info : memoryInfoList) {
         sb.append("\n");
-        sb.append(info.toString());
+        sb.append(info);
       }
       return sb.toString();
     }
@@ -877,6 +865,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
     private int sharedDirty;
     private int privateClean;
     private int privateDirty;
+    private int anonymous;
     private int referenced;
     private String regionName;
     private String permission;
@@ -929,6 +918,10 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
       return referenced;
     }
 
+    public int getAnonymous() {
+      return anonymous;
+    }
+
     public void setMemInfo(String key, String value) {
       MemInfo info = MemInfo.getMemInfoByName(key);
       int val = 0;
@@ -941,9 +934,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
       if (info == null) {
         return;
       }
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("setMemInfo : memInfo : " + info);
-      }
+      LOG.debug("setMemInfo : memInfo : {}", info);
       switch (info) {
       case SIZE:
         size = val;
@@ -969,6 +960,9 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
       case REFERENCED:
         referenced = val;
         break;
+      case ANONYMOUS:
+        anonymous = val;
+        break;
       default:
         break;
       }
@@ -976,9 +970,9 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
 
     public String toString() {
       StringBuilder sb = new StringBuilder();
-      sb.append("\t").append(this.getName()).append("\n");
-      sb.append("\t").append(MemInfo.SIZE.name + ":" + this.getSize())
-        .append(" kB\n");
+      sb.append("\t").append(this.getName()).append("\n")
+          .append("\t").append(MemInfo.SIZE.name + ":" + this.getSize())
+          .append(" kB\n");
       sb.append("\t").append(MemInfo.PSS.name + ":" + this.getPss())
         .append(" kB\n");
       sb.append("\t").append(MemInfo.RSS.name + ":" + this.getRss())
@@ -999,10 +993,7 @@ public class ProcfsBasedProcessTree extends ResourceCalculatorProcessTree {
         .append(MemInfo.REFERENCED.name + ":" + this.getReferenced())
         .append(" kB\n");
       sb.append("\t")
-        .append(MemInfo.PRIVATE_DIRTY.name + ":" + this.getPrivateDirty())
-        .append(" kB\n");
-      sb.append("\t")
-        .append(MemInfo.PRIVATE_DIRTY.name + ":" + this.getPrivateDirty())
+        .append(MemInfo.ANONYMOUS.name + ":" + this.getAnonymous())
         .append(" kB\n");
       return sb.toString();
     }

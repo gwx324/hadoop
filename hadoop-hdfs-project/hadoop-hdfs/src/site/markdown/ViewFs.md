@@ -15,20 +15,7 @@
 ViewFs Guide
 ============
 
-* [ViewFs Guide](#ViewFs_Guide)
-    * [Introduction](#Introduction)
-    * [The Old World (Prior to Federation)](#The_Old_World_Prior_to_Federation)
-        * [Single Namenode Clusters](#Single_Namenode_Clusters)
-        * [Pathnames Usage Patterns](#Pathnames_Usage_Patterns)
-        * [Pathname Usage Best Practices](#Pathname_Usage_Best_Practices)
-    * [New World – Federation and ViewFs](#New_World__Federation_and_ViewFs)
-        * [How The Clusters Look](#How_The_Clusters_Look)
-        * [A Global Namespace Per Cluster Using ViewFs](#A_Global_Namespace_Per_Cluster_Using_ViewFs)
-        * [Pathname Usage Patterns](#Pathname_Usage_Patterns)
-        * [Pathname Usage Best Practices](#Pathname_Usage_Best_Practices)
-        * [Renaming Pathnames Across Namespaces](#Renaming_Pathnames_Across_Namespaces)
-        * [FAQ](#FAQ)
-    * [Appendix: A Mount Table Configuration Example](#Appendix:_A_Mount_Table_Configuration_Example)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Introduction
 ------------
@@ -104,16 +91,56 @@ In order to provide transparency with the old world, the ViewFs file system (i.e
 
 ViewFs implements the Hadoop file system interface just like HDFS and the local file system. It is a trivial file system in the sense that it only allows linking to other file systems. Because ViewFs implements the Hadoop file system interface, it works transparently Hadoop tools. For example, all the shell commands work with ViewFs as with HDFS and local file system.
 
-The mount points of a mount table are specified in the standard Hadoop configuration files. In the configuration of each cluster, the default file system is set to the mount table for that cluster as shown below (compare it with the configuration in [Single Namenode Clusters](#Single_Namenode_Clusters)).
+In the configuration of each cluster, the default file system is set to the mount table for that cluster as shown below (compare it with the configuration in [Single Namenode Clusters](#Single_Namenode_Clusters)).
 
 ```xml
 <property>
-  <name>fs.default.name</name>
+  <name>fs.defaultFS</name>
   <value>viewfs://clusterX</value>
 </property>
 ```
 
-The authority following the `viewfs://` scheme in the URI is the mount table name. It is recommanded that the mount table of a cluster should be named by the cluster name. Then Hadoop system will look for a mount table with the name "clusterX" in the Hadoop configuration files. Operations arrange all gateways and service machines to contain the mount tables for ALL clusters such that, for each cluster, the default file system is set to the ViewFs mount table for that cluster as described above.
+The authority following the `viewfs://` scheme in the URI is the mount table name. It is recommended that the mount table of a cluster should be named by the cluster name. Then Hadoop system will look for a mount table with the name "clusterX" in the Hadoop configuration files. Operations arrange all gateways and service machines to contain the mount tables for ALL clusters such that, for each cluster, the default file system is set to the ViewFs mount table for that cluster as described above.
+
+The mount points of a mount table are specified in the standard Hadoop configuration files. All the mount table config entries for `viewfs` are prefixed by `fs.viewfs.mounttable.`. The mount points that are linking other filesystems are specified using `link` tags. The recommendation is to have mount points name same as in the linked filesystem target locations. For all namespaces that are not configured in the mount table, we can have them fallback to a default filesystem via `linkFallback`.
+
+In the below mount table configuration, namespace `/data` is linked to the filesystem `hdfs://nn1-clusterx.example.com:8020/data`, `/project` is linked to the filesystem `hdfs://nn2-clusterx.example.com:8020/project`. All namespaces that are not configured in the mount table, like `/logs` are linked to the filesystem `hdfs://nn5-clusterx.example.com:8020/home`.
+
+```xml
+<configuration>
+  <property>
+    <name>fs.viewfs.mounttable.ClusterX.link./data</name>
+    <value>hdfs://nn1-clusterx.example.com:8020/data</value>
+  </property>
+  <property>
+    <name>fs.viewfs.mounttable.ClusterX.link./project</name>
+    <value>hdfs://nn2-clusterx.example.com:8020/project</value>
+  </property>
+  <property>
+    <name>fs.viewfs.mounttable.ClusterX.link./user</name>
+    <value>hdfs://nn3-clusterx.example.com:8020/user</value>
+  </property>
+  <property>
+    <name>fs.viewfs.mounttable.ClusterX.link./tmp</name>
+    <value>hdfs://nn4-clusterx.example.com:8020/tmp</value>
+  </property>
+  <property>
+    <name>fs.viewfs.mounttable.ClusterX.linkFallback</name>
+    <value>hdfs://nn5-clusterx.example.com:8020/home</value>
+  </property>
+</configuration>
+```
+
+Alternatively we can have the mount table's root merged with the root of another filesystem via `linkMergeSlash`. In the below mount table configuration, ClusterY's root is merged with the root filesystem at `hdfs://nn1-clustery.example.com:8020`.
+
+```xml
+<configuration>
+  <property>
+    <name>fs.viewfs.mounttable.ClusterY.linkMergeSlash</name>
+    <value>hdfs://nn1-clustery.example.com:8020/</value>
+  </property>
+</configuration>
+```
 
 ### Pathname Usage Patterns
 
@@ -131,7 +158,7 @@ Hence on Cluster X, where the `core-site.xml` is set to make the default fs to u
 
     * It is an URI for referring a pathname on another cluster such as Cluster Y. In particular, the command for copying files from cluster Y to Cluster Z looks like:
 
-            distcp viewfs://clusterY:/pathSrc viewfs://clusterZ/pathDest
+            distcp viewfs://clusterY/pathSrc viewfs://clusterZ/pathDest
 
 4.  `viewfs://clusterX-webhdfs/foo/bar`
 
@@ -143,7 +170,7 @@ Hence on Cluster X, where the `core-site.xml` is set to make the default fs to u
 
 ### Pathname Usage Best Practices
 
-When one is within a cluster, it is recommended to use the pathname of type (1) above instead of a fully qualified URI like (2). Futher, applications should not use the knowledge of the mount points and use a path like `hdfs://namenodeContainingUserDirs:port/joe/foo/bar` to refer to a file in a particular namenode. One should use `/user/joe/foo/bar` instead.
+When one is within a cluster, it is recommended to use the pathname of type (1) above instead of a fully qualified URI like (2). Further, applications should not use the knowledge of the mount points and use a path like `hdfs://namenodeContainingUserDirs:port/joe/foo/bar` to refer to a file in a particular namenode. One should use `/user/joe/foo/bar` instead.
 
 ### Renaming Pathnames Across Namespaces
 
@@ -152,6 +179,145 @@ Recall that one cannot rename files or directories across namenodes or clusters 
     rename /user/joe/myStuff /data/foo/bar
 
 This will NOT work in the new world if `/user` and `/data` are actually stored on different namenodes within a cluster.
+
+Multi-Filesystem I/0 with Nfly Mount Points
+-----------------
+
+HDFS and other distributed filesystems provide data resilience via some sort of
+redundancy such as block replication or more sophisticated distributed encoding.
+However, modern setups may be comprised of multiple Hadoop clusters, enterprise
+filers, hosted on and off premise. Nfly mount points make it possible for a
+single logical file to be synchronously replicated by multiple filesystems.
+It's designed for a relatively small files up to a gigabyte. In general it's a
+function of a single core/single network link performance since the logic
+resides in a single client JVM using ViewFs such as FsShell or a
+MapReduce task.
+
+### Basic Configuration
+
+Consider the following example to understand the basic configuration of Nfly.
+Suppose we want to keep the directory `ads` replicated on three filesystems
+represented by URIs: `uri1`, `uri2` and `uri3`.
+
+```xml
+  <property>
+    <name>fs.viewfs.mounttable.global.linkNfly../ads</name>
+    <value>uri1,uri2,uri3</value>
+  </property>
+```
+Note 2 consecutive `..` in the property name. They arise because of empty
+settings for advanced tweaking of the mount point which we will show in
+subsequent sections. The property value is a comma-separated list of URIs.
+
+URIs may point to different clusters in different regions
+`hdfs://datacenter-east/ads`, `s3a://models-us-west/ads`, `hdfs://datacenter-west/ads`
+or in the simplest case to different directories under the same filesystem,
+e.g., `file:/tmp/ads1`, `file:/tmp/ads2`, `file:/tmp/ads3`
+
+All *modifications* performed under the global path `viewfs://global/ads` are
+propagated to all destination URIs if the underlying system is available.
+
+For instance if we create a file via hadoop shell
+```bash
+hadoop fs -touchz viewfs://global/ads/z1
+```
+
+We will find it via local filesystem in the latter configuration
+```bash
+ls -al /tmp/ads*/z1
+-rw-r--r--  1 user  wheel  0 Mar 11 12:17 /tmp/ads1/z1
+-rw-r--r--  1 user  wheel  0 Mar 11 12:17 /tmp/ads2/z1
+-rw-r--r--  1 user  wheel  0 Mar 11 12:17 /tmp/ads3/z1
+```
+
+A read from the global path is processed by the first filesystem that does not
+result in an exception. The order in which filesystems are accessed depends on
+whether they are available at this moment or and whether a topological order
+exists.
+
+### Advanced Configuration
+
+Mount points `linkNfly` can be further configured using parameters passed as a
+comma-separated list of key=value pairs. Following parameters are currently
+supported.
+
+`minReplication=int` determines the minimum number of destinations that have to
+process a write modification without exceptions, if below nfly write is failed.
+It is an configuration error to have minReplication higher than the number of
+target URIs. The default is 2.
+
+If minReplication is lower than the number of target URIs we may have some
+target URIs without latest writes. It can be compensated by employing more
+expensive read operations controlled by the following settings
+
+`readMostRecent=boolean` if set to `true` causes Nfly client to check the path
+under all target URIs instead of just the first one based on the topology order.
+Among all available at the moment the one with the most recent modification time
+is processed.
+
+`repairOnRead=boolean` if set to `true` causes Nfly to copy most recent replica
+to stale targets such that subsequent reads can be done cheaply again from the
+closest replica.
+
+### Network Topology
+
+Nfly seeks to satisfy reads from the "closest" target URI.
+
+To this end, Nfly extends the notion of
+<a href="hadoop-project-dist/hadoop-common/RackAwareness.html">Rack Awareness</a>
+to the authorities of target URIs.
+
+Nfly applies NetworkTopology to resolve authorities of the URIs. Most commonly
+a script based mapping is used in a heterogeneous setup. We could have a script
+providing the following topology mapping
+
+| URI                           | Topology                 |
+|-------------------------------|------------------------- |
+| `hdfs://datacenter-east/ads`  | /us-east/onpremise-hdfs  |
+| `s3a://models-us-west/ads`    | /us-west/aws             |
+| `hdfs://datacenter-west/ads`  | /us-west/onpremise-hdfs  |
+
+
+If a target URI does not have the authority part as in `file:/` Nfly injects
+client's local node name.
+
+### Example Nfly Configuration
+
+```xml
+  <property>
+    <name>fs.viewfs.mounttable.global.linkNfly.minReplication=3,readMostRecent=true,repairOnRead=false./ads</name>
+    <value>hdfs://datacenter-east/ads,hdfs://datacenter-west/ads,s3a://models-us-west/ads,file:/tmp/ads</value>
+  </property>
+```
+
+### How Nfly File Creation works
+
+```java
+FileSystem fs = FileSystem.get("viewfs://global/", ...);
+FSDataOutputStream out = fs.create("viewfs://global/ads/f1");
+out.write(...);
+out.close();
+```
+The code above would result in the following execution.
+
+1. create an invisible file `_nfly_tmp_f1` under each target URI i.e.,
+`hdfs://datacenter-east/ads/_nfly_tmp_f1`, `hdfs://datacenter-west/ads/_nfly_tmp_f1`, etc.
+This is done by calling `create` on underlying filesystems and returns a
+`FSDataOutputStream` object `out` that wraps all four output streams.
+
+2. Thus each subsequent write on `out` can be forwarded to each wrapped stream.
+
+3. On `out.close` all streams are closed, and the files are renamed from `_nfly_tmp_f1` to `f1`.
+All files receive the same *modification time* corresponding to the client
+system time as of beginning of this step.
+
+4. If at least `minReplication` destinations have gone through steps 1-3 without
+failures Nfly considers the transaction logically committed; Otherwise it tries
+to clean up the temporary files in a best-effort attempt.
+
+Note that because 4 is a best-effort step and the client JVM could crash and never
+resume its work, it's a good idea to provision some sort of cron job to purge such
+`_nfly_tmp` files.
 
 ### FAQ
 
@@ -195,6 +361,75 @@ This will NOT work in the new world if `/user` and `/data` are actually stored o
 
     Delegation tokens for the cluster to which you are submitting the job (including all mounted volumes for that cluster’s mount table), and for input and output paths to your map-reduce job (including all volumes mounted via mount tables for the specified input and output paths) are all handled automatically. In addition, there is a way to add additional delegation tokens to the base cluster configuration for special circumstances.
 
+Don't want to change scheme or difficult to copy mount-table configurations to all clients?
+-------------------------------------------------------------------------------------------
+
+Please refer to the [View File System Overload Scheme Guide](./ViewFsOverloadScheme.html)
+
+Regex Pattern Based Mount Points
+--------------------------------
+
+The view file system mount points were a Key-Value based mapping system. It is not friendly for user cases which mapping config could be abstracted to rules. E.g. Users want to provide a GCS bucket per user and there might be thousands of users in total. The old key-value based approach won't work well for several reasons:
+
+1. The mount table is used by FileSystem clients. There's a cost to spread the config to all clients and we should avoid it if possible. The [View File System Overload Scheme Guide](./ViewFsOverloadScheme.html) could help the distribution by central mount table management. But the mount table still have to be updated on every change. The change could be greatly avoided if provide a rule-based mount table.
+
+2. The client have to understand all the KVs in the mount table. This is not ideal when the mountable grows to thousands of items. E.g. thousands of file systems might be initialized even users only need one. And the config itself will become bloated at scale.
+
+### Understand the Difference
+
+In the key-value based mount table, view file system treats every mount point as a partition. There's several file system APIs which will lead to operation on all partitions. E.g. there's an HDFS cluster with multiple mount. Users want to run “hadoop fs -put file viewfs://hdfs.namenode.apache.org/tmp/” cmd to copy data from local disk to our HDFS cluster. The cmd will trigger ViewFileSystem to call setVerifyChecksum() method which will initialize the file system for every mount point.
+For a regex rule based mount table entry, we couldn't know what's corresponding path until parsing. So the regex based mount table entry will be ignored on such cases. The file system (ChRootedFileSystem) will be created upon accessing. But the underlying file system will be cached by inner cache of ViewFileSystem.
+```xml
+<property>
+    <name>fs.viewfs.rename.strategy</name>
+    <value>SAME_FILESYSTEM_ACROSS_MOUNTPOINT</value>
+</property>
+```
+
+### Basic Regex Link Mapping Config
+Here's an example of base regex mount point config. ${username} is the named capture group in Java Regex.
+```xml
+<property>
+    <name>fs.viewfs.mounttable.hadoop-nn.linkRegx./^(?<username>\\w+)</name>
+    <value>gs://${username}.hadoop.apache.org/</value>
+</property>
+```
+Parsing example.
+```bash
+viewfs://hadoop-nn/user1/dir1 => gs://user1.hadoop.apache.org/dir1
+viewfs://hadoop-nn/user2 => gs://user2.hadoop.apache.org/
+```
+The src/key’s format are
+```bash
+fs.viewfs.mounttable.${VIEWNAME}.linkRegx.${REGEX_STR}
+```
+
+### Regex Link Mapping With Interceptors
+Interceptor is one mechanism introduced to modify source or target in the resolution process. It’s optional and could be used to satisfy user cases such as replace specific character or replace some word. Interceptor will only work for regex mount point. RegexMountPointResolvedDstPathReplaceInterceptor is the only build-in interceptor now.
+
+Here’s an example regex mount point entry with RegexMountPointResolvedDstPathReplaceInterceptor set.
+
+```xml
+<property>
+    <name>fs.viewfs.mounttable.hadoop-nn.linkRegx.replaceresolveddstpath:_:-#./^(?<username>\\w+)</name>
+    <value>gs://${username}.hadoop.apache.org/</value>
+</property>
+```
+The ```replaceresolveddstpath:_:-``` is an interceptor setting. “replaceresolveddstpath” is the interceptor type, “_” is the string to replace and “-” is the string after replace.
+
+Parsing example.
+```bash
+viewfs://hadoop-nn/user_ad/dir1 => gs://user-ad.hadoop.apache.org/dir1
+viewfs://hadoop-nn/user_ad_click => gs://user-ad-click.hadoop.apache.org/
+```
+The src/key’s format are
+```bash
+fs.viewfs.mounttable.${VIEWNAME}.linkRegx.${REGEX_STR}
+fs.viewfs.mounttable.${VIEWNAME}.linkRegx.${interceptorSettings}#.${srcRegex}
+```
+
+
+
 Appendix: A Mount Table Configuration Example
 ---------------------------------------------
 
@@ -210,11 +445,11 @@ The mount tables can be described in `core-site.xml` but it is better to use ind
 
 In the file `mountTable.xml`, there is a definition of the mount table "ClusterX" for the hypothetical cluster that is a federation of the three namespace volumes managed by the three namenodes
 
-1.  nn1-clusterx.example.com:9820,
-2.  nn2-clusterx.example.com:9820, and
-3.  nn3-clusterx.example.com:9820.
+1.  nn1-clusterx.example.com:8020,
+2.  nn2-clusterx.example.com:8020, and
+3.  nn3-clusterx.example.com:8020.
 
-Here `/home` and `/tmp` are in the namespace managed by namenode nn1-clusterx.example.com:9820, and projects `/foo` and `/bar` are hosted on the other namenodes of the federated cluster. The home directory base path is set to `/home` so that each user can access its home directory using the getHomeDirectory() method defined in [FileSystem](../../api/org/apache/hadoop/fs/FileSystem.html)/[FileContext](../../api/org/apache/hadoop/fs/FileContext.html).
+Here `/home` and `/tmp` are in the namespace managed by namenode nn1-clusterx.example.com:8020, and projects `/foo` and `/bar` are hosted on the other namenodes of the federated cluster. The home directory base path is set to `/home` so that each user can access its home directory using the getHomeDirectory() method defined in [FileSystem](../../api/org/apache/hadoop/fs/FileSystem.html)/[FileContext](../../api/org/apache/hadoop/fs/FileContext.html).
 
 ```xml
 <configuration>
@@ -224,19 +459,19 @@ Here `/home` and `/tmp` are in the namespace managed by namenode nn1-clusterx.ex
   </property>
   <property>
     <name>fs.viewfs.mounttable.ClusterX.link./home</name>
-    <value>hdfs://nn1-clusterx.example.com:9820/home</value>
+    <value>hdfs://nn1-clusterx.example.com:8020/home</value>
   </property>
   <property>
     <name>fs.viewfs.mounttable.ClusterX.link./tmp</name>
-    <value>hdfs://nn1-clusterx.example.com:9820/tmp</value>
+    <value>hdfs://nn1-clusterx.example.com:8020/tmp</value>
   </property>
   <property>
     <name>fs.viewfs.mounttable.ClusterX.link./projects/foo</name>
-    <value>hdfs://nn2-clusterx.example.com:9820/projects/foo</value>
+    <value>hdfs://nn2-clusterx.example.com:8020/projects/foo</value>
   </property>
   <property>
     <name>fs.viewfs.mounttable.ClusterX.link./projects/bar</name>
-    <value>hdfs://nn3-clusterx.example.com:9820/projects/bar</value>
+    <value>hdfs://nn3-clusterx.example.com:8020/projects/bar</value>
   </property>
 </configuration>
 ```

@@ -18,10 +18,7 @@
 
 package org.apache.hadoop.ipc;
 
-import com.google.common.base.Supplier;
-import com.google.protobuf.ServiceException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.protobuf.ServiceException;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -31,9 +28,13 @@ import org.apache.hadoop.io.retry.RetryPolicy;
 import org.apache.hadoop.io.retry.RetryProxy;
 import org.apache.hadoop.ipc.Client.ConnectionId;
 import org.apache.hadoop.ipc.Server.Call;
+import org.apache.hadoop.ipc.Server.Connection;
+import org.apache.hadoop.ipc.metrics.RpcMetrics;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcErrorCodeProto;
+import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcStatusProto;
 import org.apache.hadoop.ipc.protobuf.TestProtos;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
+import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.SecurityUtil;
@@ -47,11 +48,13 @@ import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.MetricsAsserts;
 import org.apache.hadoop.test.MockitoUtil;
-import org.apache.log4j.Level;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.Mockito;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 import javax.net.SocketFactory;
 import java.io.Closeable;
@@ -64,6 +67,9 @@ import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
+import java.nio.ByteBuffer;
+import java.security.PrivilegedAction;
+import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -71,19 +77,29 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
 import static org.apache.hadoop.test.MetricsAsserts.assertCounterGt;
+import static org.apache.hadoop.test.MetricsAsserts.assertGauge;
+import static org.apache.hadoop.test.MetricsAsserts.getDoubleGauge;
 import static org.apache.hadoop.test.MetricsAsserts.getLongCounter;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -92,7 +108,7 @@ import static org.mockito.Mockito.verify;
 @SuppressWarnings("deprecation")
 public class TestRPC extends TestRpcBase {
 
-  public static final Log LOG = LogFactory.getLog(TestRPC.class);
+  public static final Logger LOG = LoggerFactory.getLogger(TestRPC.class);
 
   @Before
   public void setup() {
@@ -267,7 +283,7 @@ public class TestRPC extends TestRpcBase {
         SocketFactory factory, int rpcTimeout,
         RetryPolicy connectionRetryPolicy) throws IOException {
       return getProxy(protocol, clientVersion, addr, ticket, conf, factory,
-          rpcTimeout, connectionRetryPolicy, null);
+          rpcTimeout, connectionRetryPolicy, null, null);
     }
 
     @SuppressWarnings("unchecked")
@@ -276,7 +292,8 @@ public class TestRPC extends TestRpcBase {
         Class<T> protocol, long clientVersion, InetSocketAddress addr,
         UserGroupInformation ticket, Configuration conf, SocketFactory factory,
         int rpcTimeout, RetryPolicy connectionRetryPolicy,
-        AtomicBoolean fallbackToSimpleAuth) throws IOException {
+        AtomicBoolean fallbackToSimpleAuth, AlignmentContext alignmentContext)
+        throws IOException {
       T proxy = (T) Proxy.newProxyInstance(protocol.getClassLoader(),
           new Class[] { protocol }, new StoppedInvocationHandler());
       return new ProtocolProxy<T>(protocol, proxy, false);
@@ -288,7 +305,8 @@ public class TestRPC extends TestRpcBase {
         int numHandlers, int numReaders, int queueSizePerHandler,
         boolean verbose, Configuration conf,
         SecretManager<? extends TokenIdentifier> secretManager,
-        String portRangeConfig) throws IOException {
+        String portRangeConfig, AlignmentContext alignmentContext)
+        throws IOException {
       return null;
     }
 
@@ -435,6 +453,15 @@ public class TestRPC extends TestRpcBase {
       assertCounterGt("SentBytes", 0L, rb);
       assertCounterGt("ReceivedBytes", 0L, rb);
 
+      // Check tags of the metrics
+      assertEquals("" + server.getPort(),
+          server.getRpcMetrics().getTag("port").value());
+
+      assertEquals("TestProtobufRpcProto",
+          server.getRpcMetrics().getTag("serverName").value());
+
+
+
       // Number of calls to echo method should be 2
       rb = getMetrics(server.rpcDetailedMetrics.name());
       assertCounter("EchoNumOps", 2L, rb);
@@ -462,14 +489,14 @@ public class TestRPC extends TestRpcBase {
               .setParam2(2).build();
       TestProtos.AddResponseProto addResponse =
           proxy.add(null, addRequest);
-      assertEquals(addResponse.getResult(), 3);
+      assertThat(addResponse.getResult()).isEqualTo(3);
 
       Integer[] integers = new Integer[] {1, 2};
       TestProtos.AddRequestProto2 addRequest2 =
           TestProtos.AddRequestProto2.newBuilder().addAllParams(
               Arrays.asList(integers)).build();
       addResponse = proxy.add2(null, addRequest2);
-      assertEquals(addResponse.getResult(), 3);
+      assertThat(addResponse.getResult()).isEqualTo(3);
 
       boolean caught = false;
       try {
@@ -926,9 +953,94 @@ public class TestRPC extends TestRpcBase {
     }
   }
 
+  @Test(timeout=30000)
+  public void testExternalCall() throws Exception {
+    final UserGroupInformation ugi = UserGroupInformation
+        .createUserForTesting("user123", new String[0]);
+    final IOException expectedIOE = new IOException("boom");
+
+    // use 1 handler so the callq can be plugged
+    final Server server = setupTestServer(conf, 1);
+    try {
+      final AtomicBoolean result = new AtomicBoolean();
+
+      ExternalCall<String> remoteUserCall = newExtCall(ugi,
+          new PrivilegedExceptionAction<String>() {
+            @Override
+            public String run() throws Exception {
+              return UserGroupInformation.getCurrentUser().getUserName();
+            }
+          });
+
+      ExternalCall<String> exceptionCall = newExtCall(ugi,
+          new PrivilegedExceptionAction<String>() {
+            @Override
+            public String run() throws Exception {
+              throw expectedIOE;
+            }
+          });
+
+      final CountDownLatch latch = new CountDownLatch(1);
+      final CyclicBarrier barrier = new CyclicBarrier(2);
+
+      ExternalCall<Void> barrierCall = newExtCall(ugi,
+          new PrivilegedExceptionAction<Void>() {
+            @Override
+            public Void run() throws Exception {
+              // notify we are in a handler and then wait to keep the callq
+              // plugged up
+              latch.countDown();
+              barrier.await();
+              return null;
+            }
+          });
+
+      server.queueCall(barrierCall);
+      server.queueCall(exceptionCall);
+      server.queueCall(remoteUserCall);
+
+      // wait for barrier call to enter the handler, check that the other 2
+      // calls are actually queued
+      latch.await();
+      assertEquals(2, server.getCallQueueLen());
+
+      // unplug the callq
+      barrier.await();
+      barrierCall.get();
+
+      // verify correct ugi is used
+      String answer = remoteUserCall.get();
+      assertEquals(ugi.getUserName(), answer);
+
+      try {
+        exceptionCall.get();
+        fail("didn't throw");
+      } catch (ExecutionException ee) {
+        assertTrue((ee.getCause()) instanceof IOException);
+        assertEquals(expectedIOE.getMessage(), ee.getCause().getMessage());
+      }
+    } finally {
+      server.stop();
+    }
+  }
+
+  private <T> ExternalCall<T> newExtCall(UserGroupInformation ugi,
+      PrivilegedExceptionAction<T> callable) {
+    return new ExternalCall<T>(callable) {
+      @Override
+      public String getProtocol() {
+        return "test";
+      }
+      @Override
+      public UserGroupInformation getRemoteUser() {
+        return ugi;
+      }
+    };
+  }
+
   @Test
   public void testRpcMetrics() throws Exception {
-    Server server;
+    final Server server;
     TestRpcService proxy = null;
 
     final int interval = 1;
@@ -938,7 +1050,21 @@ public class TestRPC extends TestRpcBase {
         RPC_METRICS_PERCENTILES_INTERVALS_KEY, "" + interval);
 
     server = setupTestServer(conf, 5);
-
+    String testUser = "testUser";
+    UserGroupInformation anotherUser =
+        UserGroupInformation.createRemoteUser(testUser);
+    TestRpcService proxy2 =
+        anotherUser.doAs(new PrivilegedAction<TestRpcService>() {
+          public TestRpcService run() {
+            try {
+              return RPC.getProxy(TestRpcService.class, 0,
+                  server.getListenerAddress(), conf);
+            } catch (IOException e) {
+              e.printStackTrace();
+            }
+            return null;
+          }
+        });
     try {
       proxy = getClient(addr, conf);
 
@@ -946,18 +1072,38 @@ public class TestRPC extends TestRpcBase {
         proxy.ping(null, newEmptyRequest());
 
         proxy.echo(null, newEchoRequest("" + i));
+        proxy2.echo(null, newEchoRequest("" + i));
       }
       MetricsRecordBuilder rpcMetrics =
           getMetrics(server.getRpcMetrics().name());
-      assertTrue("Expected non-zero rpc queue time",
-          getLongCounter("RpcQueueTimeNumOps", rpcMetrics) > 0);
-      assertTrue("Expected non-zero rpc processing time",
-          getLongCounter("RpcProcessingTimeNumOps", rpcMetrics) > 0);
+      assertEquals("Expected correct rpc queue count",
+          3000, getLongCounter("RpcQueueTimeNumOps", rpcMetrics));
+      assertEquals("Expected correct rpc processing count",
+          3000, getLongCounter("RpcProcessingTimeNumOps", rpcMetrics));
+      assertEquals("Expected correct rpc lock wait count",
+          3000, getLongCounter("RpcLockWaitTimeNumOps", rpcMetrics));
+      assertEquals("Expected zero rpc lock wait time",
+          0, getDoubleGauge("RpcLockWaitTimeAvgTime", rpcMetrics), 0.001);
       MetricsAsserts.assertQuantileGauges("RpcQueueTime" + interval + "s",
           rpcMetrics);
       MetricsAsserts.assertQuantileGauges("RpcProcessingTime" + interval + "s",
           rpcMetrics);
+      String actualUserVsCon = MetricsAsserts
+          .getStringMetric("NumOpenConnectionsPerUser", rpcMetrics);
+      String proxyUser =
+          UserGroupInformation.getCurrentUser().getShortUserName();
+      assertTrue(actualUserVsCon.contains("\"" + proxyUser + "\":1"));
+      assertTrue(actualUserVsCon.contains("\"" + testUser + "\":1"));
+
+      proxy.lockAndSleep(null, newSleepRequest(5));
+      rpcMetrics = getMetrics(server.getRpcMetrics().name());
+      assertGauge("RpcLockWaitTimeAvgTime",
+          (double)(RpcMetrics.TIMEUNIT.convert(10L, TimeUnit.SECONDS)),
+          rpcMetrics);
     } finally {
+      if (proxy2 != null) {
+        RPC.stopProxy(proxy2);
+      }
       stop(server, proxy);
     }
   }
@@ -1002,7 +1148,7 @@ public class TestRPC extends TestRpcBase {
                 return null;
               }
             }));
-        verify(spy, timeout(500).times(i + 1)).offer(Mockito.<Call>anyObject());
+        verify(spy, timeout(500).times(i + 1)).addInternal(any(), eq(false));
       }
       try {
         proxy.sleep(null, newSleepRequest(100));
@@ -1053,15 +1199,6 @@ public class TestRPC extends TestRpcBase {
     Exception lastException = null;
     proxy = getClient(addr, conf);
 
-    MetricsRecordBuilder rb1 =
-        getMetrics("DecayRpcSchedulerMetrics2." + ns);
-    final long beginDecayedCallVolume = MetricsAsserts.getLongCounter(
-        "DecayedCallVolume", rb1);
-    final long beginRawCallVolume = MetricsAsserts.getLongCounter(
-        "CallVolume", rb1);
-    final int beginUniqueCaller = MetricsAsserts.getIntCounter("UniqueCallers",
-        rb1);
-
     try {
       // start a sleep RPC call that sleeps 3s.
       for (int i = 0; i < numClients; i++) {
@@ -1073,7 +1210,7 @@ public class TestRPC extends TestRpcBase {
                 return null;
               }
             }));
-        verify(spy, timeout(500).times(i + 1)).offer(Mockito.<Call>anyObject());
+        verify(spy, timeout(500).times(i + 1)).addInternal(any(), eq(false));
       }
       // Start another sleep RPC call and verify the call is backed off due to
       // avg response time(3s) exceeds threshold (2s).
@@ -1089,41 +1226,6 @@ public class TestRPC extends TestRpcBase {
         } else {
           lastException = unwrapExeption;
         }
-
-        // Lets Metric system update latest metrics
-        GenericTestUtils.waitFor(new Supplier<Boolean>() {
-          @Override
-          public Boolean get() {
-            MetricsRecordBuilder rb2 =
-              getMetrics("DecayRpcSchedulerMetrics2." + ns);
-            long decayedCallVolume1 = MetricsAsserts.getLongCounter(
-                "DecayedCallVolume", rb2);
-            long rawCallVolume1 = MetricsAsserts.getLongCounter(
-                "CallVolume", rb2);
-            int uniqueCaller1 = MetricsAsserts.getIntCounter(
-                "UniqueCallers", rb2);
-            long callVolumePriority0 = MetricsAsserts.getLongGauge(
-                "Priority.0.CompletedCallVolume", rb2);
-            long callVolumePriority1 = MetricsAsserts.getLongGauge(
-                "Priority.1.CompletedCallVolume", rb2);
-            double avgRespTimePriority0 = MetricsAsserts.getDoubleGauge(
-                "Priority.0.AvgResponseTime", rb2);
-            double avgRespTimePriority1 = MetricsAsserts.getDoubleGauge(
-                "Priority.1.AvgResponseTime", rb2);
-
-            LOG.info("DecayedCallVolume: " + decayedCallVolume1);
-            LOG.info("CallVolume: " + rawCallVolume1);
-            LOG.info("UniqueCaller: " + uniqueCaller1);
-            LOG.info("Priority.0.CompletedCallVolume: " + callVolumePriority0);
-            LOG.info("Priority.1.CompletedCallVolume: " + callVolumePriority1);
-            LOG.info("Priority.0.AvgResponseTime: " + avgRespTimePriority0);
-            LOG.info("Priority.1.AvgResponseTime: " + avgRespTimePriority1);
-
-            return decayedCallVolume1 > beginDecayedCallVolume &&
-                rawCallVolume1 > beginRawCallVolume &&
-                uniqueCaller1 > beginUniqueCaller;
-          }
-        }, 30, 60000);
       }
     } finally {
       executorService.shutdown();
@@ -1133,6 +1235,100 @@ public class TestRPC extends TestRpcBase {
       LOG.error("Last received non-RetriableException:", lastException);
     }
     assertTrue("RetriableException not received", succeeded);
+  }
+
+  /** Test that the metrics for DecayRpcScheduler are updated. */
+  @Test (timeout=30000)
+  public void testDecayRpcSchedulerMetrics() throws Exception {
+    final String ns = CommonConfigurationKeys.IPC_NAMESPACE + ".0";
+    Server server = setupDecayRpcSchedulerandTestServer(ns + ".");
+
+    MetricsRecordBuilder rb1 =
+        getMetrics("DecayRpcSchedulerMetrics2." + ns);
+    final long beginDecayedCallVolume = MetricsAsserts.getLongCounter(
+        "DecayedCallVolume", rb1);
+    final long beginRawCallVolume = MetricsAsserts.getLongCounter(
+        "CallVolume", rb1);
+    final int beginUniqueCaller = MetricsAsserts.getIntCounter("UniqueCallers",
+        rb1);
+
+    TestRpcService proxy = getClient(addr, conf);
+    try {
+      for (int i = 0; i < 2; i++) {
+        proxy.sleep(null, newSleepRequest(100));
+      }
+
+      // Lets Metric system update latest metrics
+      GenericTestUtils.waitFor(() -> {
+        MetricsRecordBuilder rb2 =
+            getMetrics("DecayRpcSchedulerMetrics2." + ns);
+        long decayedCallVolume1 = MetricsAsserts.getLongCounter(
+            "DecayedCallVolume", rb2);
+        long rawCallVolume1 = MetricsAsserts.getLongCounter(
+            "CallVolume", rb2);
+        int uniqueCaller1 = MetricsAsserts.getIntCounter(
+            "UniqueCallers", rb2);
+        long callVolumePriority0 = MetricsAsserts.getLongGauge(
+            "Priority.0.CompletedCallVolume", rb2);
+        long callVolumePriority1 = MetricsAsserts.getLongGauge(
+            "Priority.1.CompletedCallVolume", rb2);
+        double avgRespTimePriority0 = MetricsAsserts.getDoubleGauge(
+            "Priority.0.AvgResponseTime", rb2);
+        double avgRespTimePriority1 = MetricsAsserts.getDoubleGauge(
+            "Priority.1.AvgResponseTime", rb2);
+
+        LOG.info("DecayedCallVolume: {}", decayedCallVolume1);
+        LOG.info("CallVolume: {}", rawCallVolume1);
+        LOG.info("UniqueCaller: {}", uniqueCaller1);
+        LOG.info("Priority.0.CompletedCallVolume: {}", callVolumePriority0);
+        LOG.info("Priority.1.CompletedCallVolume: {}", callVolumePriority1);
+        LOG.info("Priority.0.AvgResponseTime: {}", avgRespTimePriority0);
+        LOG.info("Priority.1.AvgResponseTime: {}", avgRespTimePriority1);
+
+        return decayedCallVolume1 > beginDecayedCallVolume &&
+            rawCallVolume1 > beginRawCallVolume &&
+            uniqueCaller1 > beginUniqueCaller;
+      }, 30, 60000);
+    } finally {
+      stop(server, proxy);
+    }
+  }
+
+  @Test (timeout=30000)
+  public void testProtocolUserPriority() throws Exception {
+    final String ns = CommonConfigurationKeys.IPC_NAMESPACE + ".0";
+    conf.set(CLIENT_PRINCIPAL_KEY, "clientForProtocol");
+    Server server = null;
+    try {
+      server = setupDecayRpcSchedulerandTestServer(ns + ".");
+
+      UserGroupInformation ugi = UserGroupInformation.createRemoteUser("user");
+      // normal users start with priority 0.
+      Assert.assertEquals(0, server.getPriorityLevel(ugi));
+      // calls for a protocol defined client will have priority of 0.
+      Assert.assertEquals(0, server.getPriorityLevel(newSchedulable(ugi)));
+
+      // protocol defined client will have top priority of -1.
+      ugi = UserGroupInformation.createRemoteUser("clientForProtocol");
+      Assert.assertEquals(-1, server.getPriorityLevel(ugi));
+      // calls for a protocol defined client will have priority of 0.
+      Assert.assertEquals(0, server.getPriorityLevel(newSchedulable(ugi)));
+    } finally {
+      stop(server, null);
+    }
+  }
+
+  private static Schedulable newSchedulable(UserGroupInformation ugi) {
+    return new Schedulable(){
+      @Override
+      public UserGroupInformation getUserGroupInformation() {
+        return ugi;
+      }
+      @Override
+      public int getPriorityLevel() {
+        return 0; // doesn't matter.
+      }
+    };
   }
 
   private Server setupDecayRpcSchedulerandTestServer(String ns)
@@ -1239,6 +1435,172 @@ public class TestRPC extends TestRpcBase {
     } finally {
       stop(server, proxy);
     }
+  }
+
+  @Test
+  public void testServerNameFromClass() {
+    Assert.assertEquals("TestRPC",
+        RPC.Server.serverNameFromClass(this.getClass()));
+    Assert.assertEquals("TestClass",
+        RPC.Server.serverNameFromClass(TestRPC.TestClass.class));
+
+    Object testing = new TestClass().classFactory();
+    Assert.assertEquals("Embedded",
+        RPC.Server.serverNameFromClass(testing.getClass()));
+
+    testing = new TestClass().classFactoryAbstract();
+    Assert.assertEquals("TestClass",
+        RPC.Server.serverNameFromClass(testing.getClass()));
+
+    testing = new TestClass().classFactoryObject();
+    Assert.assertEquals("TestClass",
+        RPC.Server.serverNameFromClass(testing.getClass()));
+
+  }
+
+  static class TestClass {
+    class Embedded {
+    }
+
+    abstract class AbstractEmbedded {
+
+    }
+
+    private Object classFactory() {
+      return new Embedded();
+    }
+
+    private Object classFactoryAbstract() {
+      return new AbstractEmbedded() {
+      };
+    }
+
+    private Object classFactoryObject() {
+      return new Object() {
+      };
+    }
+
+  }
+  public static class FakeRequestClass extends RpcWritable {
+    static volatile IOException exception;
+    @Override
+    void writeTo(ResponseBuffer out) throws IOException {
+      throw new UnsupportedOperationException();
+    }
+    @Override
+    <T> T readFrom(ByteBuffer bb) throws IOException {
+      throw exception;
+    }
+  }
+
+  @SuppressWarnings("serial")
+  public static class TestReaderException extends IOException {
+    public TestReaderException(String msg) {
+      super(msg);
+    }
+    @Override
+    public boolean equals(Object t) {
+      return (t.getClass() == TestReaderException.class) &&
+             getMessage().equals(((TestReaderException)t).getMessage());
+    }
+  }
+
+  @Test (timeout=30000)
+  public void testReaderExceptions() throws Exception {
+    Server server = null;
+    TestRpcService proxy = null;
+
+    // will attempt to return this exception from a reader with and w/o
+    // the connection closing.
+    IOException expectedIOE = new TestReaderException("testing123");
+
+    @SuppressWarnings("serial")
+    IOException rseError = new RpcServerException("keepalive", expectedIOE){
+      @Override
+      public RpcStatusProto getRpcStatusProto() {
+        return RpcStatusProto.ERROR;
+      }
+    };
+    @SuppressWarnings("serial")
+    IOException rseFatal = new RpcServerException("disconnect", expectedIOE) {
+      @Override
+      public RpcStatusProto getRpcStatusProto() {
+        return RpcStatusProto.FATAL;
+      }
+    };
+
+    try {
+      RPC.Builder builder = newServerBuilder(conf)
+          .setQueueSizePerHandler(1).setNumHandlers(1).setVerbose(true);
+      server = setupTestServer(builder);
+      Whitebox.setInternalState(
+          server, "rpcRequestClass", FakeRequestClass.class);
+      MutableCounterLong authMetric =
+          (MutableCounterLong)Whitebox.getInternalState(
+              server.getRpcMetrics(), "rpcAuthorizationSuccesses");
+
+      proxy = getClient(addr, conf);
+      boolean isDisconnected = true;
+      Connection lastConn = null;
+      long expectedAuths = 0;
+
+      // fuzz the client.
+      for (int i=0; i < 128; i++) {
+        String reqName = "request[" + i + "]";
+        int r = ThreadLocalRandom.current().nextInt();
+        final boolean doDisconnect = r % 4 == 0;
+        LOG.info("TestDisconnect request[" + i + "] " +
+                 " shouldConnect=" + isDisconnected +
+                 " willDisconnect=" + doDisconnect);
+        if (isDisconnected) {
+          expectedAuths++;
+        }
+        try {
+          FakeRequestClass.exception = doDisconnect ? rseFatal : rseError;
+          proxy.ping(null, newEmptyRequest());
+          fail(reqName + " didn't fail");
+        } catch (ServiceException e) {
+          RemoteException re = (RemoteException)e.getCause();
+          assertEquals(reqName, expectedIOE, re.unwrapRemoteException());
+        }
+        // check authorizations to ensure new connection when expected,
+        // then conclusively determine if connections are disconnected
+        // correctly.
+        assertEquals(reqName, expectedAuths, authMetric.value());
+        if (!doDisconnect) {
+          // if it wasn't fatal, verify there's only one open connection.
+          Connection[] conns = server.getConnections();
+          assertEquals(reqName, 1, conns.length);
+          // verify whether the connection should have been reused.
+          if (isDisconnected) {
+            assertNotSame(reqName, lastConn, conns[0]);
+          } else {
+            assertSame(reqName, lastConn, conns[0]);
+          }
+          lastConn = conns[0];
+        } else if (lastConn != null) {
+          // avoid race condition in server where connection may not be
+          // fully removed yet.  just make sure it's marked for being closed.
+          // the open connection checks above ensure correct behavior.
+          assertTrue(reqName, lastConn.shouldClose());
+        }
+        isDisconnected = doDisconnect;
+      }
+    } finally {
+      stop(server, proxy);
+    }
+  }
+
+  @Test
+  public void testSetProtocolEngine() {
+    Configuration conf = new Configuration();
+    RPC.setProtocolEngine(conf, StoppedProtocol.class, StoppedRpcEngine.class);
+    RpcEngine rpcEngine = RPC.getProtocolEngine(StoppedProtocol.class, conf);
+    assertTrue(rpcEngine instanceof StoppedRpcEngine);
+
+    RPC.setProtocolEngine(conf, StoppedProtocol.class, ProtobufRpcEngine.class);
+    rpcEngine = RPC.getProtocolEngine(StoppedProtocol.class, conf);
+    assertTrue(rpcEngine instanceof StoppedRpcEngine);
   }
 
   public static void main(String[] args) throws Exception {

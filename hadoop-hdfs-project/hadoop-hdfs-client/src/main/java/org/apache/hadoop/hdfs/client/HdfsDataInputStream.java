@@ -26,11 +26,12 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.crypto.CryptoInputStream;
 import org.apache.hadoop.hdfs.DFSInputStream;
+import org.apache.hadoop.hdfs.ReadStatistics;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 /**
  * The Hdfs implementation of {@link FSDataInputStream}.
@@ -103,7 +104,7 @@ public class HdfsDataInputStream extends FSDataInputStream {
    * be higher than you would expect just by adding up the number of
    * bytes read through HdfsDataInputStream.
    */
-  public DFSInputStream.ReadStatistics getReadStatistics() {
+  public ReadStatistics getReadStatistics() {
     return getDFSInputStream().getReadStatistics();
   }
 

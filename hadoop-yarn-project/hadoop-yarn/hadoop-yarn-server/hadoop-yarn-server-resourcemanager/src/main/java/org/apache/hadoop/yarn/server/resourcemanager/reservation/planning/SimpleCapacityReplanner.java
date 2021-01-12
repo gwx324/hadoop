@@ -23,8 +23,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.api.records.ReservationDefinition;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.Plan;
@@ -36,20 +36,20 @@ import org.apache.hadoop.yarn.util.UTCClock;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * This (re)planner scan a period of time from now to a maximum time window (or
  * the end of the last session, whichever comes first) checking the overall
  * capacity is not violated.
- * 
+ *
  * It greedily removes sessions in reversed order of acceptance (latest accepted
  * is the first removed).
  */
 public class SimpleCapacityReplanner implements Planner {
 
-  private static final Log LOG = LogFactory
-      .getLog(SimpleCapacityReplanner.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(SimpleCapacityReplanner.class);
 
   private static final Resource ZERO_RESOURCE = Resource.newInstance(0, 0);
 
@@ -90,8 +90,8 @@ public class SimpleCapacityReplanner implements Planner {
 
     // loop on all moment in time from now to the end of the check Zone
     // or the end of the planned sessions whichever comes first
-    for (long t = now; 
-         (t < plan.getLastEndTime() && t < (now + lengthOfCheckZone)); 
+    for (long t = now;
+         (t < plan.getLastEndTime() && t < (now + lengthOfCheckZone));
          t += plan.getStep()) {
       Resource excessCap =
           Resources.subtract(plan.getTotalCommittedResources(t), totCap);
@@ -102,7 +102,7 @@ public class SimpleCapacityReplanner implements Planner {
             new TreeSet<ReservationAllocation>(plan.getReservationsAtTime(t));
         for (Iterator<ReservationAllocation> resIter =
             curReservations.iterator(); resIter.hasNext()
-            && Resources.greaterThan(resCalc, totCap, excessCap, 
+            && Resources.greaterThan(resCalc, totCap, excessCap,
                 ZERO_RESOURCE);) {
           ReservationAllocation reservation = resIter.next();
           plan.deleteReservation(reservation.getReservationId());

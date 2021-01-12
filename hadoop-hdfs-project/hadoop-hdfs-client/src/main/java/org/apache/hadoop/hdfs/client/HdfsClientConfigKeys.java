@@ -35,6 +35,8 @@ public interface HdfsClientConfigKeys {
   String  DFS_WEBHDFS_USER_PATTERN_KEY =
       "dfs.webhdfs.user.provider.user.pattern";
   String  DFS_WEBHDFS_USER_PATTERN_DEFAULT = "^[A-Za-z_][A-Za-z0-9._-]*[$]?$";
+  String  DFS_WEBHDFS_ACL_PERMISSION_PATTERN_KEY =
+      "dfs.webhdfs.acl.provider.permission.pattern";
   String DFS_WEBHDFS_ACL_PERMISSION_PATTERN_DEFAULT =
       "^(default:)?(user|group|mask|other):[[A-Za-z_][A-Za-z0-9._-]]*:([rwx-]{3})?(,(default:)?(user|group|mask|other):[[A-Za-z_][A-Za-z0-9._-]]*:([rwx-]{3})?)*$";
 
@@ -65,12 +67,18 @@ public interface HdfsClientConfigKeys {
 
   String PREFIX = "dfs.client.";
   String  DFS_NAMESERVICES = "dfs.nameservices";
+  String DFS_NAMENODE_RPC_ADDRESS_KEY = "dfs.namenode.rpc-address";
+
+  String DFS_NAMENODE_RPC_ADDRESS_AUXILIARY_SUFFIX = "auxiliary-ports";
+  String DFS_NAMENODE_RPC_ADDRESS_AUXILIARY_KEY = DFS_NAMENODE_RPC_ADDRESS_KEY
+      + "." + DFS_NAMENODE_RPC_ADDRESS_AUXILIARY_SUFFIX;
+
   int     DFS_NAMENODE_HTTP_PORT_DEFAULT = 9870;
   String  DFS_NAMENODE_HTTP_ADDRESS_KEY = "dfs.namenode.http-address";
   int     DFS_NAMENODE_HTTPS_PORT_DEFAULT = 9871;
   String  DFS_NAMENODE_HTTPS_ADDRESS_KEY = "dfs.namenode.https-address";
   String DFS_HA_NAMENODES_KEY_PREFIX = "dfs.ha.namenodes";
-  int DFS_NAMENODE_RPC_PORT_DEFAULT = 9820;
+  int DFS_NAMENODE_RPC_PORT_DEFAULT = 8020;
   String DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY =
       "dfs.namenode.kerberos.principal";
   String  DFS_CLIENT_WRITE_PACKET_SIZE_KEY = "dfs.client-write-packet-size";
@@ -100,6 +108,9 @@ public interface HdfsClientConfigKeys {
   String  DFS_CLIENT_USE_LEGACY_BLOCKREADERLOCAL =
       "dfs.client.use.legacy.blockreader.local";
   boolean DFS_CLIENT_USE_LEGACY_BLOCKREADERLOCAL_DEFAULT = false;
+  String DFS_CLIENT_READ_USE_CACHE_PRIORITY =
+      "dfs.client.read.use.cache.priority";
+  boolean DFS_CLIENT_READ_USE_CACHE_PRIORITY_DEFAULT = false;
   String  DFS_CLIENT_DATANODE_RESTART_TIMEOUT_KEY =
       "dfs.client.datanode-restart.timeout";
   long    DFS_CLIENT_DATANODE_RESTART_TIMEOUT_DEFAULT = 30;
@@ -109,10 +120,16 @@ public interface HdfsClientConfigKeys {
   String  DFS_CLIENT_MAX_BLOCK_ACQUIRE_FAILURES_KEY =
       "dfs.client.max.block.acquire.failures";
   int     DFS_CLIENT_MAX_BLOCK_ACQUIRE_FAILURES_DEFAULT = 3;
+  String  DFS_CLIENT_SERVER_DEFAULTS_VALIDITY_PERIOD_MS_KEY =
+      "dfs.client.server-defaults.validity.period.ms";
+  long    DFS_CLIENT_SERVER_DEFAULTS_VALIDITY_PERIOD_MS_DEFAULT =
+      TimeUnit.HOURS.toMillis(1);
   String  DFS_CHECKSUM_TYPE_KEY = "dfs.checksum.type";
   String  DFS_CHECKSUM_TYPE_DEFAULT = "CRC32C";
   String  DFS_BYTES_PER_CHECKSUM_KEY = "dfs.bytes-per-checksum";
   int     DFS_BYTES_PER_CHECKSUM_DEFAULT = 512;
+  String  DFS_CHECKSUM_COMBINE_MODE_KEY = "dfs.checksum.combine.mode";
+  String  DFS_CHECKSUM_COMBINE_MODE_DEFAULT = "MD5MD5CRC";
   String  DFS_DATANODE_SOCKET_WRITE_TIMEOUT_KEY =
       "dfs.datanode.socket.write.timeout";
   String  DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC =
@@ -120,10 +137,15 @@ public interface HdfsClientConfigKeys {
   boolean DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC_DEFAULT = false;
   String  DFS_DOMAIN_SOCKET_PATH_KEY = "dfs.domain.socket.path";
   String  DFS_DOMAIN_SOCKET_PATH_DEFAULT = "";
+  String DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_KEY =
+      "dfs.domain.socket.disable.interval.seconds";
+  long DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_DEFAULT = 600;
   String  DFS_SHORT_CIRCUIT_SHARED_MEMORY_WATCHER_INTERRUPT_CHECK_MS =
       "dfs.short.circuit.shared.memory.watcher.interrupt.check.ms";
   int     DFS_SHORT_CIRCUIT_SHARED_MEMORY_WATCHER_INTERRUPT_CHECK_MS_DEFAULT =
       60000;
+  String DFS_CLIENT_SHORT_CIRCUIT_NUM = "dfs.client.short.circuit.num";
+  int DFS_CLIENT_SHORT_CIRCUIT_NUM_DEFAULT = 1;
   String  DFS_CLIENT_SLOW_IO_WARNING_THRESHOLD_KEY =
       "dfs.client.slow.io.warning.threshold.ms";
   long    DFS_CLIENT_SLOW_IO_WARNING_THRESHOLD_DEFAULT = 30000;
@@ -131,18 +153,64 @@ public interface HdfsClientConfigKeys {
           "dfs.client.key.provider.cache.expiry";
   long    DFS_CLIENT_KEY_PROVIDER_CACHE_EXPIRY_DEFAULT =
               TimeUnit.DAYS.toMillis(10); // 10 days
-  String  DFS_HDFS_BLOCKS_METADATA_ENABLED =
-      "dfs.datanode.hdfs-blocks-metadata.enabled";
-  boolean DFS_HDFS_BLOCKS_METADATA_ENABLED_DEFAULT = false;
+  String DFS_CLIENT_BLOCK_READER_REMOTE_BUFFER_SIZE_KEY =
+      "dfs.client.block.reader.remote.buffer.size";
+  int DFS_CLIENT_BLOCK_READER_REMOTE_BUFFER_SIZE_DEFAULT = 512;
+
+  String DFS_CLIENT_DEAD_NODE_DETECTION_ENABLED_KEY =
+          "dfs.client.deadnode.detection.enabled";
+  boolean DFS_CLIENT_DEAD_NODE_DETECTION_ENABLED_DEFAULT = false;
+
+  String DFS_CLIENT_DEAD_NODE_DETECTION_DEAD_NODE_QUEUE_MAX_KEY =
+      "dfs.client.deadnode.detection.deadnode.queue.max";
+  int DFS_CLIENT_DEAD_NODE_DETECTION_DEAD_NODE_QUEUE_MAX_DEFAULT = 100;
+
+  String DFS_CLIENT_DEAD_NODE_DETECTION_SUSPECT_NODE_QUEUE_MAX_KEY =
+      "dfs.client.deadnode.detection.suspectnode.queue.max";
+  int DFS_CLIENT_DEAD_NODE_DETECTION_SUSPECT_NODE_QUEUE_MAX_DEFAULT = 1000;
+
+  String DFS_CLIENT_DEAD_NODE_DETECTION_PROBE_CONNECTION_TIMEOUT_MS_KEY =
+      "dfs.client.deadnode.detection.probe.connection.timeout.ms";
+  long DFS_CLIENT_DEAD_NODE_DETECTION_PROBE_CONNECTION_TIMEOUT_MS_DEFAULT =
+      20000;
+
+  String DFS_CLIENT_DEAD_NODE_DETECTION_PROBE_DEAD_NODE_THREADS_KEY =
+      "dfs.client.deadnode.detection.probe.deadnode.threads";
+  int DFS_CLIENT_DEAD_NODE_DETECTION_PROBE_DEAD_NODE_THREADS_DEFAULT = 10;
+
+  String DFS_CLIENT_DEAD_NODE_DETECTION_PROBE_SUSPECT_NODE_THREADS_KEY =
+      "dfs.client.deadnode.detection.probe.suspectnode.threads";
+  int DFS_CLIENT_DEAD_NODE_DETECTION_PROBE_SUSPECT_NODE_THREADS_DEFAULT = 10;
+
+  String DFS_CLIENT_DEAD_NODE_DETECTION_RPC_THREADS_KEY =
+      "dfs.client.deadnode.detection.rpc.threads";
+  int DFS_CLIENT_DEAD_NODE_DETECTION_RPC_THREADS_DEFAULT = 20;
+
+  String DFS_CLIENT_DEAD_NODE_DETECTION_PROBE_DEAD_NODE_INTERVAL_MS_KEY =
+      "dfs.client.deadnode.detection.probe.deadnode.interval.ms";
+  long DFS_CLIENT_DEAD_NODE_DETECTION_PROBE_DEAD_NODE_INTERVAL_MS_DEFAULT =
+      60 * 1000; // 60s
+
+  String DFS_CLIENT_DEAD_NODE_DETECTION_PROBE_SUSPECT_NODE_INTERVAL_MS_KEY =
+      "dfs.client.deadnode.detection.probe.suspectnode.interval.ms";
+  long DFS_CLIENT_DEAD_NODE_DETECTION_PROBE_SUSPECT_NODE_INTERVAL_MS_DEFAULT =
+      300; // 300ms
+
+  // refreshing LocatedBlocks period. A value of 0 disables the feature.
+  String  DFS_CLIENT_REFRESH_READ_BLOCK_LOCATIONS_MS_KEY =
+      "dfs.client.refresh.read-block-locations.ms";
+  long DFS_CLIENT_REFRESH_READ_BLOCK_LOCATIONS_MS_DEFAULT = 0L;
 
   String  DFS_DATANODE_KERBEROS_PRINCIPAL_KEY =
       "dfs.datanode.kerberos.principal";
   String  DFS_DATANODE_READAHEAD_BYTES_KEY = "dfs.datanode.readahead.bytes";
   long    DFS_DATANODE_READAHEAD_BYTES_DEFAULT = 4 * 1024 * 1024; // 4MB
-  String  DFS_ENCRYPTION_KEY_PROVIDER_URI = "dfs.encryption.key.provider.uri";
 
   String DFS_ENCRYPT_DATA_TRANSFER_CIPHER_SUITES_KEY =
       "dfs.encrypt.data.transfer.cipher.suites";
+
+  String DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_NEW_QOP_KEY =
+      "dfs.encrypt.data.overwrite.downstream.new.qop";
 
   String DFS_DATA_TRANSFER_PROTECTION_KEY = "dfs.data.transfer.protection";
   String DFS_DATA_TRANSFER_PROTECTION_DEFAULT = "";
@@ -152,6 +220,12 @@ public interface HdfsClientConfigKeys {
   String DFS_ENCRYPT_DATA_TRANSFER_CIPHER_KEY_BITLENGTH_KEY =
       "dfs.encrypt.data.transfer.cipher.key.bitlength";
   int    DFS_ENCRYPT_DATA_TRANSFER_CIPHER_KEY_BITLENGTH_DEFAULT = 128;
+
+  public static final String
+          DFS_DATA_TRANSFER_MAX_PACKET_SIZE =
+          "dfs.data.transfer.max.packet.size";
+  public static final int DFS_DATA_TRANSFER_MAX_PACKET_SIZE_DEFAULT =
+          16 * 1024 * 1024;
 
   String DFS_TRUSTEDCHANNEL_RESOLVER_CLASS =
       "dfs.trustedchannel.resolver.class";
@@ -171,6 +245,16 @@ public interface HdfsClientConfigKeys {
   String DFS_DATA_TRANSFER_CLIENT_TCPNODELAY_KEY =
       "dfs.data.transfer.client.tcpnodelay";
   boolean DFS_DATA_TRANSFER_CLIENT_TCPNODELAY_DEFAULT = true;
+
+  String DFS_NAMENODE_SNAPSHOT_CAPTURE_OPENFILES =
+      "dfs.namenode.snapshot.capture.openfiles";
+  boolean DFS_NAMENODE_SNAPSHOT_CAPTURE_OPENFILES_DEFAULT = false;
+
+  String DFS_PROVIDED_ALIASMAP_INMEMORY_RPC_ADDRESS =
+      "dfs.provided.aliasmap.inmemory.dnrpc-address";
+
+  String DFS_LEASE_HARDLIMIT_KEY = "dfs.namenode.lease-hard-limit-sec";
+  long DFS_LEASE_HARDLIMIT_DEFAULT = 20 * 60;
 
   /**
    * These are deprecated config keys to client code.
@@ -208,10 +292,12 @@ public interface HdfsClientConfigKeys {
     String DFS_METRICS_SESSION_ID_KEY = "dfs.metrics.session-id";
     String DFS_NAMENODE_ACCESSTIME_PRECISION_KEY =
         "dfs.namenode.accesstime.precision";
-    String DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY =
-        "dfs.namenode.replication.considerLoad";
-    String DFS_NAMENODE_REPLICATION_INTERVAL_KEY =
-        "dfs.namenode.replication.interval";
+    String DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY =
+        "dfs.namenode.redundancy.considerLoad";
+    String DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_FACTOR =
+        "dfs.namenode.redundancy.considerLoad.factor";
+    String DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY =
+        "dfs.namenode.redundancy.interval.seconds";
     String DFS_NAMENODE_REPLICATION_MIN_KEY = "dfs.namenode.replication.min";
     String DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY =
         "dfs.namenode.reconstruction.pending.timeout-sec";
@@ -264,6 +350,13 @@ public interface HdfsClientConfigKeys {
     String  CONNECTION_RETRIES_ON_SOCKET_TIMEOUTS_KEY =
         PREFIX + "connection.retries.on.timeouts";
     int     CONNECTION_RETRIES_ON_SOCKET_TIMEOUTS_DEFAULT = 0;
+    String  RANDOM_ORDER = PREFIX + "random.order";
+    boolean RANDOM_ORDER_DEFAULT = true;
+    String  RESOLVE_ADDRESS_NEEDED_KEY = PREFIX + "resolve-needed";
+    boolean RESOLVE_ADDRESS_NEEDED_DEFAULT = false;
+    String RESOLVE_SERVICE_KEY = PREFIX + "resolver.impl";
+    String  RESOLVE_ADDRESS_TO_FQDN = PREFIX + "resolver.useFQDN";
+    boolean RESOLVE_ADDRESS_TO_FQDN_DEFAULT = true;
   }
 
   /** dfs.client.write configuration properties */
@@ -275,6 +368,9 @@ public interface HdfsClientConfigKeys {
     String  EXCLUDE_NODES_CACHE_EXPIRY_INTERVAL_KEY =
         PREFIX + "exclude.nodes.cache.expiry.interval.millis";
     long    EXCLUDE_NODES_CACHE_EXPIRY_INTERVAL_DEFAULT = 10*MINUTE;
+    String RECOVER_LEASE_ON_CLOSE_EXCEPTION_KEY =
+        PREFIX + "recover.lease.on.close.exception";
+    boolean RECOVER_LEASE_ON_CLOSE_EXCEPTION_DEFAULT = false;
 
     interface ByteArrayManager {
       String PREFIX = Write.PREFIX + "byte-array-manager.";
@@ -303,6 +399,9 @@ public interface HdfsClientConfigKeys {
     String  LOCATEFOLLOWINGBLOCK_INITIAL_DELAY_MS_KEY =
         PREFIX + "locateFollowingBlock.initial.delay.ms";
     int     LOCATEFOLLOWINGBLOCK_INITIAL_DELAY_MS_DEFAULT = 400;
+    String  LOCATEFOLLOWINGBLOCK_MAX_DELAY_MS_KEY =
+        PREFIX + "locateFollowingBlock.max.delay.ms";
+    int     LOCATEFOLLOWINGBLOCK_MAX_DELAY_MS_DEFAULT = 60000;
 
     interface ReplaceDatanodeOnFailure {
       String PREFIX = BlockWrite.PREFIX + "replace-datanode-on-failure.";
@@ -313,6 +412,8 @@ public interface HdfsClientConfigKeys {
       String  POLICY_DEFAULT = "DEFAULT";
       String  BEST_EFFORT_KEY = PREFIX + "best-effort";
       boolean BEST_EFFORT_DEFAULT = false;
+      String MIN_REPLICATION = PREFIX + "min-replication";
+      short MIN_REPLICATION_DEFAULT = 0;
     }
   }
 
@@ -321,6 +422,9 @@ public interface HdfsClientConfigKeys {
     String PREFIX = HdfsClientConfigKeys.PREFIX + "read.";
 
     String  PREFETCH_SIZE_KEY = PREFIX + "prefetch.size";
+
+    String URI_CACHE_KEY = PREFIX + "uri.cache.enabled";
+    boolean URI_CACHE_DEFAULT = false;
 
     interface ShortCircuit {
       String PREFIX = Read.PREFIX + "shortcircuit.";
@@ -336,6 +440,10 @@ public interface HdfsClientConfigKeys {
       int     STREAMS_CACHE_SIZE_DEFAULT = 256;
       String  STREAMS_CACHE_EXPIRY_MS_KEY = PREFIX + "streams.cache.expiry.ms";
       long    STREAMS_CACHE_EXPIRY_MS_DEFAULT = 5*MINUTE;
+
+      String  METRICS_SAMPLING_PERCENTAGE_KEY =
+          PREFIX + "metrics.sampling.percentage";
+      int     METRICS_SAMPLING_PERCENTAGE_DEFAULT = 0;
     }
   }
 
@@ -378,7 +486,7 @@ public interface HdfsClientConfigKeys {
 
     String  THREADPOOL_SIZE_KEY = PREFIX + "threadpool.size";
     /**
-     * With default RS-6-3-64k erasure coding policy, each normal read could
+     * With default RS-6-3-1024k erasure coding policy, each normal read could
      * span 6 DNs, so this default value accommodates 3 read streams
      */
     int     THREADPOOL_SIZE_DEFAULT = 18;

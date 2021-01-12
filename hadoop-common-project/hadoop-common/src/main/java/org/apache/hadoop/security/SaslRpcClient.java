@@ -18,11 +18,9 @@
 
 package org.apache.hadoop.security;
 
-import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.FilterInputStream;
 import java.io.FilterOutputStream;
 import java.io.IOException;
@@ -46,18 +44,18 @@ import javax.security.sasl.RealmChoiceCallback;
 import javax.security.sasl.Sasl;
 import javax.security.sasl.SaslException;
 import javax.security.sasl.SaslClient;
+import javax.security.sasl.SaslClientFactory;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.GlobPattern;
-import org.apache.hadoop.ipc.ProtobufRpcEngine.RpcRequestMessageWrapper;
-import org.apache.hadoop.ipc.ProtobufRpcEngine.RpcResponseMessageWrapper;
+import org.apache.hadoop.ipc.Client.IpcStreams;
 import org.apache.hadoop.ipc.RPC.RpcKind;
 import org.apache.hadoop.ipc.RemoteException;
+import org.apache.hadoop.ipc.ResponseBuffer;
 import org.apache.hadoop.ipc.RpcConstants;
+import org.apache.hadoop.ipc.RpcWritable;
 import org.apache.hadoop.ipc.Server.AuthProtocol;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcRequestHeaderProto;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcRequestHeaderProto.OperationProto;
@@ -73,9 +71,12 @@ import org.apache.hadoop.security.token.TokenInfo;
 import org.apache.hadoop.security.token.TokenSelector;
 import org.apache.hadoop.util.ProtoUtil;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.protobuf.ByteString;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
 import com.google.re2j.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * A utility class that encapsulates SASL logic for RPC client
  */
@@ -83,7 +84,7 @@ import com.google.re2j.Pattern;
 @InterfaceStability.Evolving
 public class SaslRpcClient {
   // This log is public as it is referenced in tests
-  public static final Log LOG = LogFactory.getLog(SaslRpcClient.class);
+  public static final Logger LOG = LoggerFactory.getLogger(SaslRpcClient.class);
 
   private final UserGroupInformation ugi;
   private final Class<?> protocol;
@@ -93,6 +94,7 @@ public class SaslRpcClient {
   private SaslClient saslClient;
   private SaslPropertiesResolver saslPropsResolver;
   private AuthMethod authMethod;
+  private static SaslClientFactory saslFactory;
   
   private static final RpcRequestHeaderProto saslHeader = ProtoUtil
       .makeRpcRequestHeader(RpcKind.RPC_PROTOCOL_BUFFER,
@@ -100,6 +102,10 @@ public class SaslRpcClient {
           RpcConstants.INVALID_RETRY_COUNT, RpcConstants.DUMMY_CLIENT_ID);
   private static final RpcSaslProto negotiateRequest =
       RpcSaslProto.newBuilder().setState(SaslState.NEGOTIATE).build();
+
+  static {
+    saslFactory = new FastSaslClientFactory(null);
+  }
 
   /**
    * Create a SaslRpcClient that can be used by a RPC client to negotiate
@@ -251,8 +257,8 @@ public class SaslRpcClient {
       LOG.debug("Creating SASL " + mechanism + "(" + method + ") "
           + " client to authenticate to service at " + saslServerName);
     }
-    return Sasl.createSaslClient(
-        new String[] { mechanism }, saslUser, saslProtocol, saslServerName,
+    return saslFactory.createSaslClient(
+        new String[] {mechanism}, saslUser, saslProtocol, saslServerName,
         saslProperties, saslCallback);
   }
 
@@ -305,13 +311,16 @@ public class SaslRpcClient {
         authType.getProtocol() + "/" + authType.getServerId(),
         KerberosPrincipal.KRB_NT_SRV_HST).getName();
 
-    boolean isPrincipalValid = false;
-
     // use the pattern if defined
     String serverKeyPattern = conf.get(serverKey + ".pattern");
     if (serverKeyPattern != null && !serverKeyPattern.isEmpty()) {
       Pattern pattern = GlobPattern.compile(serverKeyPattern);
-      isPrincipalValid = pattern.matcher(serverPrincipal).matches();
+      if (!pattern.matcher(serverPrincipal).matches()) {
+        throw new IllegalArgumentException(String.format(
+            "Server has invalid Kerberos principal: %s,"
+                + " doesn't match the pattern: %s",
+            serverPrincipal, serverKeyPattern));
+      }
     } else {
       // check that the server advertised principal matches our conf
       String confPrincipal = SecurityUtil.getServerPrincipal(
@@ -330,46 +339,36 @@ public class SaslRpcClient {
             "Kerberos principal name does NOT have the expected hostname part: "
                 + confPrincipal);
       }
-      isPrincipalValid = serverPrincipal.equals(confPrincipal);
-    }
-    if (!isPrincipalValid) {
-      throw new IllegalArgumentException(
-          "Server has invalid Kerberos principal: " + serverPrincipal);
+      if (!serverPrincipal.equals(confPrincipal)) {
+        throw new IllegalArgumentException(String.format(
+            "Server has invalid Kerberos principal: %s, expecting: %s",
+            serverPrincipal, confPrincipal));
+      }
     }
     return serverPrincipal;
   }
 
   /**
-   * Do client side SASL authentication with server via the given InputStream
-   * and OutputStream
-   * 
-   * @param inS
-   *          InputStream to use
-   * @param outS
-   *          OutputStream to use
+   * Do client side SASL authentication with server via the given IpcStreams.
+   *
+   * @param ipcStreams
    * @return AuthMethod used to negotiate the connection
    * @throws IOException
    */
-  public AuthMethod saslConnect(InputStream inS, OutputStream outS)
-      throws IOException {
-    DataInputStream inStream = new DataInputStream(new BufferedInputStream(inS));
-    DataOutputStream outStream = new DataOutputStream(new BufferedOutputStream(
-        outS));
-    
+  public AuthMethod saslConnect(IpcStreams ipcStreams) throws IOException {
     // redefined if/when a SASL negotiation starts, can be queried if the
     // negotiation fails
     authMethod = AuthMethod.SIMPLE;
 
-    sendSaslMessage(outStream, negotiateRequest);
-
+    sendSaslMessage(ipcStreams.out, negotiateRequest);
     // loop until sasl is complete or a rpc error occurs
     boolean done = false;
     do {
-      int totalLen = inStream.readInt();
-      RpcResponseMessageWrapper responseWrapper =
-          new RpcResponseMessageWrapper();
-      responseWrapper.readFields(inStream);
-      RpcResponseHeaderProto header = responseWrapper.getMessageHeader();
+      ByteBuffer bb = ipcStreams.readResponse();
+
+      RpcWritable.Buffer saslPacket = RpcWritable.Buffer.wrap(bb);
+      RpcResponseHeaderProto header =
+          saslPacket.getValue(RpcResponseHeaderProto.getDefaultInstance());
       switch (header.getStatus()) {
         case ERROR: // might get a RPC error during 
         case FATAL:
@@ -377,15 +376,14 @@ public class SaslRpcClient {
                                     header.getErrorMsg());
         default: break;
       }
-      if (totalLen != responseWrapper.getLength()) {
-        throw new SaslException("Received malformed response length");
-      }
-      
       if (header.getCallId() != AuthProtocol.SASL.callId) {
         throw new SaslException("Non-SASL response during negotiation");
       }
       RpcSaslProto saslMessage =
-          RpcSaslProto.parseFrom(responseWrapper.getMessageBytes());
+          saslPacket.getValue(RpcSaslProto.getDefaultInstance());
+      if (saslPacket.remaining() > 0) {
+        throw new SaslException("Received malformed response length");
+      }
       // handle sasl negotiation process
       RpcSaslProto.Builder response = null;
       switch (saslMessage.getState()) {
@@ -443,22 +441,24 @@ public class SaslRpcClient {
         }
       }
       if (response != null) {
-        sendSaslMessage(outStream, response.build());
+        sendSaslMessage(ipcStreams.out, response.build());
       }
     } while (!done);
     return authMethod;
   }
 
-  private void sendSaslMessage(DataOutputStream out, RpcSaslProto message)
+  private void sendSaslMessage(OutputStream out, RpcSaslProto message)
       throws IOException {
     if (LOG.isDebugEnabled()) {
       LOG.debug("Sending sasl message "+message);
     }
-    RpcRequestMessageWrapper request =
-        new RpcRequestMessageWrapper(saslHeader, message);
-    out.writeInt(request.getLength());
-    request.write(out);
-    out.flush();    
+    ResponseBuffer buf = new ResponseBuffer();
+    saslHeader.writeDelimitedTo(buf);
+    message.writeDelimitedTo(buf);
+    synchronized (out) {
+      buf.writeTo(out);
+      out.flush();
+    }
   }
 
   /**
@@ -572,6 +572,9 @@ public class SaslRpcClient {
 
     @Override
     public synchronized int read(byte[] buf, int off, int len) throws IOException {
+      if (len == 0) {
+        return 0;
+      }
       // fill the buffer with the next RPC message
       if (unwrappedRpcBuffer.remaining() == 0) {
         readNextRpcPacket();
@@ -631,12 +634,8 @@ public class SaslRpcClient {
           .setState(SaslState.WRAP)
           .setToken(ByteString.copyFrom(buf, 0, buf.length))
           .build();
-      RpcRequestMessageWrapper request =
-          new RpcRequestMessageWrapper(saslHeader, saslMessage);
-      DataOutputStream dob = new DataOutputStream(out);
-      dob.writeInt(request.getLength());
-      request.write(dob);
-     }
+      sendSaslMessage(out, saslMessage);
+    }
   }
 
   /** Release resources used by wrapped saslClient */

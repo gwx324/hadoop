@@ -19,22 +19,35 @@
 #include "os/thread_local_storage.h"
 
 #include <jni.h>
+#include <malloc.h>
 #include <stdio.h>
 #include <windows.h>
+
+#define UNKNOWN "UNKNOWN"
+#define MAXTHRID 256
 
 /** Key that allows us to retrieve thread-local storage */
 static DWORD gTlsIndex = TLS_OUT_OF_INDEXES;
 
+static void get_current_thread_id(JNIEnv* env, char* id, int max);
+
 /**
  * If the current thread has a JNIEnv in thread-local storage, then detaches the
- * current thread from the JVM.
+ * current thread from the JVM and also frees up the ThreadLocalState object.
  */
 static void detachCurrentThreadFromJvm()
 {
+  struct ThreadLocalState *state = NULL;
   JNIEnv *env = NULL;
   JavaVM *vm;
   jint ret;
-  if (threadLocalStorageGet(&env) || !env) {
+  char thr_name[MAXTHRID];
+
+  if (threadLocalStorageGet(&state) || !state) {
+    return;
+  }
+  env = state->env;
+  if ((env == NULL) || (*env == NULL)) {
     return;
   }
   ret = (*env)->GetJavaVM(env, &vm);
@@ -44,8 +57,74 @@ static void detachCurrentThreadFromJvm()
       ret);
     (*env)->ExceptionDescribe(env);
   } else {
-    (*vm)->DetachCurrentThread(vm);
+    ret = (*vm)->DetachCurrentThread(vm);
+
+    if (ret != JNI_OK) {
+      (*env)->ExceptionDescribe(env);
+      get_current_thread_id(env, thr_name, MAXTHRID);
+
+      fprintf(stderr, "detachCurrentThreadFromJvm: Unable to detach thread %s "
+          "from the JVM. Error code: %d\n", thr_name, ret);
+    }
   }
+
+  /* Free exception strings */
+  if (state->lastExceptionStackTrace) free(state->lastExceptionStackTrace);
+  if (state->lastExceptionRootCause) free(state->lastExceptionRootCause);
+
+  /* Free the state itself */
+  free(state);
+}
+
+static void get_current_thread_id(JNIEnv* env, char* id, int max) {
+  jclass cls;
+  jmethodID mth;
+  jobject thr;
+  jstring thr_name;
+  jlong thr_id = 0;
+  const char *thr_name_str;
+
+  cls = (*env)->FindClass(env, "java/lang/Thread");
+  mth = (*env)->GetStaticMethodID(env, cls, "currentThread",
+      "()Ljava/lang/Thread;");
+  thr = (*env)->CallStaticObjectMethod(env, cls, mth);
+
+  if (thr != NULL) {
+    mth = (*env)->GetMethodID(env, cls, "getId", "()J");
+    thr_id = (*env)->CallLongMethod(env, thr, mth);
+    (*env)->ExceptionDescribe(env);
+
+    mth = (*env)->GetMethodID(env, cls, "toString", "()Ljava/lang/String;");
+    thr_name = (jstring)(*env)->CallObjectMethod(env, thr, mth);
+
+    if (thr_name != NULL) {
+      thr_name_str = (*env)->GetStringUTFChars(env, thr_name, NULL);
+
+      // Treating the jlong as a long *should* be safe
+      snprintf(id, max, "%s:%ld", thr_name_str, thr_id);
+
+      // Release the char*
+      (*env)->ReleaseStringUTFChars(env, thr_name, thr_name_str);
+    } else {
+      (*env)->ExceptionDescribe(env);
+
+      // Treating the jlong as a long *should* be safe
+      snprintf(id, max, "%s:%ld", UNKNOWN, thr_id);
+    }
+  } else {
+    (*env)->ExceptionDescribe(env);
+    snprintf(id, max, "%s", UNKNOWN);
+  }
+
+  // Make sure the id is null terminated in case we overflow the max length
+  id[max - 1] = '\0';
+}
+
+void hdfsThreadDestructor(void *v)
+{
+  // Ignore 'v' since it will contain the state and we will obtain it in the below
+  // call anyway.
+  detachCurrentThreadFromJvm();
 }
 
 /**
@@ -122,7 +201,21 @@ extern const PIMAGE_TLS_CALLBACK pTlsCallback;
 const PIMAGE_TLS_CALLBACK pTlsCallback = tlsCallback;
 #pragma const_seg()
 
-int threadLocalStorageGet(JNIEnv **env)
+struct ThreadLocalState* threadLocalStorageCreate()
+{
+  struct ThreadLocalState *state;
+  state = (struct ThreadLocalState*)malloc(sizeof(struct ThreadLocalState));
+  if (state == NULL) {
+    fprintf(stderr,
+      "threadLocalStorageCreate: OOM - Unable to allocate thread local state\n");
+    return NULL;
+  }
+  state->lastExceptionStackTrace = NULL;
+  state->lastExceptionRootCause = NULL;
+  return state;
+}
+
+int threadLocalStorageGet(struct ThreadLocalState **state)
 {
   LPVOID tls;
   DWORD ret;
@@ -137,13 +230,13 @@ int threadLocalStorageGet(JNIEnv **env)
   }
   tls = TlsGetValue(gTlsIndex);
   if (tls) {
-    *env = tls;
+    *state = tls;
     return 0;
   } else {
     ret = GetLastError();
     if (ERROR_SUCCESS == ret) {
       /* Thread-local storage contains NULL, because we haven't set it yet. */
-      *env = NULL;
+      *state = NULL;
       return 0;
     } else {
       /*
@@ -158,15 +251,15 @@ int threadLocalStorageGet(JNIEnv **env)
   }
 }
 
-int threadLocalStorageSet(JNIEnv *env)
+int threadLocalStorageSet(struct ThreadLocalState *state)
 {
   DWORD ret = 0;
-  if (!TlsSetValue(gTlsIndex, (LPVOID)env)) {
+  if (!TlsSetValue(gTlsIndex, (LPVOID)state)) {
     ret = GetLastError();
     fprintf(stderr,
       "threadLocalStorageSet: TlsSetValue failed with error %d\n",
       ret);
-    detachCurrentThreadFromJvm(env);
+    detachCurrentThreadFromJvm(state);
   }
   return ret;
 }

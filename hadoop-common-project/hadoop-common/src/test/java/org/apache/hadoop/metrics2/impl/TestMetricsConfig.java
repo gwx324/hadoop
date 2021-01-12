@@ -23,16 +23,17 @@ import java.util.Map;
 import org.junit.Test;
 import static org.junit.Assert.*;
 
-import org.apache.commons.configuration.Configuration;
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.Log;
+import org.apache.commons.configuration2.Configuration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.apache.hadoop.metrics2.impl.ConfigUtil.*;
 
 /**
  * Test metrics configuration
  */
 public class TestMetricsConfig {
-  static final Log LOG = LogFactory.getLog(TestMetricsConfig.class);
+  static final Logger LOG = LoggerFactory.getLogger(TestMetricsConfig.class);
 
   /**
    * Common use cases
@@ -130,6 +131,22 @@ public class TestMetricsConfig {
 
     assertEq(expected, mc);
     assertEq(expected, mc2);
+  }
+
+  /**
+   * Test the config value separated by delimiter
+   */
+  @Test public void testDelimiterConf() {
+    String filename = getTestFilename("test-metrics2-delimiter");
+    new ConfigBuilder().add("p1.foo", "p1foo1,p1foo2,p1foo3").save(filename);
+
+    MetricsConfig mc = MetricsConfig.create("p1", filename);
+    Configuration expected = new ConfigBuilder()
+        .add("foo", "p1foo1")
+        .add("foo", "p1foo2")
+        .add("foo", "p1foo3")
+        .config;
+    assertEq(expected, mc);
   }
 
   /**

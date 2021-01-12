@@ -18,20 +18,22 @@
 
 package org.apache.hadoop.yarn.server.applicationhistoryservice.webapp;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.apache.hadoop.yarn.webapp.WebServicesTestUtils.assertResponseStatusCode;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.spy;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.Writer;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
 
@@ -39,11 +41,11 @@ import javax.servlet.FilterConfig;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.core.MediaType;
-
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.security.authentication.server.PseudoAuthenticationHandler;
 import org.apache.hadoop.yarn.api.ApplicationBaseProtocol;
@@ -56,8 +58,9 @@ import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.YarnApplicationAttemptState;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.logaggregation.AggregatedLogFormat;
-import org.apache.hadoop.yarn.logaggregation.LogAggregationUtils;
+import org.apache.hadoop.yarn.logaggregation.ContainerLogAggregationType;
+import org.apache.hadoop.yarn.logaggregation.ContainerLogFileInfo;
+import org.apache.hadoop.yarn.logaggregation.TestContainerLogsUtils;
 import org.apache.hadoop.yarn.server.applicationhistoryservice.ApplicationHistoryClientService;
 import org.apache.hadoop.yarn.server.applicationhistoryservice.ApplicationHistoryManagerOnTimelineStore;
 import org.apache.hadoop.yarn.server.applicationhistoryservice.TestApplicationHistoryManagerOnTimelineStore;
@@ -65,6 +68,10 @@ import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.timeline.TimelineDataManager;
 import org.apache.hadoop.yarn.server.timeline.TimelineStore;
 import org.apache.hadoop.yarn.server.timeline.security.TimelineACLsManager;
+import org.apache.hadoop.yarn.server.webapp.LogServlet;
+import org.apache.hadoop.yarn.server.webapp.LogWebServiceUtils;
+import org.apache.hadoop.yarn.server.webapp.YarnWebServiceParams;
+import org.apache.hadoop.yarn.server.webapp.dao.ContainerLogsInfo;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineAbout;
 import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
@@ -88,6 +95,7 @@ import com.google.inject.Singleton;
 import com.google.inject.servlet.ServletModule;
 import com.sun.jersey.api.client.ClientResponse;
 import com.sun.jersey.api.client.ClientResponse.Status;
+import com.sun.jersey.api.client.GenericType;
 import com.sun.jersey.api.client.UniformInterfaceException;
 import com.sun.jersey.api.client.WebResource;
 import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
@@ -99,11 +107,13 @@ public class TestAHSWebServices extends JerseyTestBase {
   private static ApplicationHistoryClientService historyClientService;
   private static AHSWebServices ahsWebservice;
   private static final String[] USERS = new String[] { "foo" , "bar" };
-  private static final int MAX_APPS = 5;
+  private static final int MAX_APPS = 6;
   private static Configuration conf;
   private static FileSystem fs;
   private static final String remoteLogRootDir = "target/logs/";
   private static final String rootLogDir = "target/LocalLogs";
+  private static final String NM_WEBADDRESS = "test-nm-web-address:9999";
+  private static final String NM_ID = "test:1234";
 
   @BeforeClass
   public static void setupClass() throws Exception {
@@ -131,7 +141,13 @@ public class TestAHSWebServices extends JerseyTestBase {
     };
     historyClientService.init(conf);
     historyClientService.start();
+
     ahsWebservice = new AHSWebServices(historyClientService, conf);
+    LogServlet logServlet = spy(ahsWebservice.getLogServlet());
+    doReturn(null).when(logServlet).getNMWebAddressFromRM(any());
+    doReturn(NM_WEBADDRESS).when(logServlet).getNMWebAddressFromRM(NM_ID);
+    ahsWebservice.setLogServlet(logServlet);
+
     fs = FileSystem.get(conf);
     GuiceServletConfig.setInjector(
         Guice.createInjector(new WebServletModule()));
@@ -155,7 +171,7 @@ public class TestAHSWebServices extends JerseyTestBase {
     @Override
     protected void configureServlets() {
       bind(JAXBContextResolver.class);
-      bind(AHSWebServices.class).toInstance(ahsWebservice);;
+      bind(AHSWebServices.class).toInstance(ahsWebservice);
       bind(GenericExceptionHandler.class);
       bind(ApplicationBaseProtocol.class).toInstance(historyClientService);
       serve("/*").with(GuiceContainer.class);
@@ -314,7 +330,8 @@ public class TestAHSWebServices extends JerseyTestBase {
         .path("ws").path("v1").path("applicationhistory").path("about")
         .queryParam("user.name", USERS[round])
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     TimelineAbout actualAbout = response.getEntity(TimelineAbout.class);
     TimelineAbout expectedAbout =
         TimelineUtils.createTimelineAbout("Generic History Service API");
@@ -343,13 +360,34 @@ public class TestAHSWebServices extends JerseyTestBase {
           .queryParam("state", YarnApplicationState.FINISHED.toString())
           .queryParam("user.name", USERS[round])
           .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject apps = json.getJSONObject("apps");
     assertEquals("incorrect number of elements", 1, apps.length());
     JSONArray array = apps.getJSONArray("app");
-    assertEquals("incorrect number of elements", 5, array.length());
+    assertEquals("incorrect number of elements", MAX_APPS, array.length());
+  }
+
+  @Test
+  public void testQueueQuery() throws Exception {
+    WebResource r = resource();
+    ClientResponse response =
+        r.path("ws").path("v1").path("applicationhistory").path("apps")
+            .queryParam("queue", "test queue")
+            .queryParam("user.name", USERS[round])
+            .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
+    assertResponseStatusCode(Status.OK, response.getStatusInfo());
+    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
+    JSONObject json = response.getEntity(JSONObject.class);
+    assertEquals("incorrect number of elements", 1, json.length());
+    JSONObject apps = json.getJSONObject("apps");
+    assertEquals("incorrect number of elements", 1, apps.length());
+    JSONArray array = apps.getJSONArray("app");
+    assertEquals("incorrect number of elements", MAX_APPS - 1,
+        array.length());
   }
 
   @Test
@@ -362,7 +400,8 @@ public class TestAHSWebServices extends JerseyTestBase {
           .queryParam("user.name", USERS[round])
           .accept(MediaType.APPLICATION_JSON)
           .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject app = json.getJSONObject("app");
@@ -370,12 +409,17 @@ public class TestAHSWebServices extends JerseyTestBase {
     assertEquals("test app", app.get("name"));
     assertEquals(round == 0 ? "test diagnostics info" : "",
         app.get("diagnosticsInfo"));
+    assertEquals(Integer.MAX_VALUE + 1L, app.get("submittedTime"));
     assertEquals("test queue", app.get("queue"));
     assertEquals("user1", app.get("user"));
     assertEquals("test app type", app.get("type"));
     assertEquals(FinalApplicationStatus.UNDEFINED.toString(),
       app.get("finalAppStatus"));
     assertEquals(YarnApplicationState.FINISHED.toString(), app.get("appState"));
+    assertNotNull("Aggregate resource allocation is null",
+        app.get("aggregateResourceAllocation"));
+    assertNotNull("Aggregate Preempted Resource Allocation is null",
+        app.get("aggregatePreemptedResourceAllocation"));
   }
 
   @Test
@@ -391,13 +435,14 @@ public class TestAHSWebServices extends JerseyTestBase {
       assertResponseStatusCode(Status.FORBIDDEN, response.getStatusInfo());
       return;
     }
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject appAttempts = json.getJSONObject("appAttempts");
     assertEquals("incorrect number of elements", 1, appAttempts.length());
     JSONArray array = appAttempts.getJSONArray("appAttempt");
-    assertEquals("incorrect number of elements", 5, array.length());
+    assertEquals("incorrect number of elements", MAX_APPS, array.length());
   }
 
   @Test
@@ -417,7 +462,8 @@ public class TestAHSWebServices extends JerseyTestBase {
       assertResponseStatusCode(Status.FORBIDDEN, response.getStatusInfo());
       return;
     }
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject appAttempt = json.getJSONObject("appAttempt");
@@ -446,13 +492,14 @@ public class TestAHSWebServices extends JerseyTestBase {
       assertResponseStatusCode(Status.FORBIDDEN, response.getStatusInfo());
       return;
     }
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject containers = json.getJSONObject("containers");
     assertEquals("incorrect number of elements", 1, containers.length());
     JSONArray array = containers.getJSONArray("container");
-    assertEquals("incorrect number of elements", 5, array.length());
+    assertEquals("incorrect number of elements", MAX_APPS, array.length());
   }
 
   @Test
@@ -474,7 +521,8 @@ public class TestAHSWebServices extends JerseyTestBase {
       assertResponseStatusCode(Status.FORBIDDEN, response.getStatusInfo());
       return;
     }
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject container = json.getJSONObject("container");
@@ -498,51 +546,22 @@ public class TestAHSWebServices extends JerseyTestBase {
   public void testContainerLogsForFinishedApps() throws Exception {
     String fileName = "syslog";
     String user = "user1";
-    UserGroupInformation ugi = UserGroupInformation.createRemoteUser("user1");
     NodeId nodeId = NodeId.newInstance("test host", 100);
     NodeId nodeId2 = NodeId.newInstance("host2", 1234);
-    //prepare the logs for remote directory
     ApplicationId appId = ApplicationId.newInstance(0, 1);
-    // create local logs
-    List<String> rootLogDirList = new ArrayList<String>();
-    rootLogDirList.add(rootLogDir);
-    Path rootLogDirPath = new Path(rootLogDir);
-    if (fs.exists(rootLogDirPath)) {
-      fs.delete(rootLogDirPath, true);
-    }
-    assertTrue(fs.mkdirs(rootLogDirPath));
-
-    Path appLogsDir = new Path(rootLogDirPath, appId.toString());
-    if (fs.exists(appLogsDir)) {
-      fs.delete(appLogsDir, true);
-    }
-    assertTrue(fs.mkdirs(appLogsDir));
-
-    // create container logs in local log file dir
-    // create two container log files. We can get containerInfo
-    // for container1 from AHS, but can not get such info for
-    // container100
-    ApplicationAttemptId appAttemptId =
-        ApplicationAttemptId.newInstance(appId, 1);
+    ApplicationAttemptId appAttemptId = ApplicationAttemptId.newInstance(
+        appId, 1);
     ContainerId containerId1 = ContainerId.newContainerId(appAttemptId, 1);
     ContainerId containerId100 = ContainerId.newContainerId(appAttemptId, 100);
-    createContainerLogInLocalDir(appLogsDir, containerId1, fs, fileName,
-        ("Hello." + containerId1));
-    createContainerLogInLocalDir(appLogsDir, containerId100, fs, fileName,
-        ("Hello." + containerId100));
 
-    // upload container logs to remote log dir
-    Path path = new Path(conf.get(YarnConfiguration.NM_REMOTE_APP_LOG_DIR) +
-        user + "/logs/" + appId.toString());
-    if (fs.exists(path)) {
-      fs.delete(path, true);
-    }
-    assertTrue(fs.mkdirs(path));
-    uploadContainerLogIntoRemoteDir(ugi, conf, rootLogDirList, nodeId,
-        containerId1, path, fs);
-    uploadContainerLogIntoRemoteDir(ugi, conf, rootLogDirList, nodeId2,
-        containerId100, path, fs);
-
+    TestContainerLogsUtils.createContainerLogFileInRemoteFS(conf, fs,
+        rootLogDir, appId, Collections.singletonMap(containerId1,
+            "Hello." + containerId1),
+        nodeId, fileName, user, true);
+    TestContainerLogsUtils.createContainerLogFileInRemoteFS(conf, fs,
+        rootLogDir, appId, Collections.singletonMap(containerId100,
+            "Hello." + containerId100),
+        nodeId2, fileName, user, false);
     // test whether we can find container log from remote diretory if
     // the containerInfo for this container could be fetched from AHS.
     WebResource r = resource();
@@ -553,6 +572,17 @@ public class TestAHSWebServices extends JerseyTestBase {
         .accept(MediaType.TEXT_PLAIN)
         .get(ClientResponse.class);
     String responseText = response.getEntity(String.class);
+    assertTrue(responseText.contains("Hello." + containerId1));
+
+    // Do the same test with new API
+    r = resource();
+    response = r.path("ws").path("v1")
+        .path("applicationhistory").path("containers")
+        .path(containerId1.toString()).path("logs").path(fileName)
+        .queryParam("user.name", user)
+        .accept(MediaType.TEXT_PLAIN)
+        .get(ClientResponse.class);
+    responseText = response.getEntity(String.class);
     assertTrue(responseText.contains("Hello." + containerId1));
 
     // test whether we can find container log from remote diretory if
@@ -567,27 +597,29 @@ public class TestAHSWebServices extends JerseyTestBase {
     responseText = response.getEntity(String.class);
     assertTrue(responseText.contains("Hello." + containerId100));
 
+    // Do the same test with new API
+    r = resource();
+    response = r.path("ws").path("v1")
+        .path("applicationhistory").path("containers")
+        .path(containerId100.toString()).path("logs").path(fileName)
+        .queryParam("user.name", user)
+        .accept(MediaType.TEXT_PLAIN)
+        .get(ClientResponse.class);
+    responseText = response.getEntity(String.class);
+    assertTrue(responseText.contains("Hello." + containerId100));
+
     // create an application which can not be found from AHS
     ApplicationId appId100 = ApplicationId.newInstance(0, 100);
-    appLogsDir = new Path(rootLogDirPath, appId100.toString());
-    if (fs.exists(appLogsDir)) {
-      fs.delete(appLogsDir, true);
-    }
-    assertTrue(fs.mkdirs(appLogsDir));
-    ApplicationAttemptId appAttemptId100 =
-        ApplicationAttemptId.newInstance(appId100, 1);
-    ContainerId containerId1ForApp100 = ContainerId
-        .newContainerId(appAttemptId100, 1);
-    createContainerLogInLocalDir(appLogsDir, containerId1ForApp100, fs,
-        fileName, ("Hello." + containerId1ForApp100));
-    path = new Path(conf.get(YarnConfiguration.NM_REMOTE_APP_LOG_DIR) +
-        user + "/logs/" + appId100.toString());
-    if (fs.exists(path)) {
-      fs.delete(path, true);
-    }
-    assertTrue(fs.mkdirs(path));
-    uploadContainerLogIntoRemoteDir(ugi, conf, rootLogDirList, nodeId2,
-        containerId1ForApp100, path, fs);
+    ApplicationAttemptId appAttemptId100 = ApplicationAttemptId.newInstance(
+        appId100, 1);
+    ContainerId containerId1ForApp100 = ContainerId.newContainerId(
+        appAttemptId100, 1);
+
+    TestContainerLogsUtils.createContainerLogFileInRemoteFS(conf, fs,
+        rootLogDir, appId100,
+        Collections.singletonMap(containerId1ForApp100,
+            "Hello." + containerId1ForApp100),
+        nodeId, fileName, user, true);
     r = resource();
     response = r.path("ws").path("v1")
         .path("applicationhistory").path("containerlogs")
@@ -598,7 +630,10 @@ public class TestAHSWebServices extends JerseyTestBase {
     responseText = response.getEntity(String.class);
     assertTrue(responseText.contains("Hello." + containerId1ForApp100));
     int fullTextSize = responseText.getBytes().length;
-    int tailTextSize = "\nEnd of LogType:syslog\n".getBytes().length;
+    String tailEndSeparator = StringUtils.repeat("*",
+        "End of LogType:syslog".length() + 50) + "\n\n";
+    int tailTextSize = "\nEnd of LogType:syslog\n".getBytes().length
+        + tailEndSeparator.getBytes().length;
 
     String logMessage = "Hello." + containerId1ForApp100;
     int fileContentSize = logMessage.getBytes().length;
@@ -651,7 +686,7 @@ public class TestAHSWebServices extends JerseyTestBase {
         .accept(MediaType.TEXT_PLAIN)
         .get(ClientResponse.class);
     responseText = response.getEntity(String.class);
-    assertEquals(responseText.getBytes().length, fullTextSize);
+    assertThat(responseText.getBytes()).hasSize(fullTextSize);
 
     r = resource();
     response = r.path("ws").path("v1")
@@ -662,36 +697,7 @@ public class TestAHSWebServices extends JerseyTestBase {
         .accept(MediaType.TEXT_PLAIN)
         .get(ClientResponse.class);
     responseText = response.getEntity(String.class);
-    assertEquals(responseText.getBytes().length, fullTextSize);
-  }
-
-  private static void createContainerLogInLocalDir(Path appLogsDir,
-      ContainerId containerId, FileSystem fs, String fileName, String content)
-      throws Exception {
-    Path containerLogsDir = new Path(appLogsDir, containerId.toString());
-    if (fs.exists(containerLogsDir)) {
-      fs.delete(containerLogsDir, true);
-    }
-    assertTrue(fs.mkdirs(containerLogsDir));
-    Writer writer =
-        new FileWriter(new File(containerLogsDir.toString(), fileName));
-    writer.write(content);
-    writer.close();
-  }
-
-  private static void uploadContainerLogIntoRemoteDir(UserGroupInformation ugi,
-      Configuration configuration, List<String> rootLogDirs, NodeId nodeId,
-      ContainerId containerId, Path appDir, FileSystem fs) throws Exception {
-    Path path =
-        new Path(appDir, LogAggregationUtils.getNodeString(nodeId));
-    AggregatedLogFormat.LogWriter writer =
-        new AggregatedLogFormat.LogWriter(configuration, path, ugi);
-    writer.writeApplicationOwner(ugi.getUserName());
-
-    writer.append(new AggregatedLogFormat.LogKey(containerId),
-        new AggregatedLogFormat.LogValue(rootLogDirs, containerId,
-        ugi.getShortUserName()));
-    writer.close();
+    assertThat(responseText.getBytes()).hasSize(fullTextSize);
   }
 
   @Test(timeout = 10000)
@@ -715,6 +721,246 @@ public class TestAHSWebServices extends JerseyTestBase {
     assertTrue(redirectURL.contains(containerId1.toString()));
     assertTrue(redirectURL.contains("/logs/" + fileName));
     assertTrue(redirectURL.contains("user.name=" + user));
+
+    // If we specify NM id, we would re-direct the request
+    // to this NM's Web Address.
+    requestURI = r.path("ws").path("v1")
+        .path("applicationhistory").path("containerlogs")
+        .path(containerId1.toString()).path(fileName)
+        .queryParam("user.name", user)
+        .queryParam(YarnWebServiceParams.NM_ID, NM_ID)
+        .getURI();
+    redirectURL = getRedirectURL(requestURI.toString());
+    assertTrue(redirectURL != null);
+    assertTrue(redirectURL.contains(NM_WEBADDRESS));
+    assertTrue(redirectURL.contains("ws/v1/node/containers"));
+    assertTrue(redirectURL.contains(containerId1.toString()));
+    assertTrue(redirectURL.contains("/logs/" + fileName));
+    assertTrue(redirectURL.contains("user.name=" + user));
+
+    // Test with new API
+    requestURI = r.path("ws").path("v1")
+        .path("applicationhistory").path("containers")
+        .path(containerId1.toString()).path("logs").path(fileName)
+        .queryParam("user.name", user).getURI();
+    redirectURL = getRedirectURL(requestURI.toString());
+    assertTrue(redirectURL != null);
+    assertTrue(redirectURL.contains("test:1234"));
+    assertTrue(redirectURL.contains("ws/v1/node/containers"));
+    assertTrue(redirectURL.contains(containerId1.toString()));
+    assertTrue(redirectURL.contains("/logs/" + fileName));
+    assertTrue(redirectURL.contains("user.name=" + user));
+
+    requestURI = r.path("ws").path("v1")
+        .path("applicationhistory").path("containers")
+        .path(containerId1.toString()).path("logs").path(fileName)
+        .queryParam("user.name", user)
+        .queryParam(YarnWebServiceParams.NM_ID, NM_ID)
+        .getURI();
+    redirectURL = getRedirectURL(requestURI.toString());
+    assertTrue(redirectURL != null);
+    assertTrue(redirectURL.contains(NM_WEBADDRESS));
+    assertTrue(redirectURL.contains("ws/v1/node/containers"));
+    assertTrue(redirectURL.contains(containerId1.toString()));
+    assertTrue(redirectURL.contains("/logs/" + fileName));
+    assertTrue(redirectURL.contains("user.name=" + user));
+
+    // If we can not container information from ATS, we would try to
+    // get aggregated log from remote FileSystem.
+    ContainerId containerId1000 = ContainerId.newContainerId(
+        appAttemptId, 1000);
+    String content = "Hello." + containerId1000;
+    NodeId nodeId = NodeId.newInstance("test host", 100);
+    TestContainerLogsUtils.createContainerLogFileInRemoteFS(conf, fs,
+        rootLogDir, appId, Collections.singletonMap(containerId1000, content),
+        nodeId, fileName, user, true);
+    r = resource();
+    ClientResponse response = r.path("ws").path("v1")
+        .path("applicationhistory").path("containerlogs")
+        .path(containerId1000.toString()).path(fileName)
+        .queryParam("user.name", user)
+        .accept(MediaType.TEXT_PLAIN)
+        .get(ClientResponse.class);
+    String responseText = response.getEntity(String.class);
+    assertTrue(responseText.contains(content));
+    // Also test whether we output the empty local container log, and give
+    // the warning message.
+    assertTrue(responseText.contains("LogAggregationType: "
+        + ContainerLogAggregationType.LOCAL));
+    assertTrue(
+        responseText.contains(LogWebServiceUtils.getNoRedirectWarning()));
+
+    // If we can not container information from ATS, and we specify the NM id,
+    // but we can not get nm web address, we would still try to
+    // get aggregated log from remote FileSystem.
+    response = r.path("ws").path("v1")
+        .path("applicationhistory").path("containerlogs")
+        .path(containerId1000.toString()).path(fileName)
+        .queryParam(YarnWebServiceParams.NM_ID, "invalid-nm:1234")
+        .queryParam("user.name", user)
+        .accept(MediaType.TEXT_PLAIN)
+        .get(ClientResponse.class);
+    responseText = response.getEntity(String.class);
+    assertTrue(responseText.contains(content));
+    assertTrue(responseText.contains("LogAggregationType: "
+        + ContainerLogAggregationType.LOCAL));
+    assertTrue(
+        responseText.contains(LogWebServiceUtils.getNoRedirectWarning()));
+
+    // If this is the redirect request, we would not re-direct the request
+    // back and get the aggregated logs.
+    String content1 = "Hello." + containerId1;
+    NodeId nodeId1 = NodeId.fromString(NM_ID);
+    TestContainerLogsUtils.createContainerLogFileInRemoteFS(conf, fs,
+        rootLogDir, appId, Collections.singletonMap(containerId1, content1),
+        nodeId1, fileName, user, true);
+    response = r.path("ws").path("v1")
+        .path("applicationhistory").path("containers")
+        .path(containerId1.toString()).path("logs").path(fileName)
+        .queryParam("user.name", user)
+        .queryParam(YarnWebServiceParams.REDIRECTED_FROM_NODE, "true")
+        .accept(MediaType.TEXT_PLAIN).get(ClientResponse.class);
+    responseText = response.getEntity(String.class);
+    assertTrue(responseText.contains(content1));
+    assertTrue(responseText.contains("LogAggregationType: "
+        + ContainerLogAggregationType.AGGREGATED));
+  }
+
+  @Test(timeout = 10000)
+  public void testContainerLogsMetaForRunningApps() throws Exception {
+    String user = "user1";
+    ApplicationId appId = ApplicationId.newInstance(
+        1234, 1);
+    ApplicationAttemptId appAttemptId =
+        ApplicationAttemptId.newInstance(appId, 1);
+    ContainerId containerId1 = ContainerId.newContainerId(appAttemptId, 1);
+    WebResource r = resource();
+    // If we specify the NMID, we re-direct the request by using
+    // the NM's web address
+    URI requestURI = r.path("ws").path("v1")
+        .path("applicationhistory").path("containers")
+        .path(containerId1.toString()).path("logs")
+        .queryParam("user.name", user)
+        .queryParam(YarnWebServiceParams.NM_ID, NM_ID)
+        .getURI();
+    String redirectURL = getRedirectURL(requestURI.toString());
+    assertTrue(redirectURL != null);
+    assertTrue(redirectURL.contains(NM_WEBADDRESS));
+    assertTrue(redirectURL.contains("ws/v1/node/containers"));
+    assertTrue(redirectURL.contains(containerId1.toString()));
+    assertTrue(redirectURL.contains("/logs"));
+
+    // If we do not specify the NodeId but can get Container information
+    // from ATS, we re-direct the request to the node manager
+    // who runs the container.
+    requestURI = r.path("ws").path("v1")
+        .path("applicationhistory").path("containers")
+        .path(containerId1.toString()).path("logs")
+        .queryParam("user.name", user).getURI();
+    redirectURL = getRedirectURL(requestURI.toString());
+    assertTrue(redirectURL != null);
+    assertTrue(redirectURL.contains("test:1234"));
+    assertTrue(redirectURL.contains("ws/v1/node/containers"));
+    assertTrue(redirectURL.contains(containerId1.toString()));
+    assertTrue(redirectURL.contains("/logs"));
+
+    // If we can not container information from ATS,
+    // and not specify nodeId,
+    // we would try to get aggregated log meta from remote FileSystem.
+    ContainerId containerId1000 = ContainerId.newContainerId(
+        appAttemptId, 1000);
+    String fileName = "syslog";
+    String content = "Hello." + containerId1000;
+    NodeId nodeId = NodeId.newInstance("test host", 100);
+    TestContainerLogsUtils.createContainerLogFileInRemoteFS(conf, fs,
+        rootLogDir, appId, Collections.singletonMap(containerId1000, content),
+        nodeId, fileName, user, true);
+    ClientResponse response = r.path("ws").path("v1")
+        .path("applicationhistory").path("containers")
+        .path(containerId1000.toString()).path("logs")
+        .queryParam("user.name", user)
+        .accept(MediaType.APPLICATION_JSON)
+        .get(ClientResponse.class);
+
+    List<ContainerLogsInfo> responseText = response.getEntity(new GenericType<
+        List<ContainerLogsInfo>>(){});
+    assertTrue(responseText.size() == 2);
+    for (ContainerLogsInfo logInfo : responseText) {
+      if(logInfo.getLogType().equals(
+          ContainerLogAggregationType.AGGREGATED.toString())) {
+        List<ContainerLogFileInfo> logMeta = logInfo
+            .getContainerLogsInfo();
+        assertTrue(logMeta.size() == 1);
+        assertThat(logMeta.get(0).getFileName()).isEqualTo(fileName);
+        assertThat(logMeta.get(0).getFileSize()).isEqualTo(String.valueOf(
+            content.length()));
+      } else {
+        assertEquals(logInfo.getLogType(),
+            ContainerLogAggregationType.LOCAL.toString());
+      }
+    }
+
+    // If we can not container information from ATS,
+    // and we specify NM id, but can not find NM WebAddress for this nodeId,
+    // we would still try to get aggregated log meta from remote FileSystem.
+    response = r.path("ws").path("v1")
+        .path("applicationhistory").path("containers")
+        .path(containerId1000.toString()).path("logs")
+        .queryParam(YarnWebServiceParams.NM_ID, "invalid-nm:1234")
+        .queryParam("user.name", user)
+        .accept(MediaType.APPLICATION_JSON)
+        .get(ClientResponse.class);
+    responseText = response.getEntity(new GenericType<
+        List<ContainerLogsInfo>>(){});
+    assertTrue(responseText.size() == 2);
+    for (ContainerLogsInfo logInfo : responseText) {
+      if(logInfo.getLogType().equals(
+          ContainerLogAggregationType.AGGREGATED.toString())) {
+        List<ContainerLogFileInfo> logMeta = logInfo
+            .getContainerLogsInfo();
+        assertTrue(logMeta.size() == 1);
+        assertThat(logMeta.get(0).getFileName()).isEqualTo(fileName);
+        assertThat(logMeta.get(0).getFileSize()).isEqualTo(String.valueOf(
+            content.length()));
+      } else {
+        assertThat(logInfo.getLogType()).isEqualTo(
+            ContainerLogAggregationType.LOCAL.toString());
+      }
+    }
+  }
+
+  @Test(timeout = 10000)
+  public void testContainerLogsMetaForFinishedApps() throws Exception {
+    ApplicationId appId = ApplicationId.newInstance(0, 1);
+    ApplicationAttemptId appAttemptId =
+        ApplicationAttemptId.newInstance(appId, 1);
+    ContainerId containerId1 = ContainerId.newContainerId(appAttemptId, 1);
+    String fileName = "syslog";
+    String user = "user1";
+    String content = "Hello." + containerId1;
+    NodeId nodeId = NodeId.newInstance("test host", 100);
+    TestContainerLogsUtils.createContainerLogFileInRemoteFS(conf, fs,
+        rootLogDir, appId, Collections.singletonMap(containerId1, content),
+        nodeId, fileName, user, true);
+
+    WebResource r = resource();
+    ClientResponse response = r.path("ws").path("v1")
+        .path("applicationhistory").path("containers")
+        .path(containerId1.toString()).path("logs")
+        .queryParam("user.name", user)
+        .accept(MediaType.APPLICATION_JSON)
+        .get(ClientResponse.class);
+    List<ContainerLogsInfo> responseText = response.getEntity(new GenericType<
+        List<ContainerLogsInfo>>(){});
+    assertTrue(responseText.size() == 1);
+    assertEquals(responseText.get(0).getLogType(),
+        ContainerLogAggregationType.AGGREGATED.toString());
+    List<ContainerLogFileInfo> logMeta = responseText.get(0)
+        .getContainerLogsInfo();
+    assertTrue(logMeta.size() == 1);
+    assertThat(logMeta.get(0).getFileName()).isEqualTo(fileName);
+    assertThat(logMeta.get(0).getFileSize()).isEqualTo(
+        String.valueOf(content.length()));
   }
 
   private static String getRedirectURL(String url) {

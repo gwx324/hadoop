@@ -31,7 +31,9 @@ import java.util.Map;
 
 import javax.ws.rs.core.MediaType;
 
+import com.google.inject.util.Providers;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.mapreduce.v2.api.records.JobId;
 import org.apache.hadoop.mapreduce.v2.api.records.JobState;
 import org.apache.hadoop.mapreduce.v2.app.AppContext;
@@ -39,6 +41,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.Job;
 import org.apache.hadoop.mapreduce.v2.hs.HistoryContext;
 import org.apache.hadoop.mapreduce.v2.hs.MockHistoryContext;
 import org.apache.hadoop.mapreduce.v2.util.MRApps;
+import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
 import org.apache.hadoop.yarn.webapp.GuiceServletConfig;
 import org.apache.hadoop.yarn.webapp.JerseyTestBase;
@@ -84,6 +87,7 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
       bind(AppContext.class).toInstance(appContext);
       bind(HistoryContext.class).toInstance(appContext);
       bind(Configuration.class).toInstance(conf);
+      bind(ApplicationClientProtocol.class).toProvider(Providers.of(null));
 
       serve("/*").with(GuiceContainer.class);
     }
@@ -130,7 +134,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .path("mapreduce").path("jobs").queryParam("state", notInUse.toString())
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
 
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     assertEquals("jobs is not empty",
@@ -152,7 +157,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("history")
         .path("mapreduce").path("jobs").queryParam("state", queryState)
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject jobs = json.getJSONObject("jobs");
@@ -172,7 +178,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
 
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -197,7 +204,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("history")
         .path("mapreduce").path("jobs").queryParam("user", "bogus")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     assertEquals("jobs is not empty",
@@ -210,7 +218,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("history")
         .path("mapreduce").path("jobs").queryParam("user", "mock")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     System.out.println(json.toString());
 
@@ -230,7 +239,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("history")
         .path("mapreduce").path("jobs").queryParam("limit", "2")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject jobs = json.getJSONObject("jobs");
@@ -248,7 +258,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
 
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -269,7 +280,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("history")
         .path("mapreduce").path("jobs").queryParam("queue", "mockqueue")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject jobs = json.getJSONObject("jobs");
@@ -283,7 +295,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("history")
         .path("mapreduce").path("jobs").queryParam("queue", "bogus")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     assertEquals("jobs is not empty",
@@ -299,7 +312,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .path("mapreduce").path("jobs")
         .queryParam("startedTimeEnd", String.valueOf(now))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject jobs = json.getJSONObject("jobs");
@@ -316,7 +330,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .path("mapreduce").path("jobs")
         .queryParam("startedTimeBegin", String.valueOf(now))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     assertEquals("jobs is not empty",
@@ -343,7 +358,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .queryParam("startedTimeBegin", String.valueOf(40000))
         .queryParam("startedTimeEnd", String.valueOf(midStartTime))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject jobs = json.getJSONObject("jobs");
@@ -362,7 +378,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .queryParam("startedTimeEnd", String.valueOf(40000))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -388,7 +405,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .path("mapreduce").path("jobs").queryParam("startedTimeBegin", "efsd")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -414,7 +432,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .path("mapreduce").path("jobs").queryParam("startedTimeEnd", "efsd")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -440,7 +459,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .queryParam("startedTimeBegin", String.valueOf(-1000))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -466,7 +486,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .queryParam("startedTimeEnd", String.valueOf(-1000))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -490,7 +511,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .queryParam("finishedTimeEnd", String.valueOf(-1000))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -514,7 +536,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .queryParam("finishedTimeBegin", String.valueOf(-1000))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -541,7 +564,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .queryParam("finishedTimeEnd", String.valueOf(40000))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -567,7 +591,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .path("mapreduce").path("jobs").queryParam("finishedTimeBegin", "efsd")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -593,7 +618,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .path("mapreduce").path("jobs").queryParam("finishedTimeEnd", "efsd")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
     assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject msg = response.getEntity(JSONObject.class);
     JSONObject exception = msg.getJSONObject("RemoteException");
     assertEquals("incorrect number of elements", 3, exception.length());
@@ -620,7 +646,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .path("mapreduce").path("jobs")
         .queryParam("finishedTimeBegin", String.valueOf(now))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject jobs = json.getJSONObject("jobs");
@@ -637,7 +664,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .path("mapreduce").path("jobs")
         .queryParam("finishedTimeEnd", String.valueOf(now))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     assertEquals("jobs is not empty",
@@ -665,7 +693,8 @@ public class TestHsWebServicesJobsQuery extends JerseyTestBase {
         .queryParam("finishedTimeBegin", String.valueOf(40000))
         .queryParam("finishedTimeEnd", String.valueOf(midFinishTime))
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("incorrect number of elements", 1, json.length());
     JSONObject jobs = json.getJSONObject("jobs");

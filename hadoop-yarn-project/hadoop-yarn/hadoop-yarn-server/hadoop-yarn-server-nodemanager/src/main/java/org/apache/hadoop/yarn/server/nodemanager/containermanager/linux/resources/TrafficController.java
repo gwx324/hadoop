@@ -20,8 +20,6 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -29,6 +27,8 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperation;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationException;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationExecutor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.*;
 import java.util.ArrayList;
@@ -46,7 +46,8 @@ import java.util.regex.Pattern;
 
 @InterfaceAudience.Private
 @InterfaceStability.Unstable class TrafficController {
-  private static final Log LOG = LogFactory.getLog(TrafficController.class);
+  private static final Logger LOG =
+       LoggerFactory.getLogger(TrafficController.class);
   private static final int ROOT_QDISC_HANDLE = 42;
   private static final int ZERO_CLASS_ID = 0;
   private static final int ROOT_CLASS_ID = 1;
@@ -221,9 +222,7 @@ import java.util.regex.Pattern;
       Pattern pattern = Pattern.compile(regex, Pattern.MULTILINE);
 
       if (pattern.matcher(state).find()) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Matched regex: " + regex);
-        }
+        LOG.debug("Matched regex: {}", regex);
       } else {
         String logLine = new StringBuffer("Failed to match regex: ")
               .append(regex).append(" Current state: ").append(state).toString();
@@ -257,9 +256,7 @@ import java.util.regex.Pattern;
       String output =
           privilegedOperationExecutor.executePrivilegedOperation(op, true);
 
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("TC state: %n" + output);
-      }
+      LOG.debug("TC state: {}" + output);
 
       return output;
     } catch (PrivilegedOperationException e) {
@@ -331,15 +328,11 @@ import java.util.regex.Pattern;
       String output =
           privilegedOperationExecutor.executePrivilegedOperation(op, true);
 
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("TC stats output:" + output);
-      }
+      LOG.debug("TC stats output:{}", output);
 
       Map<Integer, Integer> classIdBytesStats = parseStatsString(output);
 
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("classId -> bytes sent %n" + classIdBytesStats);
-      }
+      LOG.debug("classId -> bytes sent {}", classIdBytesStats);
 
       return classIdBytesStats;
     } catch (PrivilegedOperationException e) {
@@ -466,9 +459,7 @@ import java.util.regex.Pattern;
     //e.g 4325381 -> 00420005
     String classIdStr = String.format("%08x", Integer.parseInt(input));
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("ClassId hex string : " + classIdStr);
-    }
+    LOG.debug("ClassId hex string : {}", classIdStr);
 
     //extract and return 4 digits
     //e.g 00420005 -> 0005
@@ -626,15 +617,16 @@ import java.util.regex.Pattern;
       try {
         File tcCmds = File.createTempFile(TMP_FILE_PREFIX, TMP_FILE_SUFFIX, new
             File(tmpDirPath));
-        Writer writer = new OutputStreamWriter(new FileOutputStream(tcCmds),
-            "UTF-8");
-        PrintWriter printWriter = new PrintWriter(writer);
 
-        for (String command : commands) {
-          printWriter.println(command);
+        try (
+            Writer writer = new OutputStreamWriter(new FileOutputStream(tcCmds),
+                "UTF-8");
+            PrintWriter printWriter = new PrintWriter(writer)) {
+          for (String command : commands) {
+            printWriter.println(command);
+          }
         }
 
-        printWriter.close();
         operation.appendArgs(tcCmds.getAbsolutePath());
 
         return operation;

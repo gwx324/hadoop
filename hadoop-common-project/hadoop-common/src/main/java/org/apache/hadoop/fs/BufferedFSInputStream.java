@@ -24,16 +24,21 @@ import java.io.IOException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.fs.statistics.IOStatistics;
+import org.apache.hadoop.fs.statistics.IOStatisticsSource;
+
+import static org.apache.hadoop.fs.statistics.IOStatisticsSupport.retrieveIOStatistics;
 
 
 /**
- * A class that optimizes reading from FSInputStream by buffering
+ * A class that optimizes reading from FSInputStream by buffering.
  */
 
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 public class BufferedFSInputStream extends BufferedInputStream
-implements Seekable, PositionedReadable, HasFileDescriptor {
+    implements Seekable, PositionedReadable, HasFileDescriptor,
+    IOStatisticsSource, StreamCapabilities {
   /**
    * Creates a <code>BufferedFSInputStream</code>
    * with the specified buffer size,
@@ -44,7 +49,7 @@ implements Seekable, PositionedReadable, HasFileDescriptor {
    *
    * @param   in     the underlying input stream.
    * @param   size   the buffer size.
-   * @exception IllegalArgumentException if size <= 0.
+   * @exception IllegalArgumentException if size {@literal <=} 0.
    */
   public BufferedFSInputStream(FSInputStream in, int size) {
     super(in, size);
@@ -125,5 +130,27 @@ implements Seekable, PositionedReadable, HasFileDescriptor {
     } else {
       return null;
     }
+  }
+
+  /**
+   * If the inner stream supports {@link StreamCapabilities},
+   * forward the probe to it.
+   * Otherwise: return false.
+   *
+   * @param capability string to query the stream support for.
+   * @return true if a capability is known to be supported.
+   */
+  @Override
+  public boolean hasCapability(final String capability) {
+    if (in instanceof StreamCapabilities) {
+      return ((StreamCapabilities) in).hasCapability(capability);
+    } else {
+      return false;
+    }
+  }
+
+  @Override
+  public IOStatistics getIOStatistics() {
+    return retrieveIOStatistics(in);
   }
 }

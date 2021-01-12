@@ -25,8 +25,6 @@ import java.net.SocketTimeoutException;
 import java.nio.channels.Pipe;
 import java.util.Arrays;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.MultithreadedTestUtil;
 import org.apache.hadoop.test.MultithreadedTestUtil.TestContext;
@@ -36,10 +34,13 @@ import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.io.nativeio.NativeIO;
 
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.junit.Assert.*;
 
 /**
- * This tests timout out from SocketInputStream and
+ * This tests timeout out from SocketInputStream and
  * SocketOutputStream using pipes.
  * 
  * Normal read and write using these streams are tested by pretty much
@@ -47,7 +48,8 @@ import static org.junit.Assert.*;
  */
 public class TestSocketIOWithTimeout {
 
-  static Log LOG = LogFactory.getLog(TestSocketIOWithTimeout.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(TestSocketIOWithTimeout.class);
   
   private static int TIMEOUT = 1*1000; 
   private static String TEST_STRING = "1234567890";
@@ -181,6 +183,44 @@ public class TestSocketIOWithTimeout {
       if (sink != null) {
         sink.close();
       }
+    }
+  }
+
+  @Test
+  public void testSocketIOWithTimeoutInterrupted() throws Exception {
+    Pipe pipe = Pipe.open();
+    final int timeout = TIMEOUT * 10;
+
+    try (Pipe.SourceChannel source = pipe.source();
+        InputStream in = new SocketInputStream(source, timeout)) {
+
+      TestingThread thread = new TestingThread(ctx) {
+        @Override
+        public void doWork() throws Exception {
+          try {
+            in.read();
+            fail("Did not fail with interrupt");
+          } catch (InterruptedIOException ste) {
+            String detail = ste.getMessage();
+            String totalString = "Total timeout mills is " + timeout;
+            String leftString = "millis timeout left";
+
+            assertTrue(detail.contains(totalString));
+            assertTrue(detail.contains(leftString));
+          }
+        }
+      };
+
+      ctx.addThread(thread);
+      ctx.startThreads();
+      // If the thread is interrupted before it calls read()
+      // then it throws ClosedByInterruptException due to
+      // some Java quirk. Waiting for it to call read()
+      // gets it into select(), so we get the expected
+      // InterruptedIOException.
+      Thread.sleep(1000);
+      thread.interrupt();
+      ctx.stop();
     }
   }
 }

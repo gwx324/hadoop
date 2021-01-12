@@ -20,20 +20,20 @@ package org.apache.hadoop.fs;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.StringTokenizer;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -42,16 +42,24 @@ import org.apache.hadoop.fs.FileSystem.Statistics;
 import org.apache.hadoop.fs.Options.ChecksumOpt;
 import org.apache.hadoop.fs.Options.CreateOpts;
 import org.apache.hadoop.fs.Options.Rename;
+import org.apache.hadoop.fs.impl.AbstractFSBuilderImpl;
+import org.apache.hadoop.fs.impl.OpenFileParameters;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.util.LambdaUtils;
 import org.apache.hadoop.util.Progressable;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.apache.hadoop.fs.impl.PathCapabilitiesSupport.validatePathCapabilityArgs;
 
 /**
  * This class provides an interface for implementors of a Hadoop file system
@@ -65,8 +73,8 @@ import com.google.common.annotations.VisibleForTesting;
  */
 @InterfaceAudience.Public
 @InterfaceStability.Stable
-public abstract class AbstractFileSystem {
-  static final Log LOG = LogFactory.getLog(AbstractFileSystem.class);
+public abstract class AbstractFileSystem implements PathCapabilities {
+  static final Logger LOG = LoggerFactory.getLogger(AbstractFileSystem.class);
 
   /** Recording statistics per a file system class. */
   private static final Map<URI, Statistics> 
@@ -132,6 +140,13 @@ public abstract class AbstractFileSystem {
         CONSTRUCTOR_CACHE.put(theClass, meth);
       }
       result = meth.newInstance(uri, conf);
+    } catch (InvocationTargetException e) {
+      Throwable cause = e.getCause();
+      if (cause instanceof RuntimeException) {
+        throw (RuntimeException) cause;
+      } else {
+        throw new RuntimeException(cause);
+      }
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
@@ -328,7 +343,7 @@ public abstract class AbstractFileSystem {
    * The default port of this file system.
    * 
    * @return default port of this file system's Uri scheme
-   *         A uri with a port of -1 => default port;
+   *         A uri with a port of -1 =&gt; default port;
    */
   public abstract int getUriDefaultPort();
 
@@ -388,8 +403,11 @@ public abstract class AbstractFileSystem {
       thatPort = this.getUriDefaultPort();
     }
     if (thisPort != thatPort) {
-      throw new InvalidPathException("Wrong FS: " + path + ", expected: "
-          + this.getUri());
+      throw new InvalidPathException("Wrong FS: " + path
+          + " and port=" + thatPort
+          + ", expected: "
+          + this.getUri()
+          + " with port=" + thisPort);
     }
   }
   
@@ -440,8 +458,16 @@ public abstract class AbstractFileSystem {
    * @return current user's home directory.
    */
   public Path getHomeDirectory() {
-    return new Path("/user/"+System.getProperty("user.name")).makeQualified(
-                                                                getUri(), null);
+    String username;
+    try {
+      username = UserGroupInformation.getCurrentUser().getShortUserName();
+    } catch(IOException ex) {
+      LOG.warn("Unable to get user name. Fall back to system property " +
+          "user.name", ex);
+      username = System.getProperty("user.name");
+    }
+    return new Path("/user/" + username)
+        .makeQualified(getUri(), null);
   }
   
   /**
@@ -450,17 +476,31 @@ public abstract class AbstractFileSystem {
    * @return server default configuration values
    * 
    * @throws IOException an I/O error occurred
+   * @deprecated use {@link #getServerDefaults(Path)} instead
    */
+  @Deprecated
   public abstract FsServerDefaults getServerDefaults() throws IOException; 
+
+  /**
+   * Return a set of server default configuration values based on path.
+   * @param f path to fetch server defaults
+   * @return server default configuration values for path
+   * @throws IOException an I/O error occurred
+   */
+  public FsServerDefaults getServerDefaults(final Path f) throws IOException {
+    return getServerDefaults();
+  }
 
   /**
    * Return the fully-qualified path of path f resolving the path
    * through any internal symlinks or mount point
    * @param p path to be resolved
    * @return fully qualified path 
-   * @throws FileNotFoundException, AccessControlException, IOException
-   *         UnresolvedLinkException if symbolic link on path cannot be resolved
-   *          internally
+   * @throws FileNotFoundException
+   * @throws AccessControlException
+   * @throws IOException
+   * @throws UnresolvedLinkException if symbolic link on path cannot be
+   * resolved internally
    */
    public Path resolvePath(final Path p) throws FileNotFoundException,
            UnresolvedLinkException, AccessControlException, IOException {
@@ -548,7 +588,7 @@ public abstract class AbstractFileSystem {
     }
 
 
-    FsServerDefaults ssDef = getServerDefaults();
+    FsServerDefaults ssDef = getServerDefaults(f);
     if (ssDef.getBlockSize() % ssDef.getBytesPerChecksum() != 0) {
       throw new IOException("Internal error: default blockSize is" + 
           " not a multiple of default bytesPerChecksum ");
@@ -626,7 +666,7 @@ public abstract class AbstractFileSystem {
    */
   public FSDataInputStream open(final Path f) throws AccessControlException,
       FileNotFoundException, UnresolvedLinkException, IOException {
-    return open(f, getServerDefaults().getFileBufferSize());
+    return open(f, getServerDefaults(f).getFileBufferSize());
   }
 
   /**
@@ -825,6 +865,20 @@ public abstract class AbstractFileSystem {
       UnresolvedLinkException, IOException;
 
   /**
+   * Synchronize client metadata state.
+   * <p>
+   * In some FileSystem implementations such as HDFS metadata
+   * synchronization is essential to guarantee consistency of read requests
+   * particularly in HA setting.
+   * @throws IOException
+   * @throws UnsupportedOperationException
+   */
+  public void msync() throws IOException, UnsupportedOperationException {
+    throw new UnsupportedOperationException(getClass().getCanonicalName() +
+        " does not support method msync");
+  }
+
+  /**
    * The specification of this method matches that of
    * {@link FileContext#access(Path, FsAction)}
    * except that an UnresolvedLinkException may be thrown if a symlink is
@@ -908,6 +962,11 @@ public abstract class AbstractFileSystem {
    * The specification of this method matches that of
    * {@link FileContext#listLocatedStatus(Path)} except that Path f 
    * must be for this file system.
+   *
+   * In HDFS implementation, the BlockLocation of returned LocatedFileStatus
+   * will have different formats for replicated and erasure coded file. Please
+   * refer to {@link FileSystem#getFileBlockLocations(FileStatus, long, long)}
+   * for more details.
    */
   public RemoteIterator<LocatedFileStatus> listLocatedStatus(final Path f)
       throws AccessControlException, FileNotFoundException,
@@ -986,7 +1045,7 @@ public abstract class AbstractFileSystem {
    */
   @InterfaceAudience.LimitedPrivate( { "HDFS", "MapReduce" })
   public List<Token<?>> getDelegationTokens(String renewer) throws IOException {
-    return new ArrayList<Token<?>>(0);
+    return Collections.emptyList();
   }
 
   /**
@@ -996,7 +1055,7 @@ public abstract class AbstractFileSystem {
    * changes.  (Modifications are merged into the current ACL.)
    *
    * @param path Path to modify
-   * @param aclSpec List<AclEntry> describing modifications
+   * @param aclSpec List{@literal <AclEntry>} describing modifications
    * @throws IOException if an ACL could not be modified
    */
   public void modifyAclEntries(Path path, List<AclEntry> aclSpec)
@@ -1010,7 +1069,7 @@ public abstract class AbstractFileSystem {
    * retained.
    *
    * @param path Path to modify
-   * @param aclSpec List<AclEntry> describing entries to remove
+   * @param aclSpec List{@literal <AclEntry>} describing entries to remove
    * @throws IOException if an ACL could not be modified
    */
   public void removeAclEntries(Path path, List<AclEntry> aclSpec)
@@ -1050,8 +1109,9 @@ public abstract class AbstractFileSystem {
    * entries.
    *
    * @param path Path to modify
-   * @param aclSpec List<AclEntry> describing modifications, must include entries
-   *   for user, group, and others for compatibility with permission bits.
+   * @param aclSpec List{@literal <AclEntry>} describing modifications, must
+   * include entries for user, group, and others for compatibility with
+   * permission bits.
    * @throws IOException if an ACL could not be modified
    */
   public void setAcl(Path path, List<AclEntry> aclSpec) throws IOException {
@@ -1063,7 +1123,7 @@ public abstract class AbstractFileSystem {
    * Gets the ACLs of files and directories.
    *
    * @param path Path to get
-   * @return RemoteIterator<AclStatus> which returns each AclStatus
+   * @return RemoteIterator{@literal <AclStatus>} which returns each AclStatus
    * @throws IOException if an ACL could not be read
    */
   public AclStatus getAclStatus(Path path) throws IOException {
@@ -1075,7 +1135,7 @@ public abstract class AbstractFileSystem {
    * Set an xattr of a file or directory.
    * The name must be prefixed with the namespace followed by ".". For example,
    * "user.attr".
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to modify
@@ -1093,7 +1153,7 @@ public abstract class AbstractFileSystem {
    * Set an xattr of a file or directory.
    * The name must be prefixed with the namespace followed by ".". For example,
    * "user.attr".
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to modify
@@ -1112,7 +1172,7 @@ public abstract class AbstractFileSystem {
    * Get an xattr for a file or directory.
    * The name must be prefixed with the namespace followed by ".". For example,
    * "user.attr".
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to get extended attribute
@@ -1129,11 +1189,13 @@ public abstract class AbstractFileSystem {
    * Get all of the xattrs for a file or directory.
    * Only those xattrs for which the logged-in user has permissions to view
    * are returned.
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to get extended attributes
-   * @return Map<String, byte[]> describing the XAttrs of the file or directory
+   *
+   * @return {@literal Map<String, byte[]>} describing the XAttrs of the file
+   * or directory
    * @throws IOException
    */
   public Map<String, byte[]> getXAttrs(Path path) throws IOException {
@@ -1145,12 +1207,13 @@ public abstract class AbstractFileSystem {
    * Get all of the xattrs for a file or directory.
    * Only those xattrs for which the logged-in user has permissions to view
    * are returned.
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to get extended attributes
    * @param names XAttr names.
-   * @return Map<String, byte[]> describing the XAttrs of the file or directory
+   * @return {@literal Map<String, byte[]>} describing the XAttrs of the file
+   * or directory
    * @throws IOException
    */
   public Map<String, byte[]> getXAttrs(Path path, List<String> names)
@@ -1163,11 +1226,12 @@ public abstract class AbstractFileSystem {
    * Get all of the xattr names for a file or directory.
    * Only the xattr names for which the logged-in user has permissions to view
    * are returned.
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to get extended attributes
-   * @return Map<String, byte[]> describing the XAttrs of the file or directory
+   * @return {@literal Map<String, byte[]>} describing the XAttrs of the file
+   * or directory
    * @throws IOException
    */
   public List<String> listXAttrs(Path path)
@@ -1180,7 +1244,7 @@ public abstract class AbstractFileSystem {
    * Remove an xattr of a file or directory.
    * The name must be prefixed with the namespace followed by ".". For example,
    * "user.attr".
-   * <p/>
+   * <p>
    * Refer to the HDFS extended attributes user documentation for details.
    *
    * @param path Path to remove extended attribute
@@ -1220,6 +1284,16 @@ public abstract class AbstractFileSystem {
       throws IOException {
     throw new UnsupportedOperationException(getClass().getSimpleName()
         + " doesn't support deleteSnapshot");
+  }
+
+  /**
+   * Set the source path to satisfy storage policy.
+   * @param path The source path referring to either a directory or a file.
+   * @throws IOException
+   */
+  public void satisfyStoragePolicy(final Path path) throws IOException {
+    throw new UnsupportedOperationException(
+        getClass().getSimpleName() + " doesn't support satisfyStoragePolicy");
   }
 
   /**
@@ -1283,5 +1357,73 @@ public abstract class AbstractFileSystem {
       return false;
     }
     return myUri.equals(((AbstractFileSystem) other).myUri);
+  }
+
+  /**
+   * Open a file with the given set of options.
+   * The base implementation performs a blocking
+   * call to {@link #open(Path, int)}in this call;
+   * the actual outcome is in the returned {@code CompletableFuture}.
+   * This avoids having to create some thread pool, while still
+   * setting up the expectation that the {@code get()} call
+   * is needed to evaluate the result.
+   * @param path path to the file
+   * @param parameters open file parameters from the builder.
+   * @return a future which will evaluate to the opened file.
+   * @throws IOException failure to resolve the link.
+   * @throws IllegalArgumentException unknown mandatory key
+   */
+  public CompletableFuture<FSDataInputStream> openFileWithOptions(Path path,
+      final OpenFileParameters parameters) throws IOException {
+    AbstractFSBuilderImpl.rejectUnknownMandatoryKeys(
+        parameters.getMandatoryKeys(),
+        Collections.emptySet(),
+        "for " + path);
+    return LambdaUtils.eval(
+        new CompletableFuture<>(), () ->
+            open(path, parameters.getBufferSize()));
+  }
+
+  public boolean hasPathCapability(final Path path,
+      final String capability)
+      throws IOException {
+    switch (validatePathCapabilityArgs(makeQualified(path), capability)) {
+    case CommonPathCapabilities.FS_SYMLINKS:
+      // delegate to the existing supportsSymlinks() call.
+      return supportsSymlinks();
+    default:
+      // the feature is not implemented.
+      return false;
+    }
+  }
+
+  /**
+   * Create a multipart uploader.
+   * @param basePath file path under which all files are uploaded
+   * @return a MultipartUploaderBuilder object to build the uploader
+   * @throws IOException if some early checks cause IO failures.
+   * @throws UnsupportedOperationException if support is checked early.
+   */
+  @InterfaceStability.Unstable
+  public MultipartUploaderBuilder createMultipartUploader(Path basePath)
+      throws IOException {
+    methodNotSupported();
+    return null;
+  }
+
+  /**
+   * Helper method that throws an {@link UnsupportedOperationException} for the
+   * current {@link FileSystem} method being called.
+   */
+  protected final void methodNotSupported() {
+    // The order of the stacktrace elements is (from top to bottom):
+    //   - java.lang.Thread.getStackTrace
+    //   - org.apache.hadoop.fs.FileSystem.methodNotSupported
+    //   - <the FileSystem method>
+    // therefore, to find out the current method name, we use the element at
+    // index 2.
+    String name = Thread.currentThread().getStackTrace()[2].getMethodName();
+    throw new UnsupportedOperationException(getClass().getCanonicalName() +
+        " does not support method " + name);
   }
 }

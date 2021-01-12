@@ -25,13 +25,13 @@ import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.hdfs.XAttrHelper;
 import org.apache.hadoop.security.AccessControlException;
 
-import com.google.common.collect.Lists;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.SECURITY_XATTR_UNREADABLE_BY_SUPERUSER;
 
 /**
- * There are four types of extended attributes <XAttr> defined by the
+ * There are four types of extended attributes &lt;XAttr&gt; defined by the
  * following namespaces:
  * <br>
  * USER - extended user attributes: these can be assigned to files and
@@ -54,8 +54,9 @@ import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.SECURITY_
  *   attributes that sometimes need to be exposed. Like SYSTEM namespace
  *   attributes they are not visible to the user except when getXAttr/getXAttrs
  *   is called on a file or directory in the /.reserved/raw HDFS directory
- *   hierarchy. These attributes can only be accessed by the superuser.
- * </br>
+ *   hierarchy. These attributes can only be accessed by the user who have
+ *   read access.
+ * <br>
  */
 @InterfaceAudience.Private
 public class XAttrPermissionFilter {
@@ -68,8 +69,7 @@ public class XAttrPermissionFilter {
         (xAttr.getNameSpace() == XAttr.NameSpace.TRUSTED && isSuperUser)) {
       return;
     }
-    if (xAttr.getNameSpace() == XAttr.NameSpace.RAW &&
-        isRawPath && isSuperUser) {
+    if (xAttr.getNameSpace() == XAttr.NameSpace.RAW && isRawPath) {
       return;
     }
     if (XAttrHelper.getPrefixedName(xAttr).
@@ -112,15 +112,13 @@ public class XAttrPermissionFilter {
       } else if (xAttr.getNameSpace() == XAttr.NameSpace.TRUSTED && 
           isSuperUser) {
         filteredXAttrs.add(xAttr);
-      } else if (xAttr.getNameSpace() == XAttr.NameSpace.RAW &&
-          isSuperUser && isRawPath) {
+      } else if (xAttr.getNameSpace() == XAttr.NameSpace.RAW && isRawPath) {
         filteredXAttrs.add(xAttr);
       } else if (XAttrHelper.getPrefixedName(xAttr).
           equals(SECURITY_XATTR_UNREADABLE_BY_SUPERUSER)) {
         filteredXAttrs.add(xAttr);
       }
     }
-    
     return filteredXAttrs;
   }
 }

@@ -22,8 +22,8 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -41,14 +41,14 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.apache.hadoop.yarn.server.api.ResourceManagerAdministrationProtocol;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 @InterfaceAudience.Public
 @InterfaceStability.Stable
 public class ClientRMProxy<T> extends RMProxy<T>  {
-  private static final Log LOG = LogFactory.getLog(ClientRMProxy.class);
-  private static final ClientRMProxy INSTANCE = new ClientRMProxy();
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ClientRMProxy.class);
 
   private interface ClientRMProtocols extends ApplicationClientProtocol,
       ApplicationMasterProtocol, ResourceManagerAdministrationProtocol {
@@ -69,7 +69,8 @@ public class ClientRMProxy<T> extends RMProxy<T>  {
    */
   public static <T> T createRMProxy(final Configuration configuration,
       final Class<T> protocol) throws IOException {
-    return createRMProxy(configuration, protocol, INSTANCE);
+    ClientRMProxy<T> clientRMProxy = new ClientRMProxy<>();
+    return createRMProxy(configuration, protocol, clientRMProxy);
   }
 
   private static void setAMRMTokenService(final Configuration conf)
@@ -84,7 +85,7 @@ public class ClientRMProxy<T> extends RMProxy<T>  {
 
   @Private
   @Override
-  protected InetSocketAddress getRMAddress(YarnConfiguration conf,
+  public InetSocketAddress getRMAddress(YarnConfiguration conf,
       Class<?> protocol) throws IOException {
     if (protocol == ApplicationClientProtocol.class) {
       return conf.getSocketAddr(YarnConfiguration.RM_ADDRESS,
@@ -103,7 +104,7 @@ public class ClientRMProxy<T> extends RMProxy<T>  {
     } else {
       String message = "Unsupported protocol found when creating the proxy " +
           "connection to ResourceManager: " +
-          ((protocol != null) ? protocol.getClass().getName() : "null");
+          ((protocol != null) ? protocol.getName() : "null");
       LOG.error(message);
       throw new IllegalStateException(message);
     }
@@ -111,7 +112,7 @@ public class ClientRMProxy<T> extends RMProxy<T>  {
 
   @Private
   @Override
-  protected void checkAllowedProtocols(Class<?> protocol) {
+  public void checkAllowedProtocols(Class<?> protocol) {
     Preconditions.checkArgument(
         protocol.isAssignableFrom(ClientRMProtocols.class),
         "RM does not support this client protocol");

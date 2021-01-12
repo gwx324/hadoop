@@ -18,13 +18,20 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity;
 
+import org.apache.hadoop.yarn.api.protocolrecords.ResourceTypes;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity.TestProportionalCapacityPreemptionPolicy.IsPreemptionRequestFor;
+import org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity.mockframework.ProportionalCapacityPreemptionPolicyMockFramework;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 
-import static org.mockito.Matchers.argThat;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -84,18 +91,18 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
 
     // 30 preempted from app1, 30 preempted from app4, and nothing preempted
     // from app2/app3
-    verify(mDisp, times(30)).handle(
+    verify(eventHandler, times(30)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
-    verify(mDisp, times(30)).handle(
+    verify(eventHandler, times(30)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(4))));
-    verify(mDisp, never()).handle(
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(2))));
-    verify(mDisp, never()).handle(
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(3))));
   }
 
   @Test
-  public void testNodePartitionPreemptionRespectMaximumCapacity()
+  public void testNodePartitionPreemptionNotHappenBetweenSatisfiedQueues()
       throws IOException {
     /**
      * Queue structure is:
@@ -114,8 +121,8 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
      * 2 apps in cluster.
      * app1 in b and app2 in c.
      *
-     * app1 uses 90x, and app2 use 10x. After preemption, app2 will preempt 10x
-     * from app1 because of max capacity.
+     * app1 uses 90x, and app2 use 10x. We don't expect preemption happen
+     * between them because all of them are satisfied
      */
     String labelsConfig =
         "=100,true;" + // default partition
@@ -139,11 +146,10 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
     buildEnv(labelsConfig, nodesConfig, queuesConfig, appsConfig);
     policy.editSchedule();
 
-    // 30 preempted from app1, 30 preempted from app4, and nothing preempted
-    // from app2/app3
-    verify(mDisp, times(20)).handle(
+    // No preemption happens
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
-    verify(mDisp, never()).handle(
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(2))));
   }
 
@@ -190,9 +196,9 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
 
     // 30 preempted from app1, 30 preempted from app4, and nothing preempted
     // from app2/app3
-    verify(mDisp, times(20)).handle(
+    verify(eventHandler, times(20)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
-    verify(mDisp, times(30)).handle(
+    verify(eventHandler, times(30)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(2))));
   }
 
@@ -242,16 +248,16 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
     policy.editSchedule();
 
     // 4 from app1
-    verify(mDisp, times(4)).handle(
+    verify(eventHandler, times(4)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
     // 19 from app2-app5
-    verify(mDisp, times(19)).handle(
+    verify(eventHandler, times(19)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(2))));
-    verify(mDisp, times(19)).handle(
+    verify(eventHandler, times(19)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(3))));
-    verify(mDisp, times(19)).handle(
+    verify(eventHandler, times(19)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(4))));
-    verify(mDisp, times(19)).handle(
+    verify(eventHandler, times(19)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(5))));
   }
 
@@ -303,16 +309,16 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
     policy.editSchedule();
 
     // 4 from app1
-    verify(mDisp, times(19)).handle(
+    verify(eventHandler, times(19)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
     // 19 from app2-app5
-    verify(mDisp, times(19)).handle(
+    verify(eventHandler, times(19)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(2))));
-    verify(mDisp, times(19)).handle(
+    verify(eventHandler, times(19)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(3))));
-    verify(mDisp, times(20)).handle(
+    verify(eventHandler, times(20)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(4))));
-    verify(mDisp, times(20)).handle(
+    verify(eventHandler, times(20)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(5))));
   }
 
@@ -365,11 +371,11 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
     policy.editSchedule();
 
     // 10 preempted from app1, nothing preempted from app2-app3
-    verify(mDisp, times(10)).handle(
+    verify(eventHandler, times(10)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
-    verify(mDisp, never()).handle(
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(2))));
-    verify(mDisp, never()).handle(
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(3))));
   }
 
@@ -424,11 +430,11 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
     policy.editSchedule();
 
     // 15 will be preempted app2/app3
-    verify(mDisp, times(15)).handle(
+    verify(eventHandler, times(15)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(2))));
-    verify(mDisp, times(15)).handle(
+    verify(eventHandler, times(15)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(3))));
-    verify(mDisp, never()).handle(
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
   }
 
@@ -494,13 +500,13 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
     policy.editSchedule();
 
     // 10 will be preempted from app1 (a1) /app4 (b2)
-    verify(mDisp, times(10)).handle(
+    verify(eventHandler, times(10)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
-    verify(mDisp, times(10)).handle(
+    verify(eventHandler, times(10)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(4))));
-    verify(mDisp, never()).handle(
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(2))));
-    verify(mDisp, never()).handle(
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(3))));
   }
 
@@ -554,9 +560,9 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
     buildEnv(labelsConfig, nodesConfig, queuesConfig, appsConfig);
     policy.editSchedule();
 
-    verify(mDisp, times(50)).handle(
+    verify(eventHandler, times(50)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
-    verify(mDisp, times(30)).handle(
+    verify(eventHandler, times(30)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(2))));
   }
 
@@ -605,13 +611,83 @@ public class TestProportionalCapacityPreemptionPolicyForNodePartitions
 
     // 30 preempted from app1, 30 preempted from app4, and nothing preempted
     // from app2/app3
-    verify(mDisp, times(30)).handle(
+    verify(eventHandler, times(30)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
-    verify(mDisp, times(30)).handle(
+    verify(eventHandler, times(30)).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(4))));
-    verify(mDisp, never()).handle(
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(2))));
-    verify(mDisp, never()).handle(
+    verify(eventHandler, never()).handle(
         argThat(new IsPreemptionRequestFor(getAppAttemptId(3))));
+  }
+
+  @Test
+  public void testNormalizeGuaranteeWithMultipleResource() throws IOException {
+    // Initialize resource map
+    Map<String, ResourceInformation> riMap = new HashMap<>();
+    String RESOURCE_1 = "res1";
+
+    // Initialize mandatory resources
+    ResourceInformation memory = ResourceInformation.newInstance(
+        ResourceInformation.MEMORY_MB.getName(),
+        ResourceInformation.MEMORY_MB.getUnits(),
+        YarnConfiguration.DEFAULT_RM_SCHEDULER_MINIMUM_ALLOCATION_MB,
+        YarnConfiguration.DEFAULT_RM_SCHEDULER_MAXIMUM_ALLOCATION_MB);
+    ResourceInformation vcores = ResourceInformation.newInstance(
+        ResourceInformation.VCORES.getName(),
+        ResourceInformation.VCORES.getUnits(),
+        YarnConfiguration.DEFAULT_RM_SCHEDULER_MINIMUM_ALLOCATION_VCORES,
+        YarnConfiguration.DEFAULT_RM_SCHEDULER_MAXIMUM_ALLOCATION_VCORES);
+    riMap.put(ResourceInformation.MEMORY_URI, memory);
+    riMap.put(ResourceInformation.VCORES_URI, vcores);
+    riMap.put(RESOURCE_1, ResourceInformation.newInstance(RESOURCE_1, "", 0,
+        ResourceTypes.COUNTABLE, 0, Integer.MAX_VALUE));
+
+    ResourceUtils.initializeResourcesFromResourceInformationMap(riMap);
+
+    /**
+     * Queue structure is:
+     *
+     * <pre>
+     *           root
+     *           /  \
+     *          a    b
+     *        /  \  /  \
+     *       a1  a2 b1  b2
+     * </pre>
+     *
+     * a1 and b2 are using most of resources.
+     * a2 and b1 needs more resources. Both are under served.
+     * hence demand will consider both queue's need while trying to
+     * do preemption.
+     */
+    String labelsConfig =
+        "=100,true;";
+    String nodesConfig =
+        "n1=;"; // n1 is default partition
+    String queuesConfig =
+        // guaranteed,max,used,pending
+        "root(=[100:100:10 100:100:10 100:100:10 100:100:10]);" + //root
+        "-a(=[50:80:4 100:100:10 80:90:10 30:20:4]);" + // a
+        "--a1(=[25:30:2 100:50:10 80:90:10 0]);" + // a1
+        "--a2(=[25:50:2 100:50:10 0 30:20:4]);" + // a2
+        "-b(=[50:20:6 100:100:10 20:10 40:50:8]);" + // b
+        "--b1(=[25:5:4 100:20:10 0 20:10:4]);" + // b1
+        "--b2(=[25:15:2 100:20:10 20:10 20:10:4])"; // b2
+    String appsConfig=
+        //queueName\t(priority,resource,host,expression,#repeat,reserved)
+        "a1\t" // app1 in a1
+        + "(1,8:9:1,n1,,10,false);" +
+        "b2\t" // app2 in b2
+        + "(1,2:1,n1,,10,false)"; // 80 of y
+
+    buildEnv(labelsConfig, nodesConfig, queuesConfig, appsConfig);
+    policy.editSchedule();
+
+    verify(eventHandler, times(7)).handle(
+        argThat(new IsPreemptionRequestFor(getAppAttemptId(1))));
+
+    riMap.remove(RESOURCE_1);
+    ResourceUtils.initializeResourcesFromResourceInformationMap(riMap);
   }
 }

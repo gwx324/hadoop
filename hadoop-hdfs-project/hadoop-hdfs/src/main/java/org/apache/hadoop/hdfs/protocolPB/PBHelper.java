@@ -20,13 +20,15 @@ package org.apache.hadoop.hdfs.protocolPB;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
-import com.google.protobuf.ByteString;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
 
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
-import org.apache.hadoop.ha.proto.HAServiceProtocolProtos;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
@@ -34,6 +36,8 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.protocol.ProvidedStorageLocation;
+import org.apache.hadoop.hdfs.protocol.proto.AliasMapProtocolProtos.KeyValueProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BalancerBandwidthCommandProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockCommandProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockECReconstructionCommandProto;
@@ -43,15 +47,18 @@ import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.DatanodeComm
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.DatanodeRegistrationProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.FinalizeCommandProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.KeyUpdateCommandProto;
-import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.NNHAStatusHeartbeatProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.ReceivedDeletedBlockInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.RegisterCommandProto;
+import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos
+    .SlowDiskReportProto;
+import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.SlowPeerReportProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.VolumeFailureSummaryProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockReportContextProto;
 import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos.BlockECReconstructionInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ExtendedBlockProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ProvidedStorageLocationProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.StorageUuidsProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.DatanodeInfosProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.LocatedBlockProto;
@@ -67,6 +74,7 @@ import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.NamenodeCommandPro
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.NamenodeRegistrationProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.NamenodeRegistrationProto.NamenodeRoleProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.NamespaceInfoProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.NNHAStatusHeartbeatProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.RecoveringBlockProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.RemoteEditLogManifestProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.RemoteEditLogProto;
@@ -75,6 +83,7 @@ import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.StorageInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.JournalProtocolProtos.JournalInfoProto;
 import org.apache.hadoop.hdfs.security.token.block.BlockKey;
 import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
+import org.apache.hadoop.hdfs.server.common.FileRegion;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NodeType;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
@@ -108,6 +117,8 @@ import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo.BlockStat
 import org.apache.hadoop.hdfs.server.protocol.RegisterCommand;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLog;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
+import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
+import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 
 /**
@@ -338,7 +349,8 @@ public class PBHelper {
     StorageInfoProto storage = info.getStorageInfo();
     return new NamespaceInfo(storage.getNamespceID(), storage.getClusterID(),
         info.getBlockPoolID(), storage.getCTime(), info.getBuildVersion(),
-        info.getSoftwareVersion(), info.getCapabilities());
+        info.getSoftwareVersion(), info.getCapabilities(),
+        convert(info.getState()));
   }
 
   public static NamenodeCommand convert(NamenodeCommandProto cmd) {
@@ -744,43 +756,68 @@ public class PBHelper {
   }
   
   public static NamespaceInfoProto convert(NamespaceInfo info) {
-    return NamespaceInfoProto.newBuilder()
-        .setBlockPoolID(info.getBlockPoolID())
+    NamespaceInfoProto.Builder builder = NamespaceInfoProto.newBuilder();
+    builder.setBlockPoolID(info.getBlockPoolID())
         .setBuildVersion(info.getBuildVersion())
         .setUnused(0)
         .setStorageInfo(PBHelper.convert((StorageInfo)info))
         .setSoftwareVersion(info.getSoftwareVersion())
-        .setCapabilities(info.getCapabilities())
-        .build();
+        .setCapabilities(info.getCapabilities());
+    HAServiceState state = info.getState();
+    if(state != null) {
+      builder.setState(convert(info.getState()));
+    }
+    return builder.build();
+  }
+
+  public static HAServiceState convert(NNHAStatusHeartbeatProto.State s) {
+    if (s == null) {
+      return null;
+    }
+    switch (s) {
+    case ACTIVE:
+      return HAServiceState.ACTIVE;
+    case STANDBY:
+      return HAServiceState.STANDBY;
+    case OBSERVER:
+      return HAServiceState.OBSERVER;
+    default:
+      throw new IllegalArgumentException("Unexpected HAServiceStateProto:"
+          + s);
+    }
+  }
+
+  public static NNHAStatusHeartbeatProto.State convert(HAServiceState s) {
+    if (s == null) {
+      return null;
+    }
+    switch (s) {
+    case ACTIVE:
+      return NNHAStatusHeartbeatProto.State.ACTIVE;
+    case STANDBY:
+      return NNHAStatusHeartbeatProto.State.STANDBY;
+    case OBSERVER:
+      return NNHAStatusHeartbeatProto.State.OBSERVER;
+    default:
+      throw new IllegalArgumentException("Unexpected HAServiceState:"
+          + s);
+    }
   }
 
   public static NNHAStatusHeartbeat convert(NNHAStatusHeartbeatProto s) {
-    if (s == null) return null;
-    switch (s.getState()) {
-    case ACTIVE:
-      return new NNHAStatusHeartbeat(HAServiceState.ACTIVE, s.getTxid());
-    case STANDBY:
-      return new NNHAStatusHeartbeat(HAServiceState.STANDBY, s.getTxid());
-    default:
-      throw new IllegalArgumentException("Unexpected NNHAStatusHeartbeat.State:" + s.getState());
+    if (s == null) {
+      return null;
     }
+    return new NNHAStatusHeartbeat(convert(s.getState()), s.getTxid());
   }
 
   public static NNHAStatusHeartbeatProto convert(NNHAStatusHeartbeat hb) {
-    if (hb == null) return null;
-    NNHAStatusHeartbeatProto.Builder builder =
-      NNHAStatusHeartbeatProto.newBuilder();
-    switch (hb.getState()) {
-      case ACTIVE:
-        builder.setState(HAServiceProtocolProtos.HAServiceStateProto.ACTIVE);
-        break;
-      case STANDBY:
-        builder.setState(HAServiceProtocolProtos.HAServiceStateProto.STANDBY);
-        break;
-      default:
-        throw new IllegalArgumentException("Unexpected NNHAStatusHeartbeat.State:" +
-            hb.getState());
+    if (hb == null) {
+      return null;
     }
+    NNHAStatusHeartbeatProto.Builder builder =
+        NNHAStatusHeartbeatProto.newBuilder();
+    builder.setState(convert(hb.getState()));
     builder.setTxid(hb.getTxId());
     return builder.build();
   }
@@ -806,6 +843,110 @@ public class PBHelper {
     builder.setEstimatedCapacityLostTotal(
         volumeFailureSummary.getEstimatedCapacityLostTotal());
     return builder.build();
+  }
+
+  public static List<SlowPeerReportProto> convertSlowPeerInfo(
+      SlowPeerReports slowPeers) {
+    if (slowPeers.getSlowPeers().size() == 0) {
+      return Collections.emptyList();
+    }
+
+    List<SlowPeerReportProto> slowPeerInfoProtos =
+        new ArrayList<>(slowPeers.getSlowPeers().size());
+    for (Map.Entry<String, Double> entry :
+        slowPeers.getSlowPeers().entrySet()) {
+      slowPeerInfoProtos.add(SlowPeerReportProto.newBuilder()
+              .setDataNodeId(entry.getKey())
+              .setAggregateLatency(entry.getValue())
+              .build());
+    }
+    return slowPeerInfoProtos;
+  }
+
+  public static SlowPeerReports convertSlowPeerInfo(
+      List<SlowPeerReportProto> slowPeerProtos) {
+
+    // No slow peers, or possibly an older DataNode.
+    if (slowPeerProtos == null || slowPeerProtos.size() == 0) {
+      return SlowPeerReports.EMPTY_REPORT;
+    }
+
+    Map<String, Double> slowPeersMap = new HashMap<>(slowPeerProtos.size());
+    for (SlowPeerReportProto proto : slowPeerProtos) {
+      if (!proto.hasDataNodeId()) {
+        // The DataNodeId should be reported.
+        continue;
+      }
+      slowPeersMap.put(
+          proto.getDataNodeId(),
+          proto.hasAggregateLatency() ? proto.getAggregateLatency() : 0.0);
+    }
+    return SlowPeerReports.create(slowPeersMap);
+  }
+
+  public static List<SlowDiskReportProto> convertSlowDiskInfo(
+      SlowDiskReports slowDisks) {
+    if (slowDisks.getSlowDisks().size() == 0) {
+      return Collections.emptyList();
+    }
+
+    List<SlowDiskReportProto> slowDiskInfoProtos =
+        new ArrayList<>(slowDisks.getSlowDisks().size());
+    for (Map.Entry<String, Map<SlowDiskReports.DiskOp, Double>> entry :
+        slowDisks.getSlowDisks().entrySet()) {
+      SlowDiskReportProto.Builder builder = SlowDiskReportProto.newBuilder();
+      builder.setBasePath(entry.getKey());
+      Map<SlowDiskReports.DiskOp, Double> value = entry.getValue();
+      if (value.get(SlowDiskReports.DiskOp.METADATA) != null) {
+        builder.setMeanMetadataOpLatency(value.get(
+            SlowDiskReports.DiskOp.METADATA));
+      }
+      if (value.get(SlowDiskReports.DiskOp.READ) != null) {
+        builder.setMeanReadIoLatency(value.get(
+            SlowDiskReports.DiskOp.READ));
+      }
+      if (value.get(SlowDiskReports.DiskOp.WRITE) != null) {
+        builder.setMeanWriteIoLatency(value.get(
+            SlowDiskReports.DiskOp.WRITE));
+      }
+      slowDiskInfoProtos.add(builder.build());
+    }
+
+    return slowDiskInfoProtos;
+  }
+
+  public static SlowDiskReports convertSlowDiskInfo(
+      List<SlowDiskReportProto> slowDiskProtos) {
+
+    // No slow disks, or possibly an older DataNode.
+    if (slowDiskProtos == null || slowDiskProtos.size() == 0) {
+      return SlowDiskReports.EMPTY_REPORT;
+    }
+
+    Map<String, Map<SlowDiskReports.DiskOp, Double>> slowDisksMap =
+        new HashMap<>(slowDiskProtos.size());
+    for (SlowDiskReportProto proto : slowDiskProtos) {
+      if (!proto.hasBasePath()) {
+        // The disk basePath should be reported.
+        continue;
+      }
+      Map<SlowDiskReports.DiskOp, Double> latencyMap = new HashMap<>();
+      if (proto.hasMeanMetadataOpLatency()) {
+        latencyMap.put(SlowDiskReports.DiskOp.METADATA,
+            proto.getMeanMetadataOpLatency());
+      }
+      if (proto.hasMeanReadIoLatency()) {
+        latencyMap.put(SlowDiskReports.DiskOp.READ,
+            proto.getMeanReadIoLatency());
+      }
+      if (proto.hasMeanWriteIoLatency()) {
+        latencyMap.put(SlowDiskReports.DiskOp.WRITE,
+            proto.getMeanWriteIoLatency());
+      }
+
+      slowDisksMap.put(proto.getBasePath(), latencyMap);
+    }
+    return SlowDiskReports.create(slowDisksMap);
   }
 
   public static JournalInfo convert(JournalInfoProto info) {
@@ -962,5 +1103,29 @@ public class PBHelper {
     return new BlockECReconstructionCommand(
         DatanodeProtocol.DNA_ERASURE_CODING_RECONSTRUCTION,
         blkECReconstructionInfos);
+  }
+
+  public static KeyValueProto convert(FileRegion fileRegion) {
+    return KeyValueProto
+        .newBuilder()
+        .setKey(PBHelperClient.convert(fileRegion.getBlock()))
+        .setValue(PBHelperClient.convert(
+            fileRegion.getProvidedStorageLocation()))
+        .build();
+  }
+
+  public static FileRegion
+      convert(KeyValueProto keyValueProto) {
+    BlockProto blockProto =
+        keyValueProto.getKey();
+    ProvidedStorageLocationProto providedStorageLocationProto =
+        keyValueProto.getValue();
+
+    Block block =
+        PBHelperClient.convert(blockProto);
+    ProvidedStorageLocation providedStorageLocation =
+        PBHelperClient.convert(providedStorageLocationProto);
+
+    return new FileRegion(block, providedStorageLocation);
   }
 }

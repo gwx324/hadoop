@@ -21,8 +21,6 @@ package org.apache.hadoop.mapreduce.v2;
 import java.io.File;
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.mapreduce.Counters;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobCounter;
@@ -35,10 +33,14 @@ import org.apache.hadoop.mapreduce.TaskType;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestUberAM extends TestMRJobs {
 
-  private static final Log LOG = LogFactory.getLog(TestUberAM.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestUberAM.class);
 
   @BeforeClass
   public static void setup() throws IOException {
@@ -127,7 +129,7 @@ public class TestUberAM extends TestMRJobs {
     } catch (Exception e) {
       secondTaskAttemptExists = false;
     }
-    Assert.assertEquals(false, secondTaskAttemptExists);
+    assertThat(secondTaskAttemptExists).isFalse();
 
     TaskCompletionEvent[] events = job.getTaskCompletionEvents(0, 2);
     Assert.assertEquals(1, events.length);

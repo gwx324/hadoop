@@ -24,9 +24,9 @@ import java.lang.reflect.UndeclaredThrowableException;
 import java.net.URISyntaxException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ThreadLocalRandom;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -47,7 +47,7 @@ import org.apache.hadoop.yarn.sharedcache.SharedCacheChecksumFactory;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.FSDownload;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * The callable class that handles the actual upload to the shared cache.
@@ -60,7 +60,8 @@ class SharedCacheUploader implements Callable<Boolean> {
   static final FsPermission FILE_PERMISSION =
       new FsPermission((short)00555);
 
-  private static final Log LOG = LogFactory.getLog(SharedCacheUploader.class);
+  private static final Logger LOG =
+       LoggerFactory.getLogger(SharedCacheUploader.class);
 
   private final LocalResource resource;
   private final Path localPath;
@@ -192,10 +193,12 @@ class SharedCacheUploader implements Callable<Boolean> {
 
   private void deleteTempFile(Path tempPath) {
     try {
-      if (tempPath != null && fs.exists(tempPath)) {
+      if (tempPath != null) {
         fs.delete(tempPath, false);
       }
-    } catch (IOException ignore) {}
+    } catch (IOException ioe) {
+      LOG.debug("Exception received while deleting temp files", ioe);
+    }
   }
 
   /**

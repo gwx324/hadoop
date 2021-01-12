@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -25,8 +26,8 @@ import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -43,7 +44,7 @@ public class AppendTestUtil {
    */
   static final Long RANDOM_NUMBER_GENERATOR_SEED = null;
 
-  static final Log LOG = LogFactory.getLog(AppendTestUtil.class);
+  static final Logger LOG = LoggerFactory.getLogger(AppendTestUtil.class);
 
   private static final Random SEED = new Random();
   static {
@@ -238,7 +239,8 @@ public class AppendTestUtil {
   }
 
   public static void testAppend(FileSystem fs, Path p) throws IOException {
-    final byte[] bytes = new byte[1000];
+    final int size = 1000;
+    final byte[] bytes = randomBytes(seed, size);
 
     { //create file
       final FSDataOutputStream out = fs.create(p, (short)1);
@@ -247,12 +249,22 @@ public class AppendTestUtil {
       assertEquals(bytes.length, fs.getFileStatus(p).getLen());
     }
 
-    for(int i = 2; i < 500; i++) {
+    final int appends = 50;
+    for (int i = 2; i < appends; i++) {
       //append
       final FSDataOutputStream out = fs.append(p);
       out.write(bytes);
       out.close();
-      assertEquals(i*bytes.length, fs.getFileStatus(p).getLen());
+      assertEquals(i * bytes.length, fs.getFileStatus(p).getLen());
     }
+
+    // Check the appended content
+    final FSDataInputStream in = fs.open(p);
+    for (int i = 0; i < appends - 1; i++) {
+      byte[] read = new byte[size];
+      in.read(i * bytes.length, read, 0, size);
+      assertArrayEquals(bytes, read);
+    }
+    in.close();
   }
 }

@@ -30,11 +30,10 @@ import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
 import java.util.Collection;
 import java.util.EnumSet;
+import java.util.List;
 
-import org.apache.commons.lang.StringEscapeUtils;
-import org.apache.commons.lang.math.LongRange;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.text.StringEscapeUtils;
+import org.apache.commons.lang3.Range;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.ApplicationBaseProtocol;
@@ -43,17 +42,20 @@ import org.apache.hadoop.yarn.api.records.ApplicationReport;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.webapp.dao.AppInfo;
+import org.apache.hadoop.yarn.util.Apps;
 import org.apache.hadoop.yarn.webapp.BadRequestException;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TABLE;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TBODY;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.TABLE;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.TBODY;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
 
 import com.google.inject.Inject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class AppsBlock extends HtmlBlock {
 
-  private static final Log LOG = LogFactory.getLog(AppsBlock.class);
+  private static final Logger LOG = LoggerFactory.getLogger(AppsBlock.class);
   protected ApplicationBaseProtocol appBaseProt;
   protected EnumSet<YarnApplicationState> reqAppStates;
   protected UserGroupInformation callerUGI;
@@ -107,21 +109,25 @@ public class AppsBlock extends HtmlBlock {
         "app.started-time.end must be greater than app.started-time.begin");
     }
     request.setStartRange(
-        new LongRange(appStartedTimeBegain, appStartedTimeEnd));
+        Range.between(appStartedTimeBegain, appStartedTimeEnd));
 
     if (callerUGI == null) {
-      appReports = appBaseProt.getApplications(request).getApplicationList();
+      appReports = getApplicationReport(request);
     } else {
       appReports =
           callerUGI
             .doAs(new PrivilegedExceptionAction<Collection<ApplicationReport>>() {
               @Override
               public Collection<ApplicationReport> run() throws Exception {
-                return appBaseProt.getApplications(request)
-                  .getApplicationList();
+                return getApplicationReport(request);
               }
             });
     }
+  }
+
+  protected List<ApplicationReport> getApplicationReport(
+      final GetApplicationsRequest request) throws YarnException, IOException {
+    return appBaseProt.getApplications(request).getApplicationList();
   }
 
   @Override
@@ -130,11 +136,10 @@ public class AppsBlock extends HtmlBlock {
 
     try {
       fetchData();
-    }
-    catch( Exception e) {
+    } catch (YarnException | IOException | InterruptedException e) {
       String message = "Failed to read the applications.";
       LOG.error(message, e);
-      html.p()._(message)._();
+      html.p().__(message).__();
       return;
     }
     renderData(html);
@@ -144,10 +149,13 @@ public class AppsBlock extends HtmlBlock {
     TBODY<TABLE<Hamlet>> tbody =
         html.table("#apps").thead().tr().th(".id", "ID").th(".user", "User")
           .th(".name", "Name").th(".type", "Application Type")
-          .th(".queue", "Queue").th(".priority", "Application Priority")
-          .th(".starttime", "StartTime").th(".finishtime", "FinishTime")
+          .th(".apptag", "Application Tags").th(".queue", "Queue")
+          .th(".priority", "Application Priority")
+          .th(".starttime", "StartTime")
+          .th(".launchtime", "LaunchTime")
+          .th(".finishtime", "FinishTime")
           .th(".state", "State").th(".finalstatus", "FinalStatus")
-          .th(".progress", "Progress").th(".ui", "Tracking UI")._()._().tbody();
+          .th(".progress", "Progress").th(".ui", "Tracking UI").__().__().tbody();
 
     StringBuilder appsTableData = new StringBuilder("[\n");
     for (ApplicationReport appReport : appReports) {
@@ -167,22 +175,27 @@ public class AppsBlock extends HtmlBlock {
         .append(app.getAppId())
         .append("</a>\",\"")
         .append(
-          StringEscapeUtils.escapeJavaScript(StringEscapeUtils.escapeHtml(app
+          StringEscapeUtils.escapeEcmaScript(StringEscapeUtils.escapeHtml4(app
               .getUser())))
         .append("\",\"")
         .append(
-          StringEscapeUtils.escapeJavaScript(StringEscapeUtils.escapeHtml(app
+          StringEscapeUtils.escapeEcmaScript(StringEscapeUtils.escapeHtml4(app
             .getName())))
         .append("\",\"")
         .append(
-          StringEscapeUtils.escapeJavaScript(StringEscapeUtils.escapeHtml(app
+          StringEscapeUtils.escapeEcmaScript(StringEscapeUtils.escapeHtml4(app
             .getType())))
+          .append("\",\"")
+          .append(
+              StringEscapeUtils.escapeEcmaScript(StringEscapeUtils.escapeHtml4(
+                  app.getApplicationTags() == null ? "" : app.getApplicationTags())))
         .append("\",\"")
         .append(
-          StringEscapeUtils.escapeJavaScript(StringEscapeUtils.escapeHtml(app
+          StringEscapeUtils.escapeEcmaScript(StringEscapeUtils.escapeHtml4(app
             .getQueue()))).append("\",\"").append(String
                 .valueOf(app.getPriority()))
         .append("\",\"").append(app.getStartedTime())
+        .append("\",\"").append(app.getLaunchTime())
         .append("\",\"").append(app.getFinishedTime())
         .append("\",\"")
         .append(app.getAppState() == null ? UNAVAILABLE : app.getAppState())
@@ -203,10 +216,8 @@ public class AppsBlock extends HtmlBlock {
 
       String trackingUI =
           app.getTrackingUrl() == null || app.getTrackingUrl().equals(UNAVAILABLE)
-              ? "Unassigned"
-              : app.getAppState() == YarnApplicationState.FINISHED
-                  || app.getAppState() == YarnApplicationState.FAILED
-                  || app.getAppState() == YarnApplicationState.KILLED
+              ? "Unassigned" :
+              Apps.isApplicationFinalState(app.getAppState())
                   ? "History" : "ApplicationMaster";
       appsTableData.append(trackingURL == null ? "#" : "href='" + trackingURL)
         .append("'>").append(trackingUI).append("</a>\"],\n");
@@ -218,8 +229,8 @@ public class AppsBlock extends HtmlBlock {
     }
     appsTableData.append("]");
     html.script().$type("text/javascript")
-      ._("var appsTableData=" + appsTableData)._();
+      .__("var appsTableData=" + appsTableData).__();
 
-    tbody._()._();
+    tbody.__().__();
   }
 }

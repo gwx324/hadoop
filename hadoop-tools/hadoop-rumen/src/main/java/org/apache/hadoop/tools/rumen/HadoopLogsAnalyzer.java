@@ -35,8 +35,9 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Tool;
@@ -56,8 +57,6 @@ import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.io.compress.CompressionCodecFactory;
 import org.apache.hadoop.io.compress.CodecPool;
 import org.apache.hadoop.io.compress.Decompressor;
-
-import org.codehaus.jackson.JsonProcessingException;
 
 /**
  * This is the main class for rumen log mining functionality.
@@ -140,7 +139,7 @@ public class HadoopLogsAnalyzer extends Configured implements Tool {
   private Histogram successfulNthReducerAttempts;
   private Histogram mapperLocality;
 
-  static final private Log LOG = LogFactory.getLog(HadoopLogsAnalyzer.class);
+  static final private Logger LOG = LoggerFactory.getLogger(HadoopLogsAnalyzer.class);
 
   private int[] attemptTimesPercentiles;
 

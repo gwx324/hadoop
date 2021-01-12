@@ -29,8 +29,6 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -51,6 +49,8 @@ import org.apache.hadoop.io.file.tfile.CompareUtils.BytesComparator;
 import org.apache.hadoop.io.file.tfile.CompareUtils.MemcmpRawComparator;
 import org.apache.hadoop.io.file.tfile.Utils.Version;
 import org.apache.hadoop.io.serializer.JavaSerializationComparator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A TFile is a container of key-value pairs. Both keys and values are type-less
@@ -131,7 +131,7 @@ import org.apache.hadoop.io.serializer.JavaSerializationComparator;
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
 public class TFile {
-  static final Log LOG = LogFactory.getLog(TFile.class);
+  static final Logger LOG = LoggerFactory.getLogger(TFile.class);
 
   private static final String CHUNK_BUF_SIZE_ATTR = "tfile.io.chunk.size";
   private static final String FS_INPUT_BUF_SIZE_ATTR =
@@ -335,7 +335,7 @@ public class TFile {
           writerBCF.close();
         }
       } finally {
-        IOUtils.cleanup(LOG, blkAppender, writerBCF);
+        IOUtils.cleanupWithLogger(LOG, blkAppender, writerBCF);
         blkAppender = null;
         writerBCF = null;
         state = State.CLOSED;
@@ -1308,11 +1308,11 @@ public class TFile {
        * @param reader
        *          The TFile reader object.
        * @param beginKey
-       *          Begin key of the scan. If null, scan from the first <K,V>
-       *          entry of the TFile.
+       *          Begin key of the scan. If null, scan from the first
+       *          &lt;K, V&gt; entry of the TFile.
        * @param endKey
-       *          End key of the scan. If null, scan up to the last <K, V> entry
-       *          of the TFile.
+       *          End key of the scan. If null, scan up to the last &lt;K, V&gt;
+       *          entry of the TFile.
        * @throws IOException
        */
       protected Scanner(Reader reader, RawComparable beginKey,
@@ -1789,7 +1789,7 @@ public class TFile {
         public int getKey(byte[] buf, int offset) throws IOException {
           if ((offset | (buf.length - offset - klen)) < 0) {
             throw new IndexOutOfBoundsException(
-                "Bufer not enough to store the key");
+                "Buffer not enough to store the key");
           }
           System.arraycopy(keyBuffer, 0, buf, offset, klen);
           return klen;

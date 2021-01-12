@@ -17,6 +17,14 @@
  */
 package org.apache.hadoop.security.ssl;
 
+import static org.apache.hadoop.security.ssl.FileBasedKeyStoresFactory.SSL_TRUSTSTORE_LOCATION_TPL_KEY;
+import static org.apache.hadoop.security.ssl.KeyStoreTestUtil.TRUST_STORE_PASSWORD_DEFAULT;
+import static org.apache.hadoop.security.ssl.SSLFactory.Mode.CLIENT;
+import static org.apache.hadoop.security.ssl.SSLFactory.SSL_CLIENT_CONF_KEY;
+import static org.apache.hadoop.security.ssl.SSLFactory.SSL_REQUIRE_CLIENT_CERT_KEY;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import org.apache.hadoop.conf.Configuration;
@@ -25,7 +33,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
 import org.apache.hadoop.security.alias.JavaKeyStoreProvider;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
+import org.apache.hadoop.util.StringUtils;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -33,6 +41,7 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLEngine;
@@ -57,12 +66,17 @@ public class TestSSLFactory {
     new File(BASEDIR).getAbsolutePath();
   private String sslConfsDir;
   private static final String excludeCiphers = "TLS_ECDHE_RSA_WITH_RC4_128_SHA,"
-      + "SSL_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA,"
+      + "SSL_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA,  \n"
       + "SSL_RSA_WITH_DES_CBC_SHA,"
-      + "SSL_DHE_RSA_WITH_DES_CBC_SHA,"
-      + "SSL_RSA_EXPORT_WITH_RC4_40_MD5,"
+      + "SSL_DHE_RSA_WITH_DES_CBC_SHA,  "
+      + "SSL_RSA_EXPORT_WITH_RC4_40_MD5,\t \n"
       + "SSL_RSA_EXPORT_WITH_DES40_CBC_SHA,"
-      + "SSL_RSA_WITH_RC4_128_MD5";
+      + "SSL_RSA_WITH_RC4_128_MD5,"
+      + "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA";
+  private static final Configuration FAKE_SSL_CONFIG =
+      KeyStoreTestUtil.createClientSSLConfig("clientKeyStoreLocation",
+          "keystorePassword", "keyPassword",
+          "trustStoreLocation", "trustStorePassword");
 
   @BeforeClass
   public static void setUp() throws Exception {
@@ -85,6 +99,55 @@ public class TestSSLFactory {
   public void cleanUp() throws Exception {
     sslConfsDir = KeyStoreTestUtil.getClasspathDir(TestSSLFactory.class);
     KeyStoreTestUtil.cleanupSSLConfig(KEYSTORES_DIR, sslConfsDir);
+  }
+
+  private String getClientTrustStoreKeyName() {
+    return FileBasedKeyStoresFactory.resolvePropertyName(
+        CLIENT, SSL_TRUSTSTORE_LOCATION_TPL_KEY);
+  }
+
+  @Test
+  public void testNonExistSslClientXml() throws Exception{
+    Configuration conf = new Configuration(false);
+    conf.setBoolean(SSL_REQUIRE_CLIENT_CERT_KEY, false);
+    conf.set(SSL_CLIENT_CONF_KEY, "non-exist-ssl-client.xml");
+    Configuration sslConf =
+        SSLFactory.readSSLConfiguration(conf, SSLFactory.Mode.CLIENT);
+    assertNull(sslConf.getResource("non-exist-ssl-client.xml"));
+    assertNull(sslConf.get("ssl.client.truststore.location"));
+  }
+
+  @Test
+  public void testSslConfFallback() throws Exception {
+    Configuration conf = new Configuration(FAKE_SSL_CONFIG);
+
+    // Set non-exist-ssl-client.xml that fails to load.
+    // This triggers fallback to SSL config from input conf.
+    conf.set(SSL_CLIENT_CONF_KEY, "non-exist-ssl-client.xml");
+    Configuration sslConf = SSLFactory.readSSLConfiguration(conf, CLIENT);
+
+    // Verify fallback to input conf when ssl conf can't be loaded from
+    // classpath.
+    String clientTsLoc = sslConf.get(getClientTrustStoreKeyName());
+    assertEquals("trustStoreLocation", clientTsLoc);
+    assertEquals(sslConf, conf);
+  }
+
+  @Test
+  public void testSslConfClassPathFirst() throws Exception {
+    // Generate a valid ssl-client.xml into classpath.
+    // This will be the preferred approach.
+    Configuration conf = createConfiguration(false, true);
+
+    // Injecting fake ssl config into input conf.
+    conf.addResource(FAKE_SSL_CONFIG);
+
+    // Classpath SSL config will be preferred if both input conf and
+    // the classpath SSL config exist for backward compatibility.
+    Configuration sslConfLoaded = SSLFactory.readSSLConfiguration(conf, CLIENT);
+    String clientTsLoc = sslConfLoaded.get(getClientTrustStoreKeyName());
+    assertNotEquals("trustStoreLocation", clientTsLoc);
+    assertNotEquals(conf, sslConfLoaded);
   }
 
   @Test(expected = IllegalStateException.class)
@@ -190,7 +253,8 @@ public class TestSSLFactory {
     SSLEngine serverSSLEngine = serverSSLFactory.createSSLEngine();
     SSLEngine clientSSLEngine = clientSSLFactory.createSSLEngine();
     // client selects cipher suites excluded by server
-    clientSSLEngine.setEnabledCipherSuites(excludeCiphers.split(","));
+    clientSSLEngine.setEnabledCipherSuites(
+        StringUtils.getTrimmedStrings(excludeCiphers));
 
     // use the same buffer size for server and client.
     SSLSession session = clientSSLEngine.getSession();
@@ -404,7 +468,7 @@ public class TestSSLFactory {
     String keystore = new File(KEYSTORES_DIR, "keystore.jks").getAbsolutePath();
     String truststore = new File(KEYSTORES_DIR, "truststore.jks")
       .getAbsolutePath();
-    String trustPassword = "trustP";
+    String trustPassword = TRUST_STORE_PASSWORD_DEFAULT;
 
     // Create keys, certs, keystore, and truststore.
     KeyPair keyPair = KeyStoreTestUtil.generateKeyPair("RSA");
@@ -430,7 +494,7 @@ public class TestSSLFactory {
     if (mode == SSLFactory.Mode.SERVER) {
       sslConfFileName = "ssl-server.xml";
       sslConf = KeyStoreTestUtil.createServerSSLConfig(keystore, confPassword,
-        confKeyPassword, truststore);
+        confKeyPassword, truststore, trustPassword);
       if (useCredProvider) {
         File testDir = GenericTestUtils.getTestDir();
         final Path jksPath = new Path(testDir.toString(), "test.jks");
@@ -441,14 +505,14 @@ public class TestSSLFactory {
     } else {
       sslConfFileName = "ssl-client.xml";
       sslConf = KeyStoreTestUtil.createClientSSLConfig(keystore, confPassword,
-        confKeyPassword, truststore);
+        confKeyPassword, truststore, trustPassword);
     }
     KeyStoreTestUtil.saveConfig(new File(sslConfsDir, sslConfFileName), sslConf);
 
     // Create the master configuration for use by the SSLFactory, which by
     // default refers to the ssl-server.xml or ssl-client.xml created above.
     Configuration conf = new Configuration();
-    conf.setBoolean(SSLFactory.SSL_REQUIRE_CLIENT_CERT_KEY, true);
+    conf.setBoolean(SSL_REQUIRE_CLIENT_CERT_KEY, true);
 
     // Try initializing an SSLFactory.
     SSLFactory sslFactory = new SSLFactory(mode, conf);
@@ -462,7 +526,7 @@ public class TestSSLFactory {
   @Test
   public void testNoClientCertsInitialization() throws Exception {
     Configuration conf = createConfiguration(false, true);
-    conf.unset(SSLFactory.SSL_REQUIRE_CLIENT_CERT_KEY);
+    conf.unset(SSL_REQUIRE_CLIENT_CERT_KEY);
     SSLFactory sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
     try {
       sslFactory.init();
@@ -474,7 +538,7 @@ public class TestSSLFactory {
   @Test
   public void testNoTrustStore() throws Exception {
     Configuration conf = createConfiguration(false, false);
-    conf.unset(SSLFactory.SSL_REQUIRE_CLIENT_CERT_KEY);
+    conf.unset(SSL_REQUIRE_CLIENT_CERT_KEY);
     SSLFactory sslFactory = new SSLFactory(SSLFactory.Mode.SERVER, conf);
     try {
       sslFactory.init();

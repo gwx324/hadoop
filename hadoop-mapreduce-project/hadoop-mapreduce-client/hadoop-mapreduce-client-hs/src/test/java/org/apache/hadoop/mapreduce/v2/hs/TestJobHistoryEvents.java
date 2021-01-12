@@ -22,8 +22,6 @@ import java.util.Map;
 
 import org.junit.Assert;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.TypeConverter;
 import org.apache.hadoop.mapreduce.jobhistory.JobHistoryEvent;
@@ -44,9 +42,14 @@ import org.apache.hadoop.service.Service;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestJobHistoryEvents {
-  private static final Log LOG = LogFactory.getLog(TestJobHistoryEvents.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestJobHistoryEvents.class);
 
   @Test
   public void testHistoryEvents() throws Exception {
@@ -178,14 +181,16 @@ public class TestJobHistoryEvents {
     ((JobHistory)context).init(conf);
     ((JobHistory)context).start();
     Assert.assertTrue( context.getStartTime()>0);
-    Assert.assertEquals(((JobHistory)context).getServiceState(),Service.STATE.STARTED);
+    assertThat(((JobHistory)context).getServiceState())
+        .isEqualTo(Service.STATE.STARTED);
 
     // get job before stopping JobHistory
     Job parsedJob = context.getJob(jobId);
 
     // stop JobHistory
     ((JobHistory)context).stop();
-    Assert.assertEquals(((JobHistory)context).getServiceState(),Service.STATE.STOPPED);
+    assertThat(((JobHistory)context).getServiceState())
+        .isEqualTo(Service.STATE.STOPPED);
 
     Assert.assertEquals("QueueName not correct", "assignedQueue",
         parsedJob.getQueueName());

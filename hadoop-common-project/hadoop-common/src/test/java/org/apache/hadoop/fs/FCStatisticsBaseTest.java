@@ -32,15 +32,15 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem.Statistics;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Assert;
 import org.junit.Test;
 
-import com.google.common.base.Supplier;
-import com.google.common.util.concurrent.Uninterruptibles;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Uninterruptibles;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * <p>
@@ -48,7 +48,8 @@ import com.google.common.util.concurrent.Uninterruptibles;
  * </p>
  */
 public abstract class FCStatisticsBaseTest {
-  private static final Log LOG = LogFactory.getLog(FCStatisticsBaseTest.class);
+  private static final Logger LOG = LoggerFactory.getLogger(FCStatisticsBaseTest
+      .class);
 
   static protected int blockSize = 512;
   static protected int numBlocks = 1;

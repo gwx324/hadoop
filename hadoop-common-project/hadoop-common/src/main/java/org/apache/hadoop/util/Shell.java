@@ -22,16 +22,20 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.nio.charset.Charset;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.security.alias.AbstractJavaKeyStoreProvider;
@@ -48,6 +52,8 @@ import org.slf4j.LoggerFactory;
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
 public abstract class Shell {
+  private static final Map<Shell, Object> CHILD_SHELLS =
+      Collections.synchronizedMap(new WeakHashMap<Shell, Object>());
   public static final Logger LOG = LoggerFactory.getLogger(Shell.class);
 
   /**
@@ -81,6 +87,21 @@ public abstract class Shell {
   @Deprecated
   public static boolean isJava7OrAbove() {
     return true;
+  }
+
+  // "1.8"->8, "9"->9, "10"->10
+  private static final int JAVA_SPEC_VER = Math.max(8, Integer.parseInt(
+      System.getProperty("java.specification.version").split("\\.")[0]));
+
+  /**
+   * Query to see if major version of Java specification of the system
+   * is equal or greater than the parameter.
+   *
+   * @param version 8, 9, 10 etc.
+   * @return comparison with system property, always true for 8
+   */
+  public static boolean isJavaVersionAtLeast(int version) {
+    return JAVA_SPEC_VER >= version;
   }
 
   /**
@@ -127,9 +148,9 @@ public abstract class Shell {
    */
   static String bashQuote(String arg) {
     StringBuilder buffer = new StringBuilder(arg.length() + 2);
-    buffer.append('\'');
-    buffer.append(arg.replace("'", "'\\''"));
-    buffer.append('\'');
+    buffer.append('\'')
+        .append(arg.replace("'", "'\\''"))
+        .append('\'');
     return buffer.toString();
   }
 
@@ -237,7 +258,7 @@ public abstract class Shell {
   /** Return a command to get permission information. */
   public static String[] getGetPermissionCommand() {
     return (WINDOWS) ? new String[] { getWinUtilsPath(), "ls", "-F" }
-                     : new String[] { "/bin/ls", "-ld" };
+                     : new String[] { "ls", "-ld" };
   }
 
   /** Return a command to set permission. */
@@ -734,8 +755,7 @@ public abstract class Shell {
     }
   }
 
-  public static final boolean isBashSupported = checkIsBashSupported();
-  private static boolean checkIsBashSupported() {
+  public static boolean checkIsBashSupported() throws InterruptedIOException {
     if (Shell.WINDOWS) {
       return false;
     }
@@ -746,6 +766,9 @@ public abstract class Shell {
       String[] args = {"bash", "-c", "echo 1000"};
       shexec = new ShellCommandExecutor(args);
       shexec.execute();
+    } catch (InterruptedIOException iioe) {
+      LOG.warn("Interrupted, unable to determine if bash is supported", iioe);
+      throw iioe;
     } catch (IOException ioe) {
       LOG.warn("Bash is not supported by the OS", ioe);
       supported = false;
@@ -814,6 +837,7 @@ public abstract class Shell {
   private File dir;
   private Process process; // sub process used to execute the command
   private int exitCode;
+  private Thread waitingThread;
 
   /** Flag to indicate whether or not the script has finished executing. */
   private final AtomicBoolean completed = new AtomicBoolean(false);
@@ -848,6 +872,7 @@ public abstract class Shell {
     this.interval = interval;
     this.lastTime = (interval < 0) ? 0 : -interval;
     this.redirectErrorStream = redirectErrorStream;
+    this.environment = Collections.emptyMap();
   }
 
   /**
@@ -855,7 +880,7 @@ public abstract class Shell {
    * @param env Mapping of environment variables
    */
   protected void setEnvironment(Map<String, String> env) {
-    this.environment = env;
+    this.environment = Objects.requireNonNull(env);
   }
 
   /**
@@ -892,9 +917,7 @@ public abstract class Shell {
       builder.environment().clear();
     }
 
-    if (environment != null) {
-      builder.environment().putAll(this.environment);
-    }
+    builder.environment().putAll(this.environment);
 
     if (dir != null) {
       builder.directory(this.dir);
@@ -914,6 +937,9 @@ public abstract class Shell {
     } else {
       process = builder.start();
     }
+
+    waitingThread = Thread.currentThread();
+    CHILD_SHELLS.put(this, null);
 
     if (timeOutInterval > 0) {
       timeOutTimer = new Timer("Shell command timeout");
@@ -938,12 +964,20 @@ public abstract class Shell {
         try {
           String line = errReader.readLine();
           while((line != null) && !isInterrupted()) {
-            errMsg.append(line);
-            errMsg.append(System.getProperty("line.separator"));
+            errMsg.append(line)
+                .append(System.getProperty("line.separator"));
             line = errReader.readLine();
           }
         } catch(IOException ioe) {
-          LOG.warn("Error reading the error stream", ioe);
+          // Its normal to observe a "Stream closed" I/O error on
+          // command timeouts destroying the underlying process
+          // so only log a WARN if the command didn't time out
+          if (!isTimedOut()) {
+            LOG.warn("Error reading the error stream", ioe);
+          } else {
+            LOG.debug("Error reading the error stream due to shell "
+                + "command timeout", ioe);
+          }
         }
       }
     };
@@ -983,17 +1017,7 @@ public abstract class Shell {
       }
       // close the input stream
       try {
-        // JDK 7 tries to automatically drain the input streams for us
-        // when the process exits, but since close is not synchronized,
-        // it creates a race if we close the stream first and the same
-        // fd is recycled.  the stream draining thread will attempt to
-        // drain that fd!!  it may block, OOM, or cause bizarre behavior
-        // see: https://bugs.openjdk.java.net/browse/JDK-8024521
-        //      issue is fixed in build 7u60
-        InputStream stdout = process.getInputStream();
-        synchronized (stdout) {
-          inReader.close();
-        }
+        inReader.close();
       } catch (IOException ioe) {
         LOG.warn("Error while closing the input stream", ioe);
       }
@@ -1002,14 +1026,13 @@ public abstract class Shell {
         joinThread(errThread);
       }
       try {
-        InputStream stderr = process.getErrorStream();
-        synchronized (stderr) {
-          errReader.close();
-        }
+        errReader.close();
       } catch (IOException ioe) {
         LOG.warn("Error while closing the error stream", ioe);
       }
       process.destroy();
+      waitingThread = null;
+      CHILD_SHELLS.remove(this);
       lastTime = Time.monotonicNow();
     }
   }
@@ -1057,6 +1080,15 @@ public abstract class Shell {
     return exitCode;
   }
 
+  /** get the thread that is waiting on this instance of <code>Shell</code>.
+   * @return the thread that ran runCommand() that spawned this shell
+   * or null if no thread is waiting for this shell to complete
+   */
+  public Thread getWaitingThread() {
+    return waitingThread;
+  }
+
+
   /**
    * This is an IOException with exit code added.
    */
@@ -1077,8 +1109,8 @@ public abstract class Shell {
       final StringBuilder sb =
           new StringBuilder("ExitCodeException ");
       sb.append("exitCode=").append(exitCode)
-        .append(": ");
-      sb.append(super.getMessage());
+          .append(": ")
+          .append(super.getMessage());
       return sb.toString();
     }
   }
@@ -1155,6 +1187,15 @@ public abstract class Shell {
       }
       timeOutInterval = timeout;
       this.inheritParentEnv = inheritParentEnv;
+    }
+
+    /**
+     * Returns the timeout value set for the executor's sub-commands.
+     * @return The timeout value in milliseconds
+     */
+    @VisibleForTesting
+    public long getTimeoutInterval() {
+      return timeOutInterval;
     }
 
     /**
@@ -1307,5 +1348,45 @@ public abstract class Shell {
         }
       }
     }
+  }
+
+  /**
+   * Static method to destroy all running <code>Shell</code> processes.
+   * Iterates through a map of all currently running <code>Shell</code>
+   * processes and destroys them one by one. This method is thread safe
+   */
+  public static void destroyAllShellProcesses() {
+    synchronized (CHILD_SHELLS) {
+      for (Shell shell : CHILD_SHELLS.keySet()) {
+        if (shell.getProcess() != null) {
+          shell.getProcess().destroy();
+        }
+      }
+      CHILD_SHELLS.clear();
+    }
+  }
+
+  /**
+   * Static method to return a Set of all <code>Shell</code> objects.
+   */
+  public static Set<Shell> getAllShells() {
+    synchronized (CHILD_SHELLS) {
+      return new HashSet<>(CHILD_SHELLS.keySet());
+    }
+  }
+
+  /**
+   * Static method to return the memory lock limit for datanode.
+   * @param ulimit max value at which memory locked should be capped.
+   * @return long value specifying the memory lock limit.
+   */
+  public static Long getMemlockLimit(Long ulimit) {
+    if (WINDOWS) {
+      // HDFS-13560: if ulimit is too large on Windows, Windows will complain
+      // "1450: Insufficient system resources exist to complete the requested
+      // service". Thus, cap Windows memory lock limit at Integer.MAX_VALUE.
+      return Math.min(Integer.MAX_VALUE, ulimit);
+    }
+    return ulimit;
   }
 }

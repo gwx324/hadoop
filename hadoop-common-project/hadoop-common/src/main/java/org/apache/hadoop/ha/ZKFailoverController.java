@@ -22,14 +22,11 @@ import java.net.InetSocketAddress;
 import java.security.PrivilegedAction;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
@@ -53,19 +50,20 @@ import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.zookeeper.data.ACL;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Throwables;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @InterfaceAudience.LimitedPrivate("HDFS")
 public abstract class ZKFailoverController {
 
-  static final Log LOG = LogFactory.getLog(ZKFailoverController.class);
+  static final Logger LOG = LoggerFactory.getLogger(ZKFailoverController.class);
   
   public static final String ZK_QUORUM_KEY = "ha.zookeeper.quorum";
   private static final String ZK_SESSION_TIMEOUT_KEY = "ha.zookeeper.session-timeout.ms";
-  private static final int ZK_SESSION_TIMEOUT_DEFAULT = 5*1000;
+  private static final int ZK_SESSION_TIMEOUT_DEFAULT = 10*1000;
   private static final String ZK_PARENT_ZNODE_KEY = "ha.zookeeper.parent-znode";
   public static final String ZK_ACL_KEY = "ha.zookeeper.acl";
   private static final String ZK_ACL_DEFAULT = "world:anyone:rwcda";
@@ -84,8 +82,11 @@ public abstract class ZKFailoverController {
     ZK_AUTH_KEY
   };
   
-  protected static final String USAGE = 
-      "Usage: hdfs zkfc [ -formatZK [-force] [-nonInteractive] ]";
+  protected static final String USAGE =
+      "Usage: hdfs zkfc [ -formatZK [-force] [-nonInteractive] ]\n"
+      + "\t-force: formats the znode if the znode exists.\n"
+      + "\t-nonInteractive: formats the znode aborts if the znode exists,\n"
+      + "\tunless -force option is specified.";
 
   /** Unable to format the parent znode in ZK */
   static final int ERR_CODE_FORMAT_DENIED = 2;
@@ -156,11 +157,14 @@ public abstract class ZKFailoverController {
     return localTarget;
   }
 
-  HAServiceState getServiceState() { return serviceState; }
+  @VisibleForTesting
+  public HAServiceState getServiceState() {
+    return serviceState;
+  }
 
   public int run(final String[] args) throws Exception {
     if (!localTarget.isAutoFailoverEnabled()) {
-      LOG.fatal("Automatic failover is not enabled for " + localTarget + "." +
+      LOG.error("Automatic failover is not enabled for " + localTarget + "." +
           " Please ensure that automatic failover is enabled in the " +
           "configuration before running the ZK failover controller.");
       return ERR_CODE_AUTO_FAILOVER_NOT_ENABLED;
@@ -182,44 +186,49 @@ public abstract class ZKFailoverController {
         }
       });
     } catch (RuntimeException rte) {
-      LOG.fatal("The failover controller encounters runtime error: " + rte);
       throw (Exception)rte.getCause();
     }
   }
   
 
   private int doRun(String[] args)
-      throws HadoopIllegalArgumentException, IOException, InterruptedException {
+      throws Exception {
     try {
       initZK();
     } catch (KeeperException ke) {
-      LOG.fatal("Unable to start failover controller. Unable to connect "
+      LOG.error("Unable to start failover controller. Unable to connect "
           + "to ZooKeeper quorum at " + zkQuorum + ". Please check the "
           + "configured value for " + ZK_QUORUM_KEY + " and ensure that "
-          + "ZooKeeper is running.");
+          + "ZooKeeper is running.", ke);
       return ERR_CODE_NO_ZK;
     }
-    if (args.length > 0) {
-      if ("-formatZK".equals(args[0])) {
-        boolean force = false;
-        boolean interactive = true;
-        for (int i = 1; i < args.length; i++) {
-          if ("-force".equals(args[i])) {
-            force = true;
-          } else if ("-nonInteractive".equals(args[i])) {
-            interactive = false;
-          } else {
-            badArg(args[i]);
+    try {
+      if (args.length > 0) {
+        if ("-formatZK".equals(args[0])) {
+          boolean force = false;
+          boolean interactive = true;
+          for (int i = 1; i < args.length; i++) {
+            if ("-force".equals(args[i])) {
+              force = true;
+            } else if ("-nonInteractive".equals(args[i])) {
+              interactive = false;
+            } else {
+              badArg(args[i]);
+            }
           }
+          return formatZK(force, interactive);
         }
-        return formatZK(force, interactive);
-      } else {
-        badArg(args[0]);
+        else {
+          badArg(args[0]);
+        }
       }
+    } catch (Exception e){
+      LOG.error("The failover controller encounters runtime error", e);
+      throw e;
     }
 
     if (!elector.parentZNodeExists()) {
-      LOG.fatal("Unable to start failover controller. "
+      LOG.error("Unable to start failover controller. "
           + "Parent znode does not exist.\n"
           + "Run with -formatZK flag to initialize ZooKeeper.");
       return ERR_CODE_NO_PARENT_ZNODE;
@@ -228,17 +237,20 @@ public abstract class ZKFailoverController {
     try {
       localTarget.checkFencingConfigured();
     } catch (BadFencingConfigurationException e) {
-      LOG.fatal("Fencing is not configured for " + localTarget + ".\n" +
+      LOG.error("Fencing is not configured for " + localTarget + ".\n" +
           "You must configure a fencing method before using automatic " +
           "failover.", e);
       return ERR_CODE_NO_FENCER;
     }
 
-    initRPC();
-    initHM();
-    startRPC();
     try {
+      initRPC();
+      initHM();
+      startRPC();
       mainLoop();
+    } catch (Exception e) {
+      LOG.error("The failover controller encounters runtime error: ", e);
+      throw e;
     } finally {
       rpcServer.stopAndJoin();
       
@@ -260,7 +272,7 @@ public abstract class ZKFailoverController {
   }
 
   private int formatZK(boolean force, boolean interactive)
-      throws IOException, InterruptedException {
+      throws IOException, InterruptedException, KeeperException {
     if (elector.parentZNodeExists()) {
       if (!force && (!interactive || !confirmFormat())) {
         return ERR_CODE_FORMAT_DENIED;
@@ -306,9 +318,10 @@ public abstract class ZKFailoverController {
     healthMonitor.addServiceStateCallback(new ServiceStateCallBacks());
     healthMonitor.start();
   }
-  
+
   protected void initRPC() throws IOException {
     InetSocketAddress bindAddr = getRpcAddressToBindTo();
+    LOG.info("ZKFC RpcServer binding to {}", bindAddr);
     rpcServer = new ZKFCRpcServer(conf, bindAddr, this, getPolicyProvider());
   }
 
@@ -331,14 +344,7 @@ public abstract class ZKFailoverController {
     }
     
     // Parse authentication from configuration.
-    String zkAuthConf = conf.get(ZK_AUTH_KEY);
-    zkAuthConf = ZKUtil.resolveConfIndirection(zkAuthConf);
-    List<ZKAuthInfo> zkAuths;
-    if (zkAuthConf != null) {
-      zkAuths = ZKUtil.parseAuth(zkAuthConf);
-    } else {
-      zkAuths = Collections.emptyList();
-    }
+    List<ZKAuthInfo> zkAuths = SecurityUtil.getZKAuthInfos(conf, ZK_AUTH_KEY);
 
     // Sanity check configuration.
     Preconditions.checkArgument(zkQuorum != null,
@@ -374,7 +380,7 @@ public abstract class ZKFailoverController {
   }
   
   private synchronized void fatalError(String err) {
-    LOG.fatal("Fatal error occurred:" + err);
+    LOG.error("Fatal error occurred:" + err);
     fatalError = err;
     notifyAll();
   }
@@ -393,7 +399,7 @@ public abstract class ZKFailoverController {
 
     } catch (Throwable t) {
       String msg = "Couldn't make " + localTarget + " active";
-      LOG.fatal(msg, t);
+      LOG.error(msg, t);
       
       recordActiveAttempt(new ActiveAttemptRecord(false, msg + "\n" +
           StringUtils.stringifyException(t)));
@@ -440,14 +446,16 @@ public abstract class ZKFailoverController {
    * </ul>
    * 
    * @param timeoutMillis number of millis to wait
+   * @param onlyAfterNanoTime accept attempt records only after a given
+   * timestamp. Use this parameter to ignore the old attempt records from a
+   * previous fail-over attempt.
    * @return the published record, or null if the timeout elapses or the
    * service becomes unhealthy 
    * @throws InterruptedException if the thread is interrupted.
    */
-  private ActiveAttemptRecord waitForActiveAttempt(int timeoutMillis)
-      throws InterruptedException {
-    long st = System.nanoTime();
-    long waitUntil = st + TimeUnit.NANOSECONDS.convert(
+  private ActiveAttemptRecord waitForActiveAttempt(int timeoutMillis,
+      long onlyAfterNanoTime) throws InterruptedException {
+    long waitUntil = onlyAfterNanoTime + TimeUnit.NANOSECONDS.convert(
         timeoutMillis, TimeUnit.MILLISECONDS);
     
     do {
@@ -464,7 +472,7 @@ public abstract class ZKFailoverController {
 
       synchronized (activeAttemptRecordLock) {
         if ((lastActiveAttemptRecord != null &&
-            lastActiveAttemptRecord.nanoTime >= st)) {
+            lastActiveAttemptRecord.nanoTime >= onlyAfterNanoTime)) {
           return lastActiveAttemptRecord;
         }
         // Only wait 1sec so that we periodically recheck the health state
@@ -508,7 +516,7 @@ public abstract class ZKFailoverController {
       doFence(target);
     } catch (Throwable t) {
       recordActiveAttempt(new ActiveAttemptRecord(false, "Unable to fence old active: " + StringUtils.stringifyException(t)));
-      Throwables.propagate(t);
+      throw t;
     }
   }
   
@@ -658,6 +666,7 @@ public abstract class ZKFailoverController {
     List<ZKFCProtocol> otherZkfcs = new ArrayList<ZKFCProtocol>(otherNodes.size());
 
     // Phase 3: ask the other nodes to yield from the election.
+    long st = System.nanoTime();
     HAServiceTarget activeNode = null;
     for (HAServiceTarget remote : otherNodes) {
       // same location, same node - may not always be == equality
@@ -676,7 +685,7 @@ public abstract class ZKFailoverController {
 
     // Phase 4: wait for the normal election to make the local node
     // active.
-    ActiveAttemptRecord attempt = waitForActiveAttempt(timeout + 60000);
+    ActiveAttemptRecord attempt = waitForActiveAttempt(timeout + 60000, st);
     
     if (attempt == null) {
       // We didn't even make an attempt to become active.
@@ -726,9 +735,9 @@ public abstract class ZKFailoverController {
   }
 
   /**
-   * Ensure that the local node is in a healthy state, and thus
-   * eligible for graceful failover.
-   * @throws ServiceFailedException if the node is unhealthy
+   * If the local node is an observer or is unhealthy it
+   * is not eligible for graceful failover.
+   * @throws ServiceFailedException if the node is an observer or unhealthy
    */
   private synchronized void checkEligibleForFailover()
       throws ServiceFailedException {
@@ -736,6 +745,11 @@ public abstract class ZKFailoverController {
     if (this.getLastHealthState() != State.SERVICE_HEALTHY) {
       throw new ServiceFailedException(
           localTarget + " is not currently healthy. " +
+          "Cannot be failover target");
+    }
+    if (serviceState == HAServiceState.OBSERVER) {
+      throw new ServiceFailedException(
+          localTarget + " is in observer state. " +
           "Cannot be failover target");
     }
   }
@@ -789,7 +803,9 @@ public abstract class ZKFailoverController {
     
         switch (lastHealthState) {
         case SERVICE_HEALTHY:
-          elector.joinElection(targetToData(localTarget));
+          if(serviceState != HAServiceState.OBSERVER) {
+            elector.joinElection(targetToData(localTarget));
+          }
           if (quitElectionOnBadState) {
             quitElectionOnBadState = false;
           }
@@ -854,6 +870,11 @@ public abstract class ZKFailoverController {
           }
           return;
         }
+        if (changedState == HAServiceState.OBSERVER) {
+          elector.quitElection(true);
+          serviceState = HAServiceState.OBSERVER;
+          return;
+        }
         if (changedState == serviceState) {
           serviceStateMismatchCount = 0;
           return;
@@ -894,7 +915,7 @@ public abstract class ZKFailoverController {
   }
   
   @VisibleForTesting
-  ActiveStandbyElector getElectorForTests() {
+  public ActiveStandbyElector getElectorForTests() {
     return elector;
   }
   

@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.fs.swift.util;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -40,8 +40,8 @@ import java.util.Properties;
  */
 public class SwiftTestUtils extends org.junit.Assert {
 
-  private static final Log LOG =
-    LogFactory.getLog(SwiftTestUtils.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(SwiftTestUtils.class);
 
   public static final String TEST_FS_SWIFT = "test.fs.swift.name";
   public static final String IO_FILE_BUFFER_SIZE = "io.file.buffer.size";
@@ -278,7 +278,7 @@ public class SwiftTestUtils extends org.junit.Assert {
     noteAction(action);
     try {
       if (fileSystem != null) {
-        fileSystem.delete(new Path(cleanupPath).makeQualified(fileSystem),
+        fileSystem.delete(fileSystem.makeQualified(new Path(cleanupPath)),
                           true);
       }
     } catch (Exception e) {
@@ -489,10 +489,13 @@ public class SwiftTestUtils extends org.junit.Assert {
    */
   public static void assertPathExists(FileSystem fileSystem, String message,
                                Path path) throws IOException {
-    if (!fileSystem.exists(path)) {
+    try {
+      fileSystem.getFileStatus(path);
+    } catch (FileNotFoundException e) {
       //failure, report it
-      fail(message + ": not found " + path + " in " + path.getParent());
-           ls(fileSystem, path.getParent());
+      throw (IOException)new FileNotFoundException(message + ": not found "
+          + path + " in " + path.getParent() + ": " + e + " -- "
+           + ls(fileSystem, path.getParent())).initCause(e);
     }
   }
 

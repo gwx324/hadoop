@@ -28,6 +28,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -84,7 +85,7 @@ public class TestHsWebServicesAcls {
     this.ctx = buildHistoryContext(this.conf);
     WebApp webApp = mock(HsWebApp.class);
     when(webApp.name()).thenReturn("hsmockwebapp");
-    this.hsWebServices= new HsWebServices(ctx, conf, webApp);
+    this.hsWebServices = new HsWebServices(ctx, conf, webApp, null);
     this.hsWebServices.setResponse(mock(HttpServletResponse.class));
 
     Job job = ctx.getAllJobs().values().iterator().next();
@@ -276,6 +277,11 @@ public class TestHsWebServicesAcls {
     @Override
     public void cacheGroupsAdd(List<String> groups) throws IOException {
     }
+
+    @Override
+    public Set<String> getGroupsSet(String user) throws IOException {
+      return Collections.emptySet();
+    }
   }
 
   private static class MockJobForAcls implements Job {
@@ -423,6 +429,26 @@ public class TestHsWebServicesAcls {
 
     @Override
     public void setJobPriority(Priority priority) {
+    }
+
+    @Override
+    public int getFailedMaps() {
+      return mockJob.getFailedMaps();
+    }
+
+    @Override
+    public int getFailedReduces() {
+      return mockJob.getFailedReduces();
+    }
+
+    @Override
+    public int getKilledMaps() {
+      return mockJob.getKilledMaps();
+    }
+
+    @Override
+    public int getKilledReduces() {
+      return mockJob.getKilledReduces();
     }
   }
 }

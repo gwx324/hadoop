@@ -30,6 +30,7 @@ import org.apache.hadoop.yarn.api.records.ReservationDefinition;
 import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.ApplicationPlacementContext;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.exceptions.PlanningException;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.planning.ReservationAgent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
@@ -38,6 +39,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptRemovedSchedulerEvent;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
@@ -89,6 +91,11 @@ public abstract class TestSchedulerPlanFollowerBase {
             "dedicated", 10, 10 + f2.length, ReservationSystemTestUtil
                 .generateAllocation(10L, 1L, f2), res, minAlloc), false));
 
+
+    // default reseration queue should exist before run of PlanFollower AND have
+    // no apps
+    checkDefaultQueueBeforePlanFollowerRun();
+
     AbstractSchedulerPlanFollower planFollower = createPlanFollower();
 
     when(mClock.getTime()).thenReturn(0L);
@@ -101,15 +108,21 @@ public abstract class TestSchedulerPlanFollowerBase {
     ApplicationId appId = ApplicationId.newInstance(0, 1);
     ApplicationAttemptId appAttemptId_0 =
         ApplicationAttemptId.newInstance(appId, 0);
-    AppAddedSchedulerEvent addAppEvent =
-        new AppAddedSchedulerEvent(appId, q.getQueueName(), user_0);
+    AppAddedSchedulerEvent addAppEvent;
+    if (scheduler instanceof FairScheduler) {
+      addAppEvent = new AppAddedSchedulerEvent(appId, q.getQueueName(),
+          user_0, new ApplicationPlacementContext("dedicated"));
+    } else {
+      addAppEvent = new AppAddedSchedulerEvent(appId, q.getQueueName(),
+          user_0);
+    }
     scheduler.handle(addAppEvent);
     AppAttemptAddedSchedulerEvent appAttemptAddedEvent =
         new AppAttemptAddedSchedulerEvent(appAttemptId_0, false);
     scheduler.handle(appAttemptAddedEvent);
 
-    // initial default reservation queue should have no apps
 
+    // initial default reservation queue should have no apps after first run
     Queue defQ = getDefaultQueue();
     Assert.assertEquals(0, getNumberOfApplications(defQ));
 
@@ -178,6 +191,8 @@ public abstract class TestSchedulerPlanFollowerBase {
 
     verifyCapacity(defQ);
   }
+
+  protected abstract void checkDefaultQueueBeforePlanFollowerRun();
 
   protected abstract Queue getReservationQueue(String reservationId);
 

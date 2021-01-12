@@ -26,7 +26,7 @@ import javax.servlet.http.HttpServletRequest;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
@@ -74,7 +74,7 @@ public class ServletUtil {
   }
 
   public static final String HTML_TAIL = "<hr />\n"
-    + "<a href='http://hadoop.apache.org/core'>Hadoop</a>, "
+    + "<a href='http://hadoop.apache.org'>Hadoop</a>, "
     + Calendar.getInstance().get(Calendar.YEAR) + ".\n"
     + "</body></html>";
 

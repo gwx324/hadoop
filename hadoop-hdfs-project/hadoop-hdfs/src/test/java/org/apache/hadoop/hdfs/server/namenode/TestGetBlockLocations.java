@@ -21,6 +21,8 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.permission.PermissionStatus;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
+import org.apache.hadoop.hdfs.server.namenode.NameNode.OperationCategory;
 import org.junit.Test;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
@@ -63,19 +65,28 @@ public class TestGetBlockLocations {
     FSNamesystem fsn = spy(setupFileSystem());
     final FSDirectory fsd = fsn.getFSDirectory();
     FSEditLog editlog = fsn.getEditLog();
+    final boolean[] deleted = new boolean[]{false};
 
     doAnswer(new Answer<Void>() {
 
       @Override
       public Void answer(InvocationOnMock invocation) throws Throwable {
-        INodesInPath iip = fsd.getINodesInPath(FILE_PATH, true);
-        FSDirDeleteOp.delete(fsd, iip, new INode.BlocksMapUpdateInfo(),
-                             new ArrayList<INode>(), new ArrayList<Long>(),
-                             now());
+        if(!deleted[0]) {
+          fsn.writeLock();
+          try {
+            INodesInPath iip = fsd.getINodesInPath(FILE_PATH, DirOp.READ);
+            FSDirDeleteOp.delete(fsd, iip, new INode.BlocksMapUpdateInfo(),
+                                 new ArrayList<INode>(), new ArrayList<Long>(),
+                                 now());
+          } finally {
+            fsn.writeUnlock();
+          }
+          deleted[0] = true;
+        }
         invocation.callRealMethod();
         return null;
       }
-    }).when(fsn).writeLock();
+    }).when(fsn).checkOperation(OperationCategory.WRITE);
     fsn.getBlockLocations("dummy", RESERVED_PATH, 0, 1024);
 
     verify(editlog, never()).logTimes(anyString(), anyLong(), anyLong());
@@ -88,22 +99,27 @@ public class TestGetBlockLocations {
     final FSDirectory fsd = fsn.getFSDirectory();
     FSEditLog editlog = fsn.getEditLog();
     final String DST_PATH = "/bar";
-    final boolean[] renamed = new boolean[1];
+    final boolean[] renamed = new boolean[] {false};
 
     doAnswer(new Answer<Void>() {
 
       @Override
       public Void answer(InvocationOnMock invocation) throws Throwable {
-        invocation.callRealMethod();
         if (!renamed[0]) {
-          FSDirRenameOp.renameTo(fsd, fsd.getPermissionChecker(), FILE_PATH,
-                                 DST_PATH, new INode.BlocksMapUpdateInfo(),
-                                 false);
-          renamed[0] = true;
+          fsn.writeLock();
+          try {
+            FSDirRenameOp.renameTo(fsd, fsd.getPermissionChecker(), FILE_PATH,
+                                   DST_PATH, new INode.BlocksMapUpdateInfo(),
+                                   false);
+            renamed[0] = true;
+          } finally {
+            fsn.writeUnlock();
+          }
         }
+        invocation.callRealMethod();
         return null;
       }
-    }).when(fsn).writeLock();
+    }).when(fsn).checkOperation(OperationCategory.WRITE);
     fsn.getBlockLocations("dummy", RESERVED_PATH, 0, 1024);
 
     verify(editlog).logTimes(eq(DST_PATH), anyLong(), anyLong());
@@ -118,8 +134,6 @@ public class TestGetBlockLocations {
     when(image.getEditLog()).thenReturn(editlog);
     final FSNamesystem fsn = new FSNamesystem(conf, image, true);
 
-    final FSDirectory fsd = fsn.getFSDirectory();
-    INodesInPath iip = fsd.getINodesInPath("/", true);
     PermissionStatus perm = new PermissionStatus(
         "hdfs", "supergroup",
         FsPermission.createImmutable((short) 0x1ff));
@@ -127,7 +141,15 @@ public class TestGetBlockLocations {
         MOCK_INODE_ID, FILE_NAME.getBytes(StandardCharsets.UTF_8),
         perm, 1, 1, new BlockInfo[] {}, (short) 1,
         DFS_BLOCK_SIZE_DEFAULT);
-    fsn.getFSDirectory().addINode(iip, file);
+
+    fsn.writeLock();
+    try {
+      final FSDirectory fsd = fsn.getFSDirectory();
+      INodesInPath iip = fsd.getINodesInPath("/", DirOp.READ);
+      fsd.addINode(iip, file, null);
+    } finally {
+      fsn.writeUnlock();
+    }
     return fsn;
   }
 

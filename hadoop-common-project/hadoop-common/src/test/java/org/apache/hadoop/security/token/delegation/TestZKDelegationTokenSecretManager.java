@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 
+import java.util.function.Supplier;
 import org.apache.curator.RetryPolicy;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
@@ -37,6 +38,7 @@ import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenIdentifier;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenManager;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.data.ACL;
 import org.apache.zookeeper.data.Id;
@@ -44,22 +46,31 @@ import org.apache.zookeeper.server.auth.DigestAuthenticationProvider;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.junit.Assert.fail;
 
-import org.junit.Test;
 
 public class TestZKDelegationTokenSecretManager {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestZKDelegationTokenSecretManager.class);
 
-  private static final int TEST_RETRIES = 2;
+  protected static final int TEST_RETRIES = 2;
 
-  private static final int RETRY_COUNT = 5;
+  protected static final int RETRY_COUNT = 5;
 
-  private static final int RETRY_WAIT = 1000;
+  protected static final int RETRY_WAIT = 1000;
 
-  private static final long DAY_IN_SECS = 86400;
+  protected static final long DAY_IN_SECS = 86400;
 
-  private TestingServer zkServer;
+  protected TestingServer zkServer;
+
+  @Rule
+  public Timeout globalTimeout = new Timeout(300000);
 
   @Before
   public void setup() throws Exception {
@@ -204,6 +215,58 @@ public class TestZKDelegationTokenSecretManager {
       verifyDestroy(tm3, conf);
       verifyDestroy(tm1, conf);
     }
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void testMultiNodeCompeteForSeqNum() throws Exception {
+    DelegationTokenManager tm1, tm2 = null;
+    String connectString = zkServer.getConnectString();
+    Configuration conf = getSecretConf(connectString);
+    conf.setInt(
+        ZKDelegationTokenSecretManager.ZK_DTSM_TOKEN_SEQNUM_BATCH_SIZE, 1000);
+    tm1 = new DelegationTokenManager(conf, new Text("bla"));
+    tm1.init();
+
+    Token<DelegationTokenIdentifier> token1 =
+        (Token<DelegationTokenIdentifier>) tm1.createToken(
+            UserGroupInformation.getCurrentUser(), "foo");
+    Assert.assertNotNull(token1);
+    AbstractDelegationTokenIdentifier id1 =
+        tm1.getDelegationTokenSecretManager().decodeTokenIdentifier(token1);
+    Assert.assertEquals(
+        "Token seq should be the same", 1, id1.getSequenceNumber());
+    Token<DelegationTokenIdentifier> token2 =
+        (Token<DelegationTokenIdentifier>) tm1.createToken(
+            UserGroupInformation.getCurrentUser(), "foo");
+    Assert.assertNotNull(token2);
+    AbstractDelegationTokenIdentifier id2 =
+        tm1.getDelegationTokenSecretManager().decodeTokenIdentifier(token2);
+    Assert.assertEquals(
+        "Token seq should be the same", 2, id2.getSequenceNumber());
+
+    tm2 = new DelegationTokenManager(conf, new Text("bla"));
+    tm2.init();
+
+    Token<DelegationTokenIdentifier> token3 =
+        (Token<DelegationTokenIdentifier>) tm2.createToken(
+            UserGroupInformation.getCurrentUser(), "foo");
+    Assert.assertNotNull(token3);
+    AbstractDelegationTokenIdentifier id3 =
+        tm2.getDelegationTokenSecretManager().decodeTokenIdentifier(token3);
+    Assert.assertEquals(
+        "Token seq should be the same", 1001, id3.getSequenceNumber());
+    Token<DelegationTokenIdentifier> token4 =
+        (Token<DelegationTokenIdentifier>) tm2.createToken(
+            UserGroupInformation.getCurrentUser(), "foo");
+    Assert.assertNotNull(token4);
+    AbstractDelegationTokenIdentifier id4 =
+        tm2.getDelegationTokenSecretManager().decodeTokenIdentifier(token4);
+    Assert.assertEquals(
+        "Token seq should be the same", 1002, id4.getSequenceNumber());
+
+    verifyDestroy(tm1, conf);
+    verifyDestroy(tm2, conf);
   }
 
   @SuppressWarnings("unchecked")
@@ -362,7 +425,7 @@ public class TestZKDelegationTokenSecretManager {
   // cancelled but.. that would mean having to make an RPC call for every
   // verification request.
   // Thus, the eventual consistency tradef-off should be acceptable here...
-  private void verifyTokenFail(DelegationTokenManager tm,
+  protected void verifyTokenFail(DelegationTokenManager tm,
       Token<DelegationTokenIdentifier> token) throws IOException,
       InterruptedException {
     verifyTokenFailWithRetry(tm, token, RETRY_COUNT);
@@ -382,4 +445,84 @@ public class TestZKDelegationTokenSecretManager {
     }
   }
 
+  @SuppressWarnings({ "unchecked" })
+  @Test
+  public void testNodesLoadedAfterRestart() throws Exception {
+    final String connectString = zkServer.getConnectString();
+    final Configuration conf = getSecretConf(connectString);
+    final int removeScan = 1;
+    // Set the remove scan interval to remove expired tokens
+    conf.setLong(DelegationTokenManager.REMOVAL_SCAN_INTERVAL, removeScan);
+    // Set the update interval to trigger background thread to run. The thread
+    // is hard-coded to sleep at least 5 seconds.
+    conf.setLong(DelegationTokenManager.UPDATE_INTERVAL, 5);
+    // Set token expire time to 5 seconds.
+    conf.setLong(DelegationTokenManager.RENEW_INTERVAL, 5);
+
+    DelegationTokenManager tm =
+        new DelegationTokenManager(conf, new Text("bla"));
+    tm.init();
+    Token<DelegationTokenIdentifier> token =
+        (Token<DelegationTokenIdentifier>) tm
+            .createToken(UserGroupInformation.getCurrentUser(), "good");
+    Assert.assertNotNull(token);
+    Token<DelegationTokenIdentifier> cancelled =
+        (Token<DelegationTokenIdentifier>) tm
+            .createToken(UserGroupInformation.getCurrentUser(), "cancelled");
+    Assert.assertNotNull(cancelled);
+    tm.verifyToken(token);
+    tm.verifyToken(cancelled);
+
+    // Cancel one token, verify it's gone
+    tm.cancelToken(cancelled, "cancelled");
+    final AbstractDelegationTokenSecretManager sm =
+        tm.getDelegationTokenSecretManager();
+    final ZKDelegationTokenSecretManager zksm =
+        (ZKDelegationTokenSecretManager) sm;
+    final AbstractDelegationTokenIdentifier idCancelled =
+        sm.decodeTokenIdentifier(cancelled);
+    LOG.info("Waiting for the cancelled token to be removed");
+
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        AbstractDelegationTokenSecretManager.DelegationTokenInformation dtinfo =
+            zksm.getTokenInfo(idCancelled);
+        return dtinfo == null;
+      }
+    }, 100, 5000);
+
+    // Fake a restart which launches a new tm
+    tm.destroy();
+    tm = new DelegationTokenManager(conf, new Text("bla"));
+    tm.init();
+    final AbstractDelegationTokenSecretManager smNew =
+        tm.getDelegationTokenSecretManager();
+    final ZKDelegationTokenSecretManager zksmNew =
+        (ZKDelegationTokenSecretManager) smNew;
+
+    // The cancelled token should be gone, and not loaded.
+    AbstractDelegationTokenIdentifier id =
+        smNew.decodeTokenIdentifier(cancelled);
+    AbstractDelegationTokenSecretManager.DelegationTokenInformation dtinfo =
+        zksmNew.getTokenInfo(id);
+    Assert.assertNull("canceled dt should be gone!", dtinfo);
+
+    // The good token should be loaded on startup, and removed after expiry.
+    id = smNew.decodeTokenIdentifier(token);
+    dtinfo = zksmNew.getTokenInfoFromMemory(id);
+    Assert.assertNotNull("good dt should be in memory!", dtinfo);
+
+    // Wait for the good token to expire.
+    Thread.sleep(5000);
+    final ZKDelegationTokenSecretManager zksm1 = zksmNew;
+    final AbstractDelegationTokenIdentifier id1 = id;
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        LOG.info("Waiting for the expired token to be removed...");
+        return zksm1.getTokenInfo(id1) == null;
+      }
+    }, 1000, 5000);
+  }
 }

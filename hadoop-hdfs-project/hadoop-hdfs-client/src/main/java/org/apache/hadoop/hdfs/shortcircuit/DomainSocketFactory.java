@@ -21,7 +21,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.hdfs.DFSUtilClient;
@@ -30,9 +30,9 @@ import org.apache.hadoop.hdfs.client.impl.DfsClientConf.ShortCircuitConf;
 import org.apache.hadoop.net.unix.DomainSocket;
 import org.apache.hadoop.util.PerformanceAdvisory;
 
-import com.google.common.base.Preconditions;
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.cache.Cache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,10 +92,8 @@ public class DomainSocketFactory {
   /**
    * Information about domain socket paths.
    */
-  final Cache<String, PathState> pathMap =
-      CacheBuilder.newBuilder()
-      .expireAfterWrite(10, TimeUnit.MINUTES)
-      .build();
+  private final long pathExpireSeconds;
+  private final Cache<String, PathState> pathMap;
 
   public DomainSocketFactory(ShortCircuitConf conf) {
     final String feature;
@@ -121,6 +119,10 @@ public class DomainSocketFactory {
         LOG.debug(feature + " is enabled.");
       }
     }
+
+    pathExpireSeconds = conf.getDomainSocketDisableIntervalSeconds();
+    pathMap = CacheBuilder.newBuilder()
+        .expireAfterWrite(pathExpireSeconds, TimeUnit.SECONDS).build();
   }
 
   /**
@@ -131,7 +133,8 @@ public class DomainSocketFactory {
    *
    * @return             Information about the socket path.
    */
-  public PathInfo getPathInfo(InetSocketAddress addr, ShortCircuitConf conf) {
+  public PathInfo getPathInfo(InetSocketAddress addr, ShortCircuitConf conf)
+      throws IOException {
     // If there is no domain socket path configured, we can't use domain
     // sockets.
     if (conf.getDomainSocketPath().isEmpty()) return PathInfo.NOT_CONFIGURED;
@@ -191,5 +194,9 @@ public class DomainSocketFactory {
   @VisibleForTesting
   public void clearPathMap() {
     pathMap.invalidateAll();
+  }
+
+  public long getPathExpireSeconds() {
+    return pathExpireSeconds;
   }
 }

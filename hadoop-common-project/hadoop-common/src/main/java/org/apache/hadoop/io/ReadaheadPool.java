@@ -23,16 +23,17 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.io.nativeio.NativeIO;
 
 import static org.apache.hadoop.io.nativeio.NativeIO.POSIX.POSIX_FADV_WILLNEED;
 
-import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Manages a pool of threads which can issue readahead requests on file descriptors.
@@ -40,7 +41,7 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
 public class ReadaheadPool {
-  static final Log LOG = LogFactory.getLog(ReadaheadPool.class);
+  static final Logger LOG = LoggerFactory.getLogger(ReadaheadPool.class);
   private static final int POOL_SIZE = 4;
   private static final int MAX_POOL_SIZE = 16;
   private static final int CAPACITY = 1024;
@@ -59,7 +60,17 @@ public class ReadaheadPool {
       return instance;
     }
   }
-  
+
+  @VisibleForTesting
+  public static void resetInstance() {
+    synchronized (ReadaheadPool.class) {
+      if (instance != null) {
+        instance.pool.shutdownNow();
+        instance = null;
+      }
+    }
+  }
+
   private ReadaheadPool() {
     pool = new ThreadPoolExecutor(POOL_SIZE, MAX_POOL_SIZE, 3L, TimeUnit.SECONDS,
         new ArrayBlockingQueue<Runnable>(CAPACITY));
@@ -80,7 +91,7 @@ public class ReadaheadPool {
    * @param readaheadLength the configured length to read ahead
    * @param maxOffsetToRead the maximum offset that will be readahead
    *        (useful if, for example, only some segment of the file is
-   *        requested by the user). Pass {@link Long.MAX_VALUE} to allow
+   *        requested by the user). Pass {@link Long#MAX_VALUE} to allow
    *        readahead to the end of the file.
    * @param lastReadahead the result returned by the previous invocation
    *        of this function on this file descriptor, or null if this is
@@ -205,8 +216,10 @@ public class ReadaheadPool {
       // It's also possible that we'll end up requesting readahead on some
       // other FD, which may be wasted work, but won't cause a problem.
       try {
-        NativeIO.POSIX.getCacheManipulator().posixFadviseIfPossible(identifier,
-            fd, off, len, POSIX_FADV_WILLNEED);
+        if (fd.valid()) {
+          NativeIO.POSIX.getCacheManipulator().posixFadviseIfPossible(
+              identifier, fd, off, len, POSIX_FADV_WILLNEED);
+        }
       } catch (IOException ioe) {
         if (canceled) {
           // no big deal - the reader canceled the request and closed

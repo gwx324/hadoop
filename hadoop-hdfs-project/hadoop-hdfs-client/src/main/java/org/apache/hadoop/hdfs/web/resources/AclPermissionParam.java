@@ -20,11 +20,12 @@ package org.apache.hadoop.hdfs.web.resources;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys
     .DFS_WEBHDFS_ACL_PERMISSION_PATTERN_DEFAULT;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.fs.permission.AclEntry;
-import org.apache.commons.lang.StringUtils;
 
 /** AclPermission parameter. */
 public class AclPermissionParam extends StringParam {
@@ -33,7 +34,7 @@ public class AclPermissionParam extends StringParam {
   /** Default parameter value. */
   public static final String DEFAULT = "";
 
-  private static final Domain DOMAIN = new Domain(NAME,
+  private static Domain DOMAIN = new Domain(NAME,
       Pattern.compile(DFS_WEBHDFS_ACL_PERMISSION_PATTERN_DEFAULT));
 
   /**
@@ -47,6 +48,20 @@ public class AclPermissionParam extends StringParam {
 
   public AclPermissionParam(List<AclEntry> acl) {
     super(DOMAIN,parseAclSpec(acl).equals(DEFAULT) ? null : parseAclSpec(acl));
+  }
+
+  @VisibleForTesting
+  public static Domain getAclPermissionPattern() {
+    return DOMAIN;
+  }
+
+  @VisibleForTesting
+  public static void setAclPermissionPattern(Domain dm) {
+    DOMAIN = dm;
+  }
+
+  public static void setAclPermissionPattern(String pattern) {
+    DOMAIN = new Domain(NAME, Pattern.compile(pattern));
   }
 
   @Override
@@ -63,7 +78,24 @@ public class AclPermissionParam extends StringParam {
   /**
    * @return parse {@code aclEntry} and return aclspec
    */
-  private static String parseAclSpec(List<AclEntry> aclEntry) {
-    return StringUtils.join(aclEntry, ",");
+  private static String parseAclSpec(List<AclEntry> aclEntries) {
+    if (aclEntries == null) {
+      return null;
+    }
+    if (aclEntries.isEmpty()) {
+      return "";
+    }
+    if (aclEntries.size() == 1) {
+      AclEntry entry = aclEntries.get(0);
+      return entry == null ? "" : entry.toStringStable();
+    }
+    StringBuilder sb = new StringBuilder();
+    Iterator<AclEntry> iter = aclEntries.iterator();
+    sb.append(iter.next().toStringStable());
+    while (iter.hasNext()) {
+      AclEntry entry = iter.next();
+      sb.append(',').append(entry == null ? "" : entry.toStringStable());
+    }
+    return sb.toString();
   }
 }

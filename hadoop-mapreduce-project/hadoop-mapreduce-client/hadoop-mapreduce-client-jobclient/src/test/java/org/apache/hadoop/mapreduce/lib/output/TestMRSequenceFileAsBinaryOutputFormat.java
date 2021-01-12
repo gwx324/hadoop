@@ -18,8 +18,6 @@
 
 package org.apache.hadoop.mapreduce.lib.output;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -44,17 +42,19 @@ import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat;
 import org.apache.hadoop.mapreduce.task.MapContextImpl;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Random;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class TestMRSequenceFileAsBinaryOutputFormat {
-  private static final Log LOG =
-    LogFactory.getLog(TestMRSequenceFileAsBinaryOutputFormat.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestMRSequenceFileAsBinaryOutputFormat.class);
 
   private static final int RECORDS = 10000;
 
@@ -142,10 +142,9 @@ public class TestMRSequenceFileAsBinaryOutputFormat {
               "Keys don't match: " + "*" + iwritable.get() + ":" + 
                                            sourceInt + "*",
               sourceInt, iwritable.get());
-          assertTrue(
+          assertThat(dwritable.get()).withFailMessage(
               "Vals don't match: " + "*" + dwritable.get() + ":" +
-                                           sourceDouble + "*",
-              Double.compare(dwritable.get(), sourceDouble) == 0 );
+                  sourceDouble + "*").isEqualTo(sourceDouble);
           ++count;
         }
       } finally {

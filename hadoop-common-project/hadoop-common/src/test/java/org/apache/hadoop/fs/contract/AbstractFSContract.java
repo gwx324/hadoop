@@ -70,6 +70,14 @@ public abstract class AbstractFSContract extends Configured {
   }
 
   /**
+   * Any teardown logic can go here.
+   * @throws IOException IO problems
+   */
+  public void teardown() throws IOException {
+
+  }
+
+  /**
    * Add a configuration resource to this instance's configuration
    * @param resource resource reference
    * @throws AssertionError if the resource was not found.
@@ -113,7 +121,7 @@ public abstract class AbstractFSContract extends Configured {
   public abstract FileSystem getTestFileSystem() throws IOException;
 
   /**
-   * Get the scheme of this FS
+   * Get the scheme of this FS.
    * @return the scheme this FS supports
    */
   public abstract String getScheme();
@@ -148,7 +156,6 @@ public abstract class AbstractFSContract extends Configured {
    * @param feature feature to query
    * @param defval default value
    * @return true if the feature is supported
-   * @throws IOException IO problems
    */
   public boolean isSupported(String feature, boolean defval) {
     return getConf().getBoolean(getConfKey(feature), defval);
@@ -160,7 +167,6 @@ public abstract class AbstractFSContract extends Configured {
    * @param feature feature to query
    * @param defval default value
    * @return true if the feature is supported
-   * @throws IOException IO problems
    */
   public int getLimit(String feature, int defval) {
     return getConf().getInt(getConfKey(feature), defval);

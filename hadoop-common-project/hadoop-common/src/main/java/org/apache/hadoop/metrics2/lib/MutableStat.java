@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.metrics2.lib;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.metrics2.MetricsInfo;
@@ -102,6 +102,10 @@ public class MutableStat extends MutableMetric {
 
   /**
    * Add a number of samples and their sum to the running stat
+   *
+   * Note that although use of this method will preserve accurate mean values,
+   * large values for numSamples may result in inaccurate variance values due
+   * to the use of a single step of the Welford method for variance calculation.
    * @param numSamples  number of samples
    * @param sum of the samples
    */

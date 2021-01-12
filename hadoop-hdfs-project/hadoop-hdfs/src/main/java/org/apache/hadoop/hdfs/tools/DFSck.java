@@ -50,14 +50,17 @@ import org.apache.hadoop.util.ToolRunner;
  * <p>The tool scans all files and directories, starting from an indicated
  *  root path. The following abnormal conditions are detected and handled:</p>
  * <ul>
- * <li>files with blocks that are completely missing from all datanodes.<br/>
+ * <li>files with blocks that are completely missing from all datanodes.<br>
  * In this case the tool can perform one of the following actions:
  *  <ul>
- *      <li>none ({@link org.apache.hadoop.hdfs.server.namenode.NamenodeFsck#FIXING_NONE})</li>
  *      <li>move corrupted files to /lost+found directory on DFS
- *      ({@link org.apache.hadoop.hdfs.server.namenode.NamenodeFsck#FIXING_MOVE}). Remaining data blocks are saved as a
- *      block chains, representing longest consecutive series of valid blocks.</li>
- *      <li>delete corrupted files ({@link org.apache.hadoop.hdfs.server.namenode.NamenodeFsck#FIXING_DELETE})</li>
+ *      ({@link org.apache.hadoop.hdfs.server.namenode.NamenodeFsck#doMove}).
+ *      Remaining data blocks are saved as a
+ *      block chains, representing longest consecutive series of valid blocks.
+ *      </li>
+ *      <li>delete corrupted files
+ *      ({@link org.apache.hadoop.hdfs.server.namenode.NamenodeFsck#doDelete})
+ *      </li>
  *  </ul>
  *  </li>
  *  <li>detect files with under-replicated or over-replicated blocks</li>
@@ -80,7 +83,8 @@ public class DFSck extends Configured implements Tool {
       + "[-files [-blocks [-locations | -racks | -replicaDetails | " +
           "-upgradedomains]]]] "
       + "[-includeSnapshots] [-showprogress] "
-      + "[-storagepolicies] [-blockId <blk_Id>]\n"
+      + "[-storagepolicies] [-maintenance] "
+      + "[-blockId <blk_Id>] [-replicate]\n"
       + "\t<path>\tstart checking from this path\n"
       + "\t-move\tmove corrupted files to /lost+found\n"
       + "\t-delete\tdelete corrupted files\n"
@@ -99,11 +103,14 @@ public class DFSck extends Configured implements Tool {
       + "\t-files -blocks -upgradedomains\tprint out upgrade domains for " +
           "every block\n"
       + "\t-storagepolicies\tprint out storage policy summary for the blocks\n"
-      + "\t-showprogress\tshow progress in output. Default is OFF (no progress)\n"
+      + "\t-maintenance\tprint out maintenance state node details\n"
+      + "\t-showprogress\tDeprecated. Progress is now shown by default\n"
       + "\t-blockId\tprint out which file this blockId belongs to, locations"
       + " (nodes, racks) of this block, and other diagnostics info"
-      + " (under replicated, corrupted or not, etc)\n\n"
-      + "Please Note:\n"
+      + " (under replicated, corrupted or not, etc)\n"
+      + "\t-replicate initiate replication work to make mis-replicated\n"
+      + " blocks satisfy block placement policy\n\n"
+      + "Please Note:\n\n"
       + "\t1. By default fsck ignores files opened for write, "
       + "use -openforwrite to report such files. They are usually "
       + " tagged CORRUPT or HEALTHY depending on their block "
@@ -208,8 +215,14 @@ public class DFSck extends Configured implements Tool {
             allDone = true;
             break;
           }
+          if (line.startsWith("Access denied for user")) {
+            out.println("Failed to open path '" + dir + "': Permission denied");
+            errCode = -1;
+            return errCode;
+          }
           if ((line.isEmpty())
               || (line.startsWith("FSCK started by"))
+              || (line.startsWith("FSCK ended at"))
               || (line.startsWith("The filesystem under path")))
             continue;
           numCorrupt++;
@@ -286,6 +299,8 @@ public class DFSck extends Configured implements Tool {
         doListCorruptFileBlocks = true;
       } else if (args[idx].equals("-includeSnapshots")) {
         url.append("&includeSnapshots=1");
+      } else if (args[idx].equals("-maintenance")) {
+        url.append("&maintenance=1");
       } else if (args[idx].equals("-blockId")) {
         StringBuilder sb = new StringBuilder();
         idx++;
@@ -295,6 +310,8 @@ public class DFSck extends Configured implements Tool {
           idx++;
         }
         url.append("&blockId=").append(URLEncoder.encode(sb.toString(), "UTF-8"));
+      } else if (args[idx].equals("-replicate")) {
+        url.append("&replicate=1");
       } else if (!args[idx].startsWith("-")) {
         if (null == dir) {
           dir = args[idx];
@@ -350,7 +367,7 @@ public class DFSck extends Configured implements Tool {
     BufferedReader input = new BufferedReader(new InputStreamReader(
                                               stream, "UTF-8"));
     String line = null;
-    String lastLine = null;
+    String lastLine = NamenodeFsck.CORRUPT_STATUS;
     int errCode = -1;
     try {
       while ((line = input.readLine()) != null) {
@@ -372,6 +389,10 @@ public class DFSck extends Configured implements Tool {
       errCode = 2;
     } else if (lastLine.endsWith(NamenodeFsck.DECOMMISSIONING_STATUS)) {
       errCode = 3;
+    } else if (lastLine.endsWith(NamenodeFsck.IN_MAINTENANCE_STATUS))  {
+      errCode = 4;
+    } else if (lastLine.endsWith(NamenodeFsck.ENTERING_MAINTENANCE_STATUS)) {
+      errCode = 5;
     }
     return errCode;
   }

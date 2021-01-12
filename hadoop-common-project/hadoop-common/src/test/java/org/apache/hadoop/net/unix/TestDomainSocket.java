@@ -43,13 +43,13 @@ import org.junit.Assume;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
-import org.apache.commons.lang.exception.ExceptionUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.net.unix.DomainSocket.DomainChannel;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Shell;
 
-import com.google.common.io.Files;
+import org.apache.hadoop.thirdparty.com.google.common.io.Files;
 
 public class TestDomainSocket {
   private static TemporarySocketDirectory sockDir;
@@ -203,7 +203,7 @@ public class TestDomainSocket {
         } catch (IOException e) {
           throw new RuntimeException("unexpected IOException", e);
         } finally {
-          IOUtils.cleanup(DomainSocket.LOG, serverConn);
+          IOUtils.cleanupWithLogger(DomainSocket.LOG, serverConn);
         }
         return null;
       }

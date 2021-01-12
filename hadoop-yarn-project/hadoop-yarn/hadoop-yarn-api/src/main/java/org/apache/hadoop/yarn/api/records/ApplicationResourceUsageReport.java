@@ -24,6 +24,8 @@ import org.apache.hadoop.classification.InterfaceStability.Stable;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.util.Records;
 
+import java.util.Map;
+
 /**
  * Contains various scheduling metrics to be reported by UI and CLI.
  */
@@ -35,8 +37,9 @@ public abstract class ApplicationResourceUsageReport {
   @Unstable
   public static ApplicationResourceUsageReport newInstance(
       int numUsedContainers, int numReservedContainers, Resource usedResources,
-      Resource reservedResources, Resource neededResources, long memorySeconds,
-      long vcoreSeconds, float queueUsagePerc, float clusterUsagePerc) {
+      Resource reservedResources, Resource neededResources,
+      Map<String, Long> resourceSecondsMap, float queueUsagePerc,
+      float clusterUsagePerc, Map<String, Long> preemtedResourceSecondsMap) {
     ApplicationResourceUsageReport report =
         Records.newRecord(ApplicationResourceUsageReport.class);
     report.setNumUsedContainers(numUsedContainers);
@@ -44,10 +47,10 @@ public abstract class ApplicationResourceUsageReport {
     report.setUsedResources(usedResources);
     report.setReservedResources(reservedResources);
     report.setNeededResources(neededResources);
-    report.setMemorySeconds(memorySeconds);
-    report.setVcoreSeconds(vcoreSeconds);
+    report.setResourceSecondsMap(resourceSecondsMap);
     report.setQueueUsagePercentage(queueUsagePerc);
     report.setClusterUsagePercentage(clusterUsagePerc);
+    report.setPreemptedResourceSecondsMap(preemtedResourceSecondsMap);
     return report;
   }
 
@@ -188,4 +191,85 @@ public abstract class ApplicationResourceUsageReport {
   @Private
   @Unstable
   public abstract void setClusterUsagePercentage(float clusterUsagePerc);
+
+  /**
+   * Set the aggregated amount of memory preempted (in megabytes)
+   * the application has allocated times the number of seconds
+   * the application has been running.
+   * @param memorySeconds the aggregated amount of memory seconds
+   */
+  @Private
+  @Unstable
+  public abstract void setPreemptedMemorySeconds(long memorySeconds);
+
+  /**
+   * Get the aggregated amount of memory preempted(in megabytes)
+   * the application has allocated times the number of
+   * seconds the application has been running.
+   * @return the aggregated amount of memory seconds
+   */
+  @Public
+  @Unstable
+  public abstract long getPreemptedMemorySeconds();
+
+  /**
+   * Set the aggregated number of vcores preempted that the application has
+   * allocated times the number of seconds the application has been running.
+   * @param vcoreSeconds the aggregated number of vcore seconds
+   */
+  @Private
+  @Unstable
+  public abstract void setPreemptedVcoreSeconds(long vcoreSeconds);
+
+  /**
+   * Get the aggregated number of vcores preempted that the application has
+   * allocated times the number of seconds the application has been running.
+   * @return the aggregated number of vcore seconds
+   */
+  @Public
+  @Unstable
+  public abstract long getPreemptedVcoreSeconds();
+
+  /**
+   * Get the aggregated number of resources that the application has
+   * allocated times the number of seconds the application has been running.
+   * @return map containing the resource name and aggregated resource-seconds
+   */
+  @Public
+  @Unstable
+  public abstract Map<String, Long> getResourceSecondsMap();
+
+  /**
+   * Set the aggregated number of resources that the application has
+   * allocated times the number of seconds the application has been running.
+   * @param resourceSecondsMap map containing the resource name and aggregated
+   *                           resource-seconds
+   */
+  @Private
+  @Unstable
+  public abstract void setResourceSecondsMap(
+      Map<String, Long> resourceSecondsMap);
+
+
+  /**
+   * Get the aggregated number of resources preempted that the application has
+   * allocated times the number of seconds the application has been running.
+   * @return map containing the resource name and aggregated preempted
+   * resource-seconds
+   */
+  @Public
+  @Unstable
+  public abstract Map<String, Long> getPreemptedResourceSecondsMap();
+
+  /**
+   * Set the aggregated number of resources preempted that the application has
+   * allocated times the number of seconds the application has been running.
+   * @param preemptedResourceSecondsMap  map containing the resource name and
+   *                                     aggregated preempted resource-seconds
+   */
+  @Private
+  @Unstable
+  public abstract void setPreemptedResourceSecondsMap(
+      Map<String, Long> preemptedResourceSecondsMap);
+
 }

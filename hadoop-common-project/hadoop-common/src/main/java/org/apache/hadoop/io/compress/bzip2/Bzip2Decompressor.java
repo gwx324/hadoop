@@ -23,9 +23,8 @@ import java.nio.Buffer;
 import java.nio.ByteBuffer;
 
 import org.apache.hadoop.io.compress.Decompressor;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A {@link Decompressor} based on the popular 
@@ -36,7 +35,8 @@ import org.apache.commons.logging.LogFactory;
 public class Bzip2Decompressor implements Decompressor {
   private static final int DEFAULT_DIRECT_BUFFER_SIZE = 64*1024;
   
-  private static final Log LOG = LogFactory.getLog(Bzip2Decompressor.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(Bzip2Decompressor.class);
 
   private long stream;
   private boolean conserveMemory;
@@ -183,7 +183,7 @@ public class Bzip2Decompressor implements Decompressor {
   }
 
   /**
-   * Returns the total number of compressed bytes input so far.</p>
+   * Returns the total number of compressed bytes input so far.
    *
    * @return the total (non-negative) number of compressed bytes input so far
    */
@@ -195,7 +195,7 @@ public class Bzip2Decompressor implements Decompressor {
   /**
    * Returns the number of bytes remaining in the input buffers; normally
    * called when finished() is true to determine amount of post-gzip-stream
-   * data.</p>
+   * data.
    *
    * @return the total (non-negative) number of unprocessed bytes in input
    */
@@ -206,7 +206,7 @@ public class Bzip2Decompressor implements Decompressor {
   }
 
   /**
-   * Resets everything including the input buffers (user and direct).</p>
+   * Resets everything including the input buffers (user and direct).
    */
   @Override
   public synchronized void reset() {

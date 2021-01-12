@@ -39,7 +39,14 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
+
+import java.io.IOException;
+import java.io.FileWriter;
+import java.io.BufferedWriter;
+import java.nio.file.Files;
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -47,7 +54,7 @@ public class TestDistCpSync {
   private MiniDFSCluster cluster;
   private final Configuration conf = new HdfsConfiguration();
   private DistributedFileSystem dfs;
-  private DistCpOptions options;
+  private DistCpContext context;
   private final Path source = new Path("/source");
   private final Path target = new Path("/target");
   private final long BLOCK_SIZE = 1024;
@@ -62,10 +69,13 @@ public class TestDistCpSync {
     dfs.mkdirs(source);
     dfs.mkdirs(target);
 
-    options = new DistCpOptions(Arrays.asList(source), target);
-    options.setSyncFolder(true);
-    options.setUseDiff(true, "s1", "s2");
+    final DistCpOptions options = new DistCpOptions.Builder(
+        Collections.singletonList(source), target)
+        .withSyncFolder(true)
+        .withUseDiff("s1", "s2")
+        .build();
     options.appendToConf(conf);
+    context = new DistCpContext(options);
 
     conf.set(DistCpConstants.CONF_LABEL_TARGET_WORK_PATH, target.toString());
     conf.set(DistCpConstants.CONF_LABEL_TARGET_FINAL_PATH, target.toString());
@@ -92,34 +102,34 @@ public class TestDistCpSync {
     // make sure the source path has been updated to the snapshot path
     final Path spath = new Path(source,
         HdfsConstants.DOT_SNAPSHOT_DIR + Path.SEPARATOR + "s2");
-    Assert.assertEquals(spath, options.getSourcePaths().get(0));
+    Assert.assertEquals(spath, context.getSourcePaths().get(0));
 
     // reset source path in options
-    options.setSourcePaths(Arrays.asList(source));
+    context.setSourcePaths(Collections.singletonList(source));
     // the source/target does not have the given snapshots
     dfs.allowSnapshot(source);
     dfs.allowSnapshot(target);
     Assert.assertFalse(sync());
-    Assert.assertEquals(spath, options.getSourcePaths().get(0));
+    Assert.assertEquals(spath, context.getSourcePaths().get(0));
 
     // reset source path in options
-    options.setSourcePaths(Arrays.asList(source));
+    context.setSourcePaths(Collections.singletonList(source));
     dfs.createSnapshot(source, "s1");
     dfs.createSnapshot(source, "s2");
     dfs.createSnapshot(target, "s1");
     Assert.assertTrue(sync());
 
     // reset source paths in options
-    options.setSourcePaths(Arrays.asList(source));
+    context.setSourcePaths(Collections.singletonList(source));
     // changes have been made in target
     final Path subTarget = new Path(target, "sub");
     dfs.mkdirs(subTarget);
     Assert.assertFalse(sync());
     // make sure the source path has been updated to the snapshot path
-    Assert.assertEquals(spath, options.getSourcePaths().get(0));
+    Assert.assertEquals(spath, context.getSourcePaths().get(0));
 
     // reset source paths in options
-    options.setSourcePaths(Arrays.asList(source));
+    context.setSourcePaths(Collections.singletonList(source));
     dfs.delete(subTarget, true);
     Assert.assertTrue(sync());
   }
@@ -137,7 +147,7 @@ public class TestDistCpSync {
   }
 
   private boolean sync() throws Exception {
-    DistCpSync distCpSync = new DistCpSync(options, conf);
+    DistCpSync distCpSync = new DistCpSync(context, conf);
     return distCpSync.sync();
   }
 
@@ -231,7 +241,7 @@ public class TestDistCpSync {
     SnapshotDiffReport report = dfs.getSnapshotDiffReport(source, "s1", "s2");
     System.out.println(report);
 
-    DistCpSync distCpSync = new DistCpSync(options, conf);
+    DistCpSync distCpSync = new DistCpSync(context, conf);
 
     // do the sync
     Assert.assertTrue(distCpSync.sync());
@@ -239,24 +249,24 @@ public class TestDistCpSync {
     // make sure the source path has been updated to the snapshot path
     final Path spath = new Path(source,
             HdfsConstants.DOT_SNAPSHOT_DIR + Path.SEPARATOR + "s2");
-    Assert.assertEquals(spath, options.getSourcePaths().get(0));
+    Assert.assertEquals(spath, context.getSourcePaths().get(0));
 
     // build copy listing
     final Path listingPath = new Path("/tmp/META/fileList.seq");
     CopyListing listing = new SimpleCopyListing(conf, new Credentials(), distCpSync);
-    listing.buildListing(listingPath, options);
+    listing.buildListing(listingPath, context);
 
     Map<Text, CopyListingFileStatus> copyListing = getListing(listingPath);
     CopyMapper copyMapper = new CopyMapper();
     StubContext stubContext = new StubContext(conf, null, 0);
-    Mapper<Text, CopyListingFileStatus, Text, Text>.Context context =
+    Mapper<Text, CopyListingFileStatus, Text, Text>.Context mapContext =
         stubContext.getContext();
     // Enable append
-    context.getConfiguration().setBoolean(
+    mapContext.getConfiguration().setBoolean(
         DistCpOptionSwitch.APPEND.getConfigLabel(), true);
-    copyMapper.setup(context);
+    copyMapper.setup(mapContext);
     for (Map.Entry<Text, CopyListingFileStatus> entry : copyListing.entrySet()) {
-      copyMapper.map(entry.getKey(), entry.getValue(), context);
+      copyMapper.map(entry.getKey(), entry.getValue(), mapContext);
     }
 
     // verify that we only list modified and created files/directories
@@ -312,7 +322,12 @@ public class TestDistCpSync {
    */
   @Test
   public void testSyncWithCurrent() throws Exception {
-    options.setUseDiff(true, "s1", ".");
+    final DistCpOptions options = new DistCpOptions.Builder(
+        Collections.singletonList(source), target)
+        .withSyncFolder(true)
+        .withUseDiff("s1", ".")
+        .build();
+    context = new DistCpContext(options);
     initData(source);
     initData(target);
     enableAndCreateFirstSnapshot();
@@ -323,7 +338,7 @@ public class TestDistCpSync {
     // do the sync
     sync();
     // make sure the source path is still unchanged
-    Assert.assertEquals(source, options.getSourcePaths().get(0));
+    Assert.assertEquals(source, context.getSourcePaths().get(0));
   }
 
   private void initData2(Path dir) throws Exception {
@@ -501,32 +516,32 @@ public class TestDistCpSync {
     SnapshotDiffReport report = dfs.getSnapshotDiffReport(source, "s1", "s2");
     System.out.println(report);
 
-    DistCpSync distCpSync = new DistCpSync(options, conf);
+    DistCpSync distCpSync = new DistCpSync(context, conf);
     // do the sync
     Assert.assertTrue(distCpSync.sync());
 
     // make sure the source path has been updated to the snapshot path
     final Path spath = new Path(source,
             HdfsConstants.DOT_SNAPSHOT_DIR + Path.SEPARATOR + "s2");
-    Assert.assertEquals(spath, options.getSourcePaths().get(0));
+    Assert.assertEquals(spath, context.getSourcePaths().get(0));
 
     // build copy listing
     final Path listingPath = new Path("/tmp/META/fileList.seq");
     CopyListing listing = new SimpleCopyListing(conf, new Credentials(), distCpSync);
-    listing.buildListing(listingPath, options);
+    listing.buildListing(listingPath, context);
 
     Map<Text, CopyListingFileStatus> copyListing = getListing(listingPath);
     CopyMapper copyMapper = new CopyMapper();
     StubContext stubContext = new StubContext(conf, null, 0);
-    Mapper<Text, CopyListingFileStatus, Text, Text>.Context context =
+    Mapper<Text, CopyListingFileStatus, Text, Text>.Context mapContext =
             stubContext.getContext();
     // Enable append
-    context.getConfiguration().setBoolean(
+    mapContext.getConfiguration().setBoolean(
             DistCpOptionSwitch.APPEND.getConfigLabel(), true);
-    copyMapper.setup(context);
+    copyMapper.setup(mapContext);
     for (Map.Entry<Text, CopyListingFileStatus> entry :
             copyListing.entrySet()) {
-      copyMapper.map(entry.getKey(), entry.getValue(), context);
+      copyMapper.map(entry.getKey(), entry.getValue(), mapContext);
     }
 
     // verify that we only list modified and created files/directories
@@ -729,7 +744,7 @@ public class TestDistCpSync {
 
     boolean threwException = false;
     try {
-      DistCpSync distCpSync = new DistCpSync(options, conf);
+      DistCpSync distCpSync = new DistCpSync(context, conf);
       // do the sync
       distCpSync.sync();
     } catch (HadoopIllegalArgumentException e) {
@@ -738,5 +753,158 @@ public class TestDistCpSync {
           "Snapshot s2 should be newer than s1", e);
     }
     Assert.assertTrue(threwException);
+  }
+
+  private void initData10(Path dir) throws Exception {
+    final Path staging = new Path(dir, ".staging");
+    final Path stagingF1 = new Path(staging, "f1");
+    final Path data = new Path(dir, "data");
+    final Path dataF1 = new Path(data, "f1");
+
+    DFSTestUtil.createFile(dfs, stagingF1, BLOCK_SIZE, DATA_NUM, 0L);
+    DFSTestUtil.createFile(dfs, dataF1, BLOCK_SIZE, DATA_NUM, 0L);
+  }
+
+  private void changeData10(Path dir) throws Exception {
+    final Path staging = new Path(dir, ".staging");
+    final Path prod = new Path(dir, "prod");
+    dfs.rename(staging, prod);
+  }
+
+  private java.nio.file.Path generateFilterFile(String fileName)
+          throws IOException {
+    java.nio.file.Path tmpFile = Files.createTempFile(fileName, "txt");
+    String str = ".*\\.staging.*";
+    try (BufferedWriter writer = new BufferedWriter(
+            new FileWriter(tmpFile.toString()))) {
+      writer.write(str);
+    }
+    return tmpFile;
+  }
+
+  private void deleteFilterFile(java.nio.file.Path filePath)
+          throws IOException {
+    Files.delete(filePath);
+  }
+
+  @Test
+  public void testSync10() throws Exception {
+    java.nio.file.Path filterFile = null;
+    try {
+      Path sourcePath = new Path(dfs.getWorkingDirectory(), "source");
+      initData10(sourcePath);
+      dfs.allowSnapshot(sourcePath);
+      dfs.createSnapshot(sourcePath, "s1");
+      filterFile = generateFilterFile("filters");
+      final DistCpOptions.Builder builder = new DistCpOptions.Builder(
+              new ArrayList<>(Arrays.asList(sourcePath)),
+              target)
+              .withFiltersFile(filterFile.toString())
+              .withSyncFolder(true);
+      new DistCp(conf, builder.build()).execute();
+      verifySync(dfs.getFileStatus(sourcePath),
+              dfs.getFileStatus(target), false, ".staging");
+
+      dfs.allowSnapshot(target);
+      dfs.createSnapshot(target, "s1");
+      changeData10(sourcePath);
+      dfs.createSnapshot(sourcePath, "s2");
+
+      final DistCpOptions.Builder diffBuilder = new DistCpOptions.Builder(
+              new ArrayList<>(Arrays.asList(sourcePath)),
+              target)
+              .withUseDiff("s1", "s2")
+              .withFiltersFile(filterFile.toString())
+              .withSyncFolder(true);
+      new DistCp(conf, diffBuilder.build()).execute();
+      verifyCopy(dfs.getFileStatus(sourcePath),
+              dfs.getFileStatus(target), false);
+    } finally {
+      deleteFilterFile(filterFile);
+    }
+  }
+
+  private void initData11(Path dir) throws Exception {
+    final Path staging = new Path(dir, "prod");
+    final Path stagingF1 = new Path(staging, "f1");
+    final Path data = new Path(dir, "data");
+    final Path dataF1 = new Path(data, "f1");
+
+    DFSTestUtil.createFile(dfs, stagingF1, BLOCK_SIZE, DATA_NUM, 0L);
+    DFSTestUtil.createFile(dfs, dataF1, BLOCK_SIZE, DATA_NUM, 0L);
+  }
+
+  private void changeData11(Path dir) throws Exception {
+    final Path staging = new Path(dir, "prod");
+    final Path prod = new Path(dir, ".staging");
+    dfs.rename(staging, prod);
+  }
+
+  private void verifySync(FileStatus s, FileStatus t, boolean compareName,
+                          String deletedName)
+          throws Exception {
+    Assert.assertEquals(s.isDirectory(), t.isDirectory());
+    if (compareName) {
+      Assert.assertEquals(s.getPath().getName(), t.getPath().getName());
+    }
+    if (!s.isDirectory()) {
+      // verify the file content is the same
+      byte[] sbytes = DFSTestUtil.readFileBuffer(dfs, s.getPath());
+      byte[] tbytes = DFSTestUtil.readFileBuffer(dfs, t.getPath());
+      Assert.assertArrayEquals(sbytes, tbytes);
+    } else {
+      FileStatus[] slist = dfs.listStatus(s.getPath());
+      FileStatus[] tlist = dfs.listStatus(t.getPath());
+      int minFiles = tlist.length;
+      if (slist.length < tlist.length) {
+        minFiles = slist.length;
+      }
+      for (int i = 0; i < minFiles; i++) {
+        if (slist[i].getPath().getName().contains(deletedName)) {
+          if (tlist[i].getPath().getName().contains(deletedName)) {
+            throw new Exception("Target is not synced as per exclusion filter");
+          }
+          continue;
+        }
+        verifySync(slist[i], tlist[i], true, deletedName);
+      }
+    }
+  }
+
+  @Test
+  public void testSync11() throws Exception {
+    java.nio.file.Path filterFile = null;
+    try {
+      Path sourcePath = new Path(dfs.getWorkingDirectory(), "source");
+      initData11(sourcePath);
+      dfs.allowSnapshot(sourcePath);
+      dfs.createSnapshot(sourcePath, "s1");
+      filterFile = generateFilterFile("filters");
+      final DistCpOptions.Builder builder = new DistCpOptions.Builder(
+              new ArrayList<>(Arrays.asList(sourcePath)),
+              target)
+              .withFiltersFile(filterFile.toString())
+              .withSyncFolder(true);
+      new DistCp(conf, builder.build()).execute();
+      verifyCopy(dfs.getFileStatus(sourcePath),
+              dfs.getFileStatus(target), false);
+
+      dfs.allowSnapshot(target);
+      dfs.createSnapshot(target, "s1");
+      changeData11(sourcePath);
+      dfs.createSnapshot(sourcePath, "s2");
+
+      final DistCpOptions.Builder diffBuilder = new DistCpOptions.Builder(
+              new ArrayList<>(Arrays.asList(sourcePath)),
+              target)
+              .withUseDiff("s1", "s2")
+              .withFiltersFile(filterFile.toString())
+              .withSyncFolder(true);
+      new DistCp(conf, diffBuilder.build()).execute();
+      verifySync(dfs.getFileStatus(sourcePath),
+              dfs.getFileStatus(target), false, ".staging");
+    } finally {
+      deleteFilterFile(filterFile);
+    }
   }
 }

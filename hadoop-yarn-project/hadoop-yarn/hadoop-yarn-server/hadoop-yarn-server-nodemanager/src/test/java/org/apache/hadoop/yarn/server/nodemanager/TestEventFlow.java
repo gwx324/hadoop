@@ -18,9 +18,12 @@
 
 package org.apache.hadoop.yarn.server.nodemanager;
 
+import static org.mockito.Mockito.mock;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import org.apache.hadoop.fs.FileContext;
@@ -44,6 +47,7 @@ import org.apache.hadoop.yarn.server.api.ResourceTracker;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager.NMContext;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.BaseContainerManagerTest;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.TestContainerManager;
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.metrics.NodeManagerMetrics;
 import org.apache.hadoop.yarn.server.nodemanager.recovery.NMNullStateStoreService;
 import org.apache.hadoop.yarn.server.nodemanager.security.NMContainerTokenSecretManager;
@@ -101,8 +105,8 @@ public class TestEventFlow {
     DeletionService del = new DeletionService(exec);
     Dispatcher dispatcher = new AsyncDispatcher();
     LocalDirsHandlerService dirsHandler = new LocalDirsHandlerService();
-    NodeHealthCheckerService healthChecker = new NodeHealthCheckerService(
-        NodeManager.getNodeHealthScriptRunner(conf), dirsHandler);
+    NodeHealthCheckerService healthChecker =
+        new NodeHealthCheckerService(dirsHandler);
     healthChecker.init(conf);
     NodeManagerMetrics metrics = NodeManagerMetrics.create();
     NodeStatusUpdater nodeStatusUpdater =
@@ -132,6 +136,9 @@ public class TestEventFlow {
         new DummyContainerManager(context, exec, del, nodeStatusUpdater,
           metrics, dirsHandler);
     nodeStatusUpdater.init(conf);
+    NodeResourceMonitorImpl nodeResourceMonitor = mock(
+        NodeResourceMonitorImpl.class);
+    ((NMContext) context).setNodeResourceMonitor(nodeResourceMonitor);
     ((NMContext)context).setContainerManager(containerManager);
     nodeStatusUpdater.start();
     ((NMContext)context).setNodeStatusUpdater(nodeStatusUpdater);
@@ -158,7 +165,7 @@ public class TestEventFlow {
     containerManager.startContainers(allRequests);
 
     BaseContainerManagerTest.waitForContainerState(containerManager, cID,
-        ContainerState.RUNNING);
+        Arrays.asList(ContainerState.RUNNING), 20);
 
     List<ContainerId> containerIds = new ArrayList<ContainerId>();
     containerIds.add(cID);

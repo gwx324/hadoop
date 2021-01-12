@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.Resource;
@@ -31,15 +31,14 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 public class ReservedContainerCandidatesSelector
     extends PreemptionCandidatesSelector {
-  private static final Log LOG =
-      LogFactory.getLog(ReservedContainerCandidatesSelector.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ReservedContainerCandidatesSelector.class);
 
   private PreemptableResourceCalculator preemptableAmountCalculator;
 
@@ -63,7 +62,7 @@ public class ReservedContainerCandidatesSelector
       CapacitySchedulerPreemptionContext preemptionContext) {
     super(preemptionContext);
     preemptableAmountCalculator = new PreemptableResourceCalculator(
-        preemptionContext, true);
+        preemptionContext, true, false);
   }
 
   @Override
@@ -71,6 +70,7 @@ public class ReservedContainerCandidatesSelector
       Map<ApplicationAttemptId, Set<RMContainer>> selectedCandidates,
       Resource clusterResource,
       Resource totalPreemptedResourceAllowed) {
+    Map<ApplicationAttemptId, Set<RMContainer>> curCandidates = new HashMap<>();
     // Calculate how much resources we need to preempt
     preemptableAmountCalculator.computeIdealAllocation(clusterResource,
         totalPreemptedResourceAllowed);
@@ -87,8 +87,8 @@ public class ReservedContainerCandidatesSelector
 
     // Get list of nodes for preemption, ordered by preemption cost
     List<NodeForPreemption> nodesForPreemption = getNodesForPreemption(
-        clusterResource, queueToPreemptableResourceByPartition,
-        selectedCandidates, totalPreemptedResourceAllowed);
+        queueToPreemptableResourceByPartition, selectedCandidates,
+        totalPreemptedResourceAllowed);
 
     for (NodeForPreemption nfp : nodesForPreemption) {
       RMContainer reservedContainer = nfp.schedulerNode.getReservedContainer();
@@ -97,29 +97,22 @@ public class ReservedContainerCandidatesSelector
       }
 
       NodeForPreemption preemptionResult = getPreemptionCandidatesOnNode(
-          nfp.schedulerNode, clusterResource,
-          queueToPreemptableResourceByPartition, selectedCandidates,
-          totalPreemptedResourceAllowed, false);
+          nfp.schedulerNode, queueToPreemptableResourceByPartition,
+          selectedCandidates, totalPreemptedResourceAllowed, false);
       if (null != preemptionResult) {
         for (RMContainer c : preemptionResult.selectedContainers) {
-          ApplicationAttemptId appId = c.getApplicationAttemptId();
-          Set<RMContainer> containers = selectedCandidates.get(appId);
-          if (null == containers) {
-            containers = new HashSet<>();
-            selectedCandidates.put(appId, containers);
-          }
+          // Add to preemptMap
+          CapacitySchedulerPreemptionUtils.addToPreemptMap(selectedCandidates,
+              curCandidates, c.getApplicationAttemptId(), c);
 
-          containers.add(c);
-          if (LOG.isDebugEnabled()) {
-            LOG.debug(this.getClass().getName() + " Marked container=" + c
-                .getContainerId() + " from queue=" + c.getQueueName()
-                + " to be preemption candidates");
-          }
+          LOG.debug("{} Marked container={} from queue={} to be preemption"
+              + " candidates", this.getClass().getName(), c.getContainerId(),
+              c.getQueueName());
         }
       }
     }
 
-    return selectedCandidates;
+    return curCandidates;
   }
 
   private Resource getPreemptableResource(String queueName,
@@ -135,8 +128,7 @@ public class ReservedContainerCandidatesSelector
     return preemptable;
   }
 
-  private boolean tryToPreemptFromQueue(Resource cluster, String queueName,
-      String partitionName,
+  private boolean tryToPreemptFromQueue(String queueName, String partitionName,
       Map<String, Map<String, Resource>> queueToPreemptableResourceByPartition,
       Resource required, Resource totalPreemptionAllowed, boolean readOnly) {
     Resource preemptable = getPreemptableResource(queueName, partitionName,
@@ -145,11 +137,11 @@ public class ReservedContainerCandidatesSelector
       return false;
     }
 
-    if (!Resources.fitsIn(rc, cluster, required, preemptable)) {
+    if (!Resources.fitsIn(rc, required, preemptable)) {
       return false;
     }
 
-    if (!Resources.fitsIn(rc, cluster, required, totalPreemptionAllowed)) {
+    if (!Resources.fitsIn(rc, required, totalPreemptionAllowed)) {
       return false;
     }
 
@@ -165,7 +157,6 @@ public class ReservedContainerCandidatesSelector
   /**
    * Try to check if we can preempt resources for reserved container in given node
    * @param node
-   * @param cluster
    * @param queueToPreemptableResourceByPartition it's a map of
    *                 <queueName, <partition, preemptable-resource>>
    * @param readOnly do we want to modify preemptable resource after we selected
@@ -174,7 +165,7 @@ public class ReservedContainerCandidatesSelector
    * to satisfy reserved resource
    */
   private NodeForPreemption getPreemptionCandidatesOnNode(
-      FiCaSchedulerNode node, Resource cluster,
+      FiCaSchedulerNode node,
       Map<String, Map<String, Resource>> queueToPreemptableResourceByPartition,
       Map<ApplicationAttemptId, Set<RMContainer>> selectedCandidates,
       Resource totalPreemptionAllowed, boolean readOnly) {
@@ -204,8 +195,7 @@ public class ReservedContainerCandidatesSelector
     String partition = node.getPartition();
 
     // Avoid preempt any container if required <= available + killable
-    if (Resources.fitsIn(rc, cluster, reservedContainer.getReservedResource(),
-        cur)) {
+    if (Resources.fitsIn(rc, reservedContainer.getReservedResource(), cur)) {
       return null;
     }
 
@@ -223,18 +213,17 @@ public class ReservedContainerCandidatesSelector
       // An alternative approach is add a "penalty cost" if AM container is
       // selected. Here for safety, avoid preempt AM container in any cases
       if (c.isAMContainer()) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Skip selecting AM container on host=" + node.getNodeID()
-              + " AM container=" + c.getContainerId());
-        }
+        LOG.debug("Skip selecting AM container on host={} AM container={}",
+            node.getNodeID(), c.getContainerId());
+
         continue;
       }
 
       // Can we preempt container c?
       // Check if we have quota to preempt this container
-      boolean canPreempt = tryToPreemptFromQueue(cluster, containerQueueName,
-          partition, queueToPreemptableResourceByPartition,
-          c.getAllocatedResource(), totalPreemptionAllowed, readOnly);
+      boolean canPreempt = tryToPreemptFromQueue(containerQueueName, partition,
+          queueToPreemptableResourceByPartition, c.getAllocatedResource(),
+          totalPreemptionAllowed, readOnly);
 
       // If we can, add to selected container, and change resource accordingly.
       if (canPreempt) {
@@ -246,7 +235,7 @@ public class ReservedContainerCandidatesSelector
           Resources.addTo(totalSelected, c.getAllocatedResource());
         }
         Resources.addTo(cur, c.getAllocatedResource());
-        if (Resources.fitsIn(rc, cluster,
+        if (Resources.fitsIn(rc,
             reservedContainer.getReservedResource(), cur)) {
           canAllocateReservedContainer = true;
           break;
@@ -282,7 +271,7 @@ public class ReservedContainerCandidatesSelector
     return nfp;
   }
 
-  private List<NodeForPreemption> getNodesForPreemption(Resource cluster,
+  private List<NodeForPreemption> getNodesForPreemption(
       Map<String, Map<String, Resource>> queueToPreemptableResourceByPartition,
       Map<ApplicationAttemptId, Set<RMContainer>> selectedCandidates,
       Resource totalPreemptionAllowed) {
@@ -292,7 +281,7 @@ public class ReservedContainerCandidatesSelector
     for (FiCaSchedulerNode node : preemptionContext.getScheduler()
         .getAllNodes()) {
       if (node.getReservedContainer() != null) {
-        NodeForPreemption nfp = getPreemptionCandidatesOnNode(node, cluster,
+        NodeForPreemption nfp = getPreemptionCandidatesOnNode(node,
             queueToPreemptableResourceByPartition, selectedCandidates,
             totalPreemptionAllowed, true);
         if (null != nfp) {

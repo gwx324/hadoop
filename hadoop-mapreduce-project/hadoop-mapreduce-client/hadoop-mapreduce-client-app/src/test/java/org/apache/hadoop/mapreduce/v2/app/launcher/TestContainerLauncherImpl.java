@@ -17,7 +17,7 @@
 */
 package org.apache.hadoop.mapreduce.v2.app.launcher;
 
-import static org.mockito.Matchers.any;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -32,8 +32,6 @@ import java.util.Map;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.ShuffleHandler;
 import org.apache.hadoop.mapreduce.v2.api.records.JobId;
@@ -46,10 +44,21 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptEventType;
 import org.apache.hadoop.mapreduce.v2.app.launcher.ContainerLauncher.EventType;
 import org.apache.hadoop.mapreduce.v2.util.MRBuilderUtils;
 import org.apache.hadoop.yarn.api.ContainerManagementProtocol;
+import org.apache.hadoop.yarn.api.protocolrecords.CommitResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ReInitializeContainerRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ReInitializeContainerResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ResourceLocalizationRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ResourceLocalizationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.RestartContainerResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.RollbackResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.StartContainersRequest;
@@ -73,9 +82,12 @@ import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestContainerLauncherImpl {
-  static final Log LOG = LogFactory.getLog(TestContainerLauncherImpl.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(TestContainerLauncherImpl.class);
   private static final RecordFactory recordFactory =
     RecordFactoryProvider.getRecordFactory(null);
 
@@ -160,8 +172,8 @@ public class TestContainerLauncherImpl {
   public void testHandle() throws Exception {
     LOG.info("STARTING testHandle");
     AppContext mockContext = mock(AppContext.class);
-    @SuppressWarnings("rawtypes")
-    EventHandler mockEventHandler = mock(EventHandler.class);
+    @SuppressWarnings("unchecked")
+    EventHandler<Event> mockEventHandler = mock(EventHandler.class);
     when(mockContext.getEventHandler()).thenReturn(mockEventHandler);
     String cmAddress = "127.0.0.1:8000";
     ContainerManagementProtocolClient mockCM =
@@ -221,8 +233,8 @@ public class TestContainerLauncherImpl {
   public void testOutOfOrder() throws Exception {
     LOG.info("STARTING testOutOfOrder");
     AppContext mockContext = mock(AppContext.class);
-    @SuppressWarnings("rawtypes")
-    EventHandler mockEventHandler = mock(EventHandler.class);
+    @SuppressWarnings("unchecked")
+    EventHandler<Event> mockEventHandler = mock(EventHandler.class);
     when(mockContext.getEventHandler()).thenReturn(mockEventHandler);
 
     ContainerManagementProtocolClient mockCM =
@@ -283,8 +295,8 @@ public class TestContainerLauncherImpl {
     LOG.info("in test Shutdown");
 
     AppContext mockContext = mock(AppContext.class);
-    @SuppressWarnings("rawtypes")
-    EventHandler mockEventHandler = mock(EventHandler.class);
+    @SuppressWarnings("unchecked")
+    EventHandler<Event> mockEventHandler = mock(EventHandler.class);
     when(mockContext.getEventHandler()).thenReturn(mockEventHandler);
 
     ContainerManagementProtocolClient mockCM =
@@ -458,6 +470,7 @@ public class TestContainerLauncherImpl {
     }
 
     @Override
+    @Deprecated
     public IncreaseContainersResourceResponse increaseContainersResource(
         IncreaseContainersResourceRequest request) throws YarnException,
         IOException {
@@ -471,6 +484,50 @@ public class TestContainerLauncherImpl {
     @Override
     public SignalContainerResponse signalToContainer(
         SignalContainerRequest request) throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public ResourceLocalizationResponse localize(
+        ResourceLocalizationRequest request) throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public ReInitializeContainerResponse reInitializeContainer(
+        ReInitializeContainerRequest request) throws YarnException,
+        IOException {
+      return null;
+    }
+
+    @Override
+    public RestartContainerResponse restartContainer(ContainerId containerId)
+        throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public RollbackResponse rollbackLastReInitialization(
+        ContainerId containerId) throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public CommitResponse commitLastReInitialization(ContainerId containerId)
+        throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public ContainerUpdateResponse updateContainer(ContainerUpdateRequest
+        request) throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public GetLocalizationStatusesResponse getLocalizationStatuses(
+        GetLocalizationStatusesRequest request) throws YarnException,
+        IOException {
       return null;
     }
   }

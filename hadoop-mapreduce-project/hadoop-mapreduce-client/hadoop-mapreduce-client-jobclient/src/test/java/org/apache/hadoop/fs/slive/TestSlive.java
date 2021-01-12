@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.fs.slive;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -31,8 +32,6 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -43,13 +42,15 @@ import org.apache.hadoop.fs.slive.DataWriter.GenerateOutput;
 import org.apache.hadoop.util.ToolRunner;
 import org.junit.Before;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Junit 4 test for slive
  */
 public class TestSlive {
 
-  private static final Log LOG = LogFactory.getLog(TestSlive.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestSlive.class);
 
   private static final Random rnd = new Random(1L);
 
@@ -179,7 +180,7 @@ public class TestSlive {
       op.run(fs);
       types.add(op.getType());
     }
-    assertEquals(types.size(), expected);
+    assertThat(types.size()).isEqualTo(expected);
   }
 
   // gets the config merged with the arguments
@@ -231,24 +232,31 @@ public class TestSlive {
     ConfigExtractor extractor = getTestConfig(true);
     assertEquals(extractor.getOpCount().intValue(), Constants.OperationType
         .values().length);
-    assertEquals(extractor.getMapAmount().intValue(), 2);
-    assertEquals(extractor.getReducerAmount().intValue(), 2);
+    assertThat(extractor.getMapAmount().intValue()).isEqualTo(2);
+    assertThat(extractor.getReducerAmount().intValue()).isEqualTo(2);
     Range<Long> apRange = extractor.getAppendSize();
-    assertEquals(apRange.getLower().intValue(), Constants.MEGABYTES * 1);
-    assertEquals(apRange.getUpper().intValue(), Constants.MEGABYTES * 2);
+    assertThat(apRange.getLower().intValue()).isEqualTo(
+        Constants.MEGABYTES * 1);
+    assertThat(apRange.getUpper().intValue()).isEqualTo(
+        Constants.MEGABYTES * 2);
     Range<Long> wRange = extractor.getWriteSize();
-    assertEquals(wRange.getLower().intValue(), Constants.MEGABYTES * 1);
-    assertEquals(wRange.getUpper().intValue(), Constants.MEGABYTES * 2);
+    assertThat(wRange.getLower().intValue()).isEqualTo(
+        Constants.MEGABYTES * 1);
+    assertThat(wRange.getUpper().intValue()).isEqualTo(
+        Constants.MEGABYTES * 2);
     Range<Long> trRange = extractor.getTruncateSize();
-    assertEquals(trRange.getLower().intValue(), 0);
-    assertEquals(trRange.getUpper().intValue(), Constants.MEGABYTES * 1);
+    assertThat(trRange.getLower().intValue()).isZero();
+    assertThat(trRange.getUpper().intValue()).isEqualTo(
+        Constants.MEGABYTES * 1);
     Range<Long> bRange = extractor.getBlockSize();
-    assertEquals(bRange.getLower().intValue(), Constants.MEGABYTES * 1);
-    assertEquals(bRange.getUpper().intValue(), Constants.MEGABYTES * 2);
+    assertThat(bRange.getLower().intValue()).isEqualTo(
+        Constants.MEGABYTES * 1);
+    assertThat(bRange.getUpper().intValue()).isEqualTo(
+        Constants.MEGABYTES * 2);
     String resfile = extractor.getResultFile();
     assertEquals(resfile, getResultFile().toString());
     int durationMs = extractor.getDurationMilliseconds();
-    assertEquals(durationMs, 10 * 1000);
+    assertThat(durationMs).isEqualTo(10 * 1000);
   }
 
   @Test
@@ -258,13 +266,13 @@ public class TestSlive {
     DataWriter writer = new DataWriter(rnd);
     FileOutputStream fs = new FileOutputStream(fn);
     GenerateOutput ostat = writer.writeSegment(byteAm, fs);
-    LOG.info(ostat);
+    LOG.info(ostat.toString());
     fs.close();
     assertTrue(ostat.getBytesWritten() == byteAm);
     DataVerifier vf = new DataVerifier();
     FileInputStream fin = new FileInputStream(fn);
     VerifyOutput vfout = vf.verifyFile(byteAm, new DataInputStream(fin));
-    LOG.info(vfout);
+    LOG.info(vfout.toString());
     fin.close();
     assertEquals(vfout.getBytesRead(), byteAm);
     assertTrue(vfout.getChunksDifferent() == 0);
@@ -273,8 +281,8 @@ public class TestSlive {
   @Test
   public void testRange() {
     Range<Long> r = new Range<Long>(10L, 20L);
-    assertEquals(r.getLower().longValue(), 10L);
-    assertEquals(r.getUpper().longValue(), 20L);
+    assertThat(r.getLower().longValue()).isEqualTo(10L);
+    assertThat(r.getUpper().longValue()).isEqualTo(20L);
   }
 
   @Test

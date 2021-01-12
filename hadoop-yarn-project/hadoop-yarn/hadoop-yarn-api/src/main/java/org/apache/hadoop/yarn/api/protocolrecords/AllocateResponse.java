@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.yarn.api.protocolrecords;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -26,6 +28,7 @@ import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.classification.InterfaceStability.Stable;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.ApplicationMasterProtocol;
+import org.apache.hadoop.yarn.api.records.CollectorInfo;
 import org.apache.hadoop.yarn.api.records.AMCommand;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
@@ -33,8 +36,11 @@ import org.apache.hadoop.yarn.api.records.NMToken;
 import org.apache.hadoop.yarn.api.records.NodeReport;
 import org.apache.hadoop.yarn.api.records.PreemptionMessage;
 import org.apache.hadoop.yarn.api.records.Priority;
+import org.apache.hadoop.yarn.api.records.RejectedSchedulingRequest;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.Token;
+import org.apache.hadoop.yarn.api.records.UpdateContainerError;
+import org.apache.hadoop.yarn.api.records.UpdatedContainer;
 import org.apache.hadoop.yarn.util.Records;
 
 /**
@@ -81,34 +87,29 @@ public abstract class AllocateResponse {
       List<Container> allocatedContainers, List<NodeReport> updatedNodes,
       Resource availResources, AMCommand command, int numClusterNodes,
       PreemptionMessage preempt, List<NMToken> nmTokens) {
-    AllocateResponse response = Records.newRecord(AllocateResponse.class);
-    response.setNumClusterNodes(numClusterNodes);
-    response.setResponseId(responseId);
-    response.setCompletedContainersStatuses(completedContainers);
-    response.setAllocatedContainers(allocatedContainers);
-    response.setUpdatedNodes(updatedNodes);
-    response.setAvailableResources(availResources);
-    response.setAMCommand(command);
-    response.setPreemptionMessage(preempt);
-    response.setNMTokens(nmTokens);
-    return response;
+    return AllocateResponse.newBuilder().numClusterNodes(numClusterNodes)
+        .responseId(responseId)
+        .completedContainersStatuses(completedContainers)
+        .allocatedContainers(allocatedContainers).updatedNodes(updatedNodes)
+        .availableResources(availResources).amCommand(command)
+        .preemptionMessage(preempt).nmTokens(nmTokens).build();
   }
 
-  @Public
-  @Stable
+  @Private
+  @Unstable
   public static AllocateResponse newInstance(int responseId,
       List<ContainerStatus> completedContainers,
       List<Container> allocatedContainers, List<NodeReport> updatedNodes,
       Resource availResources, AMCommand command, int numClusterNodes,
       PreemptionMessage preempt, List<NMToken> nmTokens,
-      List<Container> increasedContainers,
-      List<Container> decreasedContainers) {
-    AllocateResponse response = newInstance(responseId, completedContainers,
-        allocatedContainers, updatedNodes, availResources, command,
-        numClusterNodes, preempt, nmTokens);
-    response.setIncreasedContainers(increasedContainers);
-    response.setDecreasedContainers(decreasedContainers);
-    return response;
+      CollectorInfo collectorInfo) {
+    return AllocateResponse.newBuilder().numClusterNodes(numClusterNodes)
+        .responseId(responseId)
+        .completedContainersStatuses(completedContainers)
+        .allocatedContainers(allocatedContainers).updatedNodes(updatedNodes)
+        .availableResources(availResources).amCommand(command)
+        .preemptionMessage(preempt).nmTokens(nmTokens)
+        .collectorInfo(collectorInfo).build();
   }
 
   @Private
@@ -118,14 +119,14 @@ public abstract class AllocateResponse {
       List<Container> allocatedContainers, List<NodeReport> updatedNodes,
       Resource availResources, AMCommand command, int numClusterNodes,
       PreemptionMessage preempt, List<NMToken> nmTokens, Token amRMToken,
-      List<Container> increasedContainers,
-      List<Container> decreasedContainers) {
-    AllocateResponse response =
-        newInstance(responseId, completedContainers, allocatedContainers,
-          updatedNodes, availResources, command, numClusterNodes, preempt,
-          nmTokens, increasedContainers, decreasedContainers);
-    response.setAMRMToken(amRMToken);
-    return response;
+      List<UpdatedContainer> updatedContainers) {
+    return AllocateResponse.newBuilder().numClusterNodes(numClusterNodes)
+        .responseId(responseId)
+        .completedContainersStatuses(completedContainers)
+        .allocatedContainers(allocatedContainers).updatedNodes(updatedNodes)
+        .availableResources(availResources).amCommand(command)
+        .preemptionMessage(preempt).nmTokens(nmTokens)
+        .updatedContainers(updatedContainers).amRmToken(amRMToken).build();
   }
 
   @Public
@@ -135,16 +136,15 @@ public abstract class AllocateResponse {
       List<Container> allocatedContainers, List<NodeReport> updatedNodes,
       Resource availResources, AMCommand command, int numClusterNodes,
       PreemptionMessage preempt, List<NMToken> nmTokens, Token amRMToken,
-      List<Container> increasedContainers,
-      List<Container> decreasedContainers,
-      String collectorAddr) {
-    AllocateResponse response =
-        newInstance(responseId, completedContainers, allocatedContainers,
-          updatedNodes, availResources, command, numClusterNodes, preempt,
-          nmTokens, increasedContainers, decreasedContainers);
-    response.setAMRMToken(amRMToken);
-    response.setCollectorAddr(collectorAddr);
-    return response;
+      List<UpdatedContainer> updatedContainers, CollectorInfo collectorInfo) {
+    return AllocateResponse.newBuilder().numClusterNodes(numClusterNodes)
+        .responseId(responseId)
+        .completedContainersStatuses(completedContainers)
+        .allocatedContainers(allocatedContainers).updatedNodes(updatedNodes)
+        .availableResources(availResources).amCommand(command)
+        .preemptionMessage(preempt).nmTokens(nmTokens)
+        .updatedContainers(updatedContainers).amRmToken(amRMToken)
+        .collectorInfo(collectorInfo).build();
   }
 
   /**
@@ -290,40 +290,24 @@ public abstract class AllocateResponse {
   public abstract void setNMTokens(List<NMToken> nmTokens);
   
   /**
-   * Get the list of newly increased containers by
+   * Get the list of newly updated containers by
    * <code>ResourceManager</code>.
    * @return list of newly increased containers
    */
   @Public
   @Unstable
-  public abstract List<Container> getIncreasedContainers();
+  public abstract List<UpdatedContainer> getUpdatedContainers();
 
   /**
-   * Set the list of newly increased containers by
+   * Set the list of newly updated containers by
    * <code>ResourceManager</code>.
+   *
+   * @param updatedContainers List of Updated Containers.
    */
   @Private
   @Unstable
-  public abstract void setIncreasedContainers(
-      List<Container> increasedContainers);
-
-  /**
-   * Get the list of newly decreased containers by
-   * <code>ResourceManager</code>.
-   * @return the list of newly decreased containers
-   */
-  @Public
-  @Unstable
-  public abstract List<Container> getDecreasedContainers();
-
-  /**
-   * Set the list of newly decreased containers by
-   * <code>ResourceManager</code>.
-   */
-  @Private
-  @Unstable
-  public abstract void setDecreasedContainers(
-      List<Container> decreasedContainers);
+  public abstract void setUpdatedContainers(
+      List<UpdatedContainer> updatedContainers);
 
   /**
    * The AMRMToken that belong to this attempt
@@ -352,16 +336,344 @@ public abstract class AllocateResponse {
   public abstract void setApplicationPriority(Priority priority);
 
   /**
-   * The address of collector that belong to this app
+   * The data associated with the collector that belongs to this app. Contains
+   * address and token alongwith identification information.
    *
-   * @return The address of collector that belong to this attempt
+   * @return The data of collector that belong to this attempt
    */
   @Public
   @Unstable
-  public abstract String getCollectorAddr();
+  public abstract CollectorInfo getCollectorInfo();
 
   @Private
   @Unstable
-  public abstract void setCollectorAddr(String collectorAddr);
+  public abstract void setCollectorInfo(CollectorInfo info);
 
+  /**
+   * Get the list of container update errors to inform the
+   * Application Master about the container updates that could not be
+   * satisfied due to error.
+   *
+   * @return List of Update Container Errors.
+   */
+  @Public
+  @Unstable
+  public List<UpdateContainerError> getUpdateErrors() {
+    return new ArrayList<>();
+  }
+
+  /**
+   * Set the list of container update errors to inform the
+   * Application Master about the container updates that could not be
+   * satisfied due to error.
+   * @param updateErrors list of <code>UpdateContainerError</code> for
+   *                       containers updates requests that were in error
+   */
+  @Public
+  @Unstable
+  public void setUpdateErrors(List<UpdateContainerError> updateErrors) {
+  }
+
+  /**
+   * Get the list of running containers as viewed by
+   * <code>ResourceManager</code> from previous application attempts which
+   * have not been reported to the Application Master yet.
+   * <br>
+   * These containers were recovered by the RM after the application master
+   * had already registered. This may happen after RM restart when some NMs get
+   * delayed in connecting to the RM and reporting the active containers.
+   * Since they were not reported in the registration
+   * response, they are reported in the response to the AM heartbeat.
+   *
+   * @return the list of running containers as viewed by
+   *         <code>ResourceManager</code> from previous application attempts.
+   */
+  @Public
+  @Unstable
+  public abstract List<Container> getContainersFromPreviousAttempts();
+
+  /**
+   * Set the list of running containers as viewed by
+   * <code>ResourceManager</code> from previous application attempts which have
+   * not been reported to the Application Master yet.
+   * <br>
+   * These containers were recovered by the RM after the application master
+   * had already registered. This may happen after RM restart when some NMs get
+   * delayed in connecting to the RM and reporting the active containers.
+   * Since they were not reported in the registration
+   * response, they are reported in the response to the AM heartbeat.
+   *
+   * @param containersFromPreviousAttempt
+   *          the list of running containers as viewed by
+   *          <code>ResourceManager</code> from previous application attempts.
+   */
+  @Private
+  @Unstable
+  public abstract void setContainersFromPreviousAttempts(
+      List<Container> containersFromPreviousAttempt);
+
+  /**
+   * Get a list of all SchedulingRequests that the RM has rejected between
+   * this allocate call and the previous one.
+   * @return List of RejectedSchedulingRequests.
+   */
+  @Public
+  @Unstable
+  public List<RejectedSchedulingRequest> getRejectedSchedulingRequests() {
+    return Collections.emptyList();
+  }
+
+  /**
+   * Add a list of rejected SchedulingRequests to the AllocateResponse.
+   * @param rejectedRequests List of Rejected Scheduling Requests.
+   */
+  @Private
+  @Unstable
+  public void setRejectedSchedulingRequests(
+      List<RejectedSchedulingRequest> rejectedRequests) {
+  }
+
+  @Private
+  @Unstable
+  public static AllocateResponseBuilder newBuilder() {
+    return new AllocateResponseBuilder();
+  }
+
+  /**
+   * Class to construct instances of {@link AllocateResponse} with specific
+   * options.
+   */
+  @Private
+  @Unstable
+  public static final class AllocateResponseBuilder {
+    private AllocateResponse allocateResponse =
+        Records.newRecord(AllocateResponse.class);
+
+    private AllocateResponseBuilder() {
+      allocateResponse.setApplicationPriority(Priority.newInstance(0));
+    }
+
+    /**
+     * Set the <code>amCommand</code> of the response.
+     * @see AllocateResponse#setAMCommand(AMCommand)
+     * @param amCommand <code>amCommand</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder amCommand(AMCommand amCommand) {
+      allocateResponse.setAMCommand(amCommand);
+      return this;
+    }
+
+    /**
+     * Set the <code>responseId</code> of the response.
+     * @see AllocateResponse#setResponseId(int)
+     * @param responseId <code>responseId</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder responseId(int responseId) {
+      allocateResponse.setResponseId(responseId);
+      return this;
+    }
+
+    /**
+     * Set the <code>allocatedContainers</code> of the response.
+     * @see AllocateResponse#setAllocatedContainers(List)
+     * @param allocatedContainers
+     *     <code>allocatedContainers</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder allocatedContainers(
+        List<Container> allocatedContainers) {
+      allocateResponse.setAllocatedContainers(allocatedContainers);
+      return this;
+    }
+
+    /**
+     * Set the <code>availableResources</code> of the response.
+     * @see AllocateResponse#setAvailableResources(Resource)
+     * @param availableResources
+     *     <code>availableResources</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder availableResources(
+        Resource availableResources) {
+      allocateResponse.setAvailableResources(availableResources);
+      return this;
+    }
+
+    /**
+     * Set the <code>completedContainersStatuses</code> of the response.
+     * @see AllocateResponse#setCompletedContainersStatuses(List)
+     * @param completedContainersStatuses
+     *     <code>completedContainersStatuses</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder completedContainersStatuses(
+        List<ContainerStatus> completedContainersStatuses) {
+      allocateResponse
+          .setCompletedContainersStatuses(completedContainersStatuses);
+      return this;
+    }
+
+    /**
+     * Set the <code>updatedNodes</code> of the response.
+     * @see AllocateResponse#setUpdatedNodes(List)
+     * @param updatedNodes <code>updatedNodes</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder updatedNodes(
+        List<NodeReport> updatedNodes) {
+      allocateResponse.setUpdatedNodes(updatedNodes);
+      return this;
+    }
+
+    /**
+     * Set the <code>numClusterNodes</code> of the response.
+     * @see AllocateResponse#setNumClusterNodes(int)
+     * @param numClusterNodes <code>numClusterNodes</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder numClusterNodes(int numClusterNodes) {
+      allocateResponse.setNumClusterNodes(numClusterNodes);
+      return this;
+    }
+
+    /**
+     * Set the <code>preemptionMessage</code> of the response.
+     * @see AllocateResponse#setPreemptionMessage(PreemptionMessage)
+     * @param preemptionMessage <code>preemptionMessage</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder preemptionMessage(
+        PreemptionMessage preemptionMessage) {
+      allocateResponse.setPreemptionMessage(preemptionMessage);
+      return this;
+    }
+
+    /**
+     * Set the <code>nmTokens</code> of the response.
+     * @see AllocateResponse#setNMTokens(List)
+     * @param nmTokens <code>nmTokens</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder nmTokens(List<NMToken> nmTokens) {
+      allocateResponse.setNMTokens(nmTokens);
+      return this;
+    }
+
+    /**
+     * Set the <code>updatedContainers</code> of the response.
+     * @see AllocateResponse#setUpdatedContainers(List)
+     * @param updatedContainers <code>updatedContainers</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder updatedContainers(
+        List<UpdatedContainer> updatedContainers) {
+      allocateResponse.setUpdatedContainers(updatedContainers);
+      return this;
+    }
+
+    /**
+     * Set the <code>amRmToken</code> of the response.
+     * @see AllocateResponse#setAMRMToken(Token)
+     * @param amRmToken <code>amRmToken</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder amRmToken(Token amRmToken) {
+      allocateResponse.setAMRMToken(amRmToken);
+      return this;
+    }
+
+    /**
+     * Set the <code>applicationPriority</code> of the response.
+     * @see AllocateResponse#setApplicationPriority(Priority)
+     * @param applicationPriority
+     *     <code>applicationPriority</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder applicationPriority(
+        Priority applicationPriority) {
+      allocateResponse.setApplicationPriority(applicationPriority);
+      return this;
+    }
+
+    /**
+     * Set the <code>collectorInfo</code> of the response.
+     * @see AllocateResponse#setCollectorInfo(CollectorInfo)
+     * @param collectorInfo <code>collectorInfo</code> of the response which
+     *    contains collector address, RM id, version and collector token.
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder collectorInfo(
+        CollectorInfo collectorInfo) {
+      allocateResponse.setCollectorInfo(collectorInfo);
+      return this;
+    }
+
+    /**
+     * Set the <code>updateErrors</code> of the response.
+     * @see AllocateResponse#setUpdateErrors(List)
+     * @param updateErrors <code>updateErrors</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder updateErrors(
+        List<UpdateContainerError> updateErrors) {
+      allocateResponse.setUpdateErrors(updateErrors);
+      return this;
+    }
+
+    /**
+     * Set the <code>containersFromPreviousAttempt</code> of the response.
+     * @see AllocateResponse#setContainersFromPreviousAttempts(List)
+     * @param containersFromPreviousAttempt
+     *     <code>containersFromPreviousAttempt</code> of the response
+     * @return {@link AllocateResponseBuilder}
+     */
+    @Private
+    @Unstable
+    public AllocateResponseBuilder containersFromPreviousAttempt(
+        List<Container> containersFromPreviousAttempt) {
+      allocateResponse.setContainersFromPreviousAttempts(
+          containersFromPreviousAttempt);
+      return this;
+    }
+
+    /**
+     * Return generated {@link AllocateResponse} object.
+     * @return {@link AllocateResponse}
+     */
+    @Private
+    @Unstable
+    public AllocateResponse build() {
+      return allocateResponse;
+    }
+  }
 }

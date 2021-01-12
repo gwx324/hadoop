@@ -34,10 +34,12 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.CryptoProtocolVersion;
 import org.apache.hadoop.fs.CacheFlag;
@@ -67,11 +69,13 @@ import org.apache.hadoop.hdfs.protocol.CachePoolEntry;
 import org.apache.hadoop.hdfs.protocol.CachePoolInfo;
 import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LastBlockWithStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
@@ -90,10 +94,16 @@ import org.junit.Before;
 import org.junit.Test;
 
 public class TestRetryCacheWithHA {
-  private static final Log LOG = LogFactory.getLog(TestRetryCacheWithHA.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestRetryCacheWithHA.class);
   
   private static final int BlockSize = 1024;
-  private static final short DataNodes = 3;
+  private static ErasureCodingPolicy defaultEcPolicy =
+      SystemErasureCodingPolicies.getByID(
+          SystemErasureCodingPolicies.RS_6_3_POLICY_ID);
+  private static final short DataNodes = (short)(
+      defaultEcPolicy.getNumDataUnits() +
+      defaultEcPolicy.getNumParityUnits() + 1);
   private static final int CHECKTIMES = 10;
   private static final int ResponseSize = 3;
   
@@ -166,7 +176,7 @@ public class TestRetryCacheWithHA {
     FSNamesystem fsn0 = cluster.getNamesystem(0);
     LightWeightCache<CacheEntry, CacheEntry> cacheSet = 
         (LightWeightCache<CacheEntry, CacheEntry>) fsn0.getRetryCache().getCacheSet();
-    assertEquals("Retry cache size is wrong", 26, cacheSet.size());
+    assertEquals("Retry cache size is wrong", 39, cacheSet.size());
     
     Map<CacheEntry, CacheEntry> oldEntries = 
         new HashMap<CacheEntry, CacheEntry>();
@@ -187,7 +197,7 @@ public class TestRetryCacheWithHA {
     FSNamesystem fsn1 = cluster.getNamesystem(1);
     cacheSet = (LightWeightCache<CacheEntry, CacheEntry>) fsn1
         .getRetryCache().getCacheSet();
-    assertEquals("Retry cache size is wrong", 26, cacheSet.size());
+    assertEquals("Retry cache size is wrong", 39, cacheSet.size());
     iter = cacheSet.iterator();
     while (iter.hasNext()) {
       CacheEntry entry = iter.next();
@@ -405,7 +415,8 @@ public class TestRetryCacheWithHA {
           FsPermission.getFileDefault(), client.getClientName(),
           new EnumSetWritable<CreateFlag>(createFlag), false, DataNodes,
           BlockSize,
-          new CryptoProtocolVersion[] {CryptoProtocolVersion.ENCRYPTION_ZONES});
+          new CryptoProtocolVersion[] {CryptoProtocolVersion.ENCRYPTION_ZONES},
+          null, null);
     }
 
     @Override
@@ -1282,12 +1293,12 @@ public class TestRetryCacheWithHA {
 
   /**
    * When NN failover happens, if the client did not receive the response and
-   * send a retry request to the other NN, the same response should be recieved
+   * send a retry request to the other NN, the same response should be received
    * based on the retry cache.
    */
   public void testClientRetryWithFailover(final AtMostOnceOp op)
       throws Exception {
-    final Map<String, Object> results = new HashMap<String, Object>();
+    final Map<String, Object> results = new ConcurrentHashMap<>();
     
     op.prepare();
     // set DummyRetryInvocationHandler#block to true
@@ -1300,10 +1311,7 @@ public class TestRetryCacheWithHA {
           op.invoke();
           Object result = op.getResult();
           LOG.info("Operation " + op.name + " finished");
-          synchronized (TestRetryCacheWithHA.this) {
-            results.put(op.name, result == null ? "SUCCESS" : result);
-            TestRetryCacheWithHA.this.notifyAll();
-          }
+          results.put(op.name, result == null ? "SUCCESS" : result);
         } catch (Exception e) {
           LOG.info("Got Exception while calling " + op.name, e);
         } finally {
@@ -1323,40 +1331,48 @@ public class TestRetryCacheWithHA {
     // disable the block in DummyHandler
     LOG.info("Setting block to false");
     DummyRetryInvocationHandler.block.set(false);
-    
-    synchronized (this) {
-      while (!results.containsKey(op.name)) {
-        this.wait();
-      }
-      LOG.info("Got the result of " + op.name + ": "
-          + results.get(op.name));
-    }
+
+    GenericTestUtils.waitFor(() -> results.containsKey(op.name), 5, 10000);
+    LOG.info("Got the result of " + op.name + ": "
+        + results.get(op.name));
 
     // Waiting for failover.
-    while (cluster.getNamesystem(1).isInStandbyState()) {
-      Thread.sleep(10);
-    }
+    GenericTestUtils
+        .waitFor(() -> !cluster.getNamesystem(1).isInStandbyState(), 5, 10000);
 
-    long hitNN0 = cluster.getNamesystem(0).getRetryCache().getMetricsForTests()
-        .getCacheHit();
-    long hitNN1 = cluster.getNamesystem(1).getRetryCache().getMetricsForTests()
-        .getCacheHit();
-    assertTrue("CacheHit: " + hitNN0 + ", " + hitNN1,
-        hitNN0 + hitNN1 > 0);
-    long updatedNN0 = cluster.getNamesystem(0).getRetryCache()
-        .getMetricsForTests().getCacheUpdated();
-    long updatedNN1 = cluster.getNamesystem(1).getRetryCache()
-        .getMetricsForTests().getCacheUpdated();
+    final long[] hitsNN = new long[]{0, 0};
+    GenericTestUtils.waitFor(() -> {
+      hitsNN[0] = cluster.getNamesystem(0).getRetryCache()
+          .getMetricsForTests()
+          .getCacheHit();
+      hitsNN[1] = cluster.getNamesystem(1).getRetryCache()
+          .getMetricsForTests()
+          .getCacheHit();
+      return (hitsNN[0] + hitsNN[1]) > 0;
+    }, 5, 10000);
+
+    assertTrue("CacheHit: " + hitsNN[0] + ", " + hitsNN[1],
+        +hitsNN[0] + hitsNN[1] > 0);
+    final long[] updatesNN = new long[]{0, 0};
+    GenericTestUtils.waitFor(() -> {
+      updatesNN[0] = cluster.getNamesystem(0).getRetryCache()
+          .getMetricsForTests()
+          .getCacheUpdated();
+      updatesNN[1] = cluster.getNamesystem(1).getRetryCache()
+          .getMetricsForTests()
+          .getCacheUpdated();
+      return updatesNN[0] > 0 && updatesNN[1] > 0;
+    }, 5, 10000);
     // Cache updated metrics on NN0 should be >0 since the op was process on NN0
-    assertTrue("CacheUpdated on NN0: " + updatedNN0, updatedNN0 > 0);
+    assertTrue("CacheUpdated on NN0: " + updatesNN[0], updatesNN[0] > 0);
     // Cache updated metrics on NN0 should be >0 since NN1 applied the editlog
-    assertTrue("CacheUpdated on NN1: " + updatedNN1, updatedNN1 > 0);
+    assertTrue("CacheUpdated on NN1: " + updatesNN[1], updatesNN[1] > 0);
     long expectedUpdateCount = op.getExpectedCacheUpdateCount();
     if (expectedUpdateCount > 0) {
-      assertEquals("CacheUpdated on NN0: " + updatedNN0, expectedUpdateCount,
-          updatedNN0);
-      assertEquals("CacheUpdated on NN0: " + updatedNN1, expectedUpdateCount,
-          updatedNN1);
+      assertEquals("CacheUpdated on NN0: " + updatesNN[0], expectedUpdateCount,
+          updatesNN[0]);
+      assertEquals("CacheUpdated on NN0: " + updatesNN[1], expectedUpdateCount,
+          updatesNN[1]);
     }
   }
 

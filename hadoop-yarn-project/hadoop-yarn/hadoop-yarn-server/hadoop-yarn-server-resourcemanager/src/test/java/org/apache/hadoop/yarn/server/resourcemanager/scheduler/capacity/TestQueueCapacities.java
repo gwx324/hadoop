@@ -22,8 +22,8 @@ import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Collection;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.junit.Assert;
 import org.junit.Test;
@@ -32,7 +32,8 @@ import org.junit.runners.Parameterized;
 
 @RunWith(Parameterized.class)
 public class TestQueueCapacities {
-  private static final Log LOG = LogFactory.getLog(TestQueueCapacities.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestQueueCapacities.class);
   private String suffix;
 
   @Parameterized.Parameters
@@ -46,7 +47,9 @@ public class TestQueueCapacities {
         { "AbsoluteMaximumCapacity" },
         { "MaxAMResourcePercentage" },
         { "ReservedCapacity" },
-        { "AbsoluteReservedCapacity" }});
+        { "AbsoluteReservedCapacity" },
+        { "Weight" },
+        { "NormalizedWeight" }});
   }
 
   public TestQueueCapacities(String suffix) {
@@ -104,9 +107,6 @@ public class TestQueueCapacities {
   private void internalTestModifyAndRead(String label) throws Exception {
     QueueCapacities qc = new QueueCapacities(false);
 
-    // First get returns 0 always
-    Assert.assertEquals(0f, get(qc, suffix, label), 1e-8);
-
     // Set to 1, and check
     set(qc, suffix, label, 1f);
     Assert.assertEquals(1f, get(qc, suffix, label), 1e-8);
@@ -116,15 +116,19 @@ public class TestQueueCapacities {
     Assert.assertEquals(2f, get(qc, suffix, label), 1e-8);
   }
 
-  void check(int mem, int cpu, Resource res) {
-    Assert.assertEquals(mem, res.getMemorySize());
-    Assert.assertEquals(cpu, res.getVirtualCores());
-  }
-
   @Test
   public void testModifyAndRead() throws Exception {
     LOG.info("Test - " + suffix);
     internalTestModifyAndRead(null);
     internalTestModifyAndRead("label");
+  }
+
+  @Test
+  public void testDefaultValues() {
+    QueueCapacities qc = new QueueCapacities(false);
+    Assert.assertEquals(-1, qc.getWeight(""), 1e-6);
+    Assert.assertEquals(-1, qc.getWeight("x"), 1e-6);
+    Assert.assertEquals(0, qc.getCapacity(""), 1e-6);
+    Assert.assertEquals(0, qc.getCapacity("x"), 1e-6);
   }
 }

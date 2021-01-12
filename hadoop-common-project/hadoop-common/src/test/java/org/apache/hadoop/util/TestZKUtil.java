@@ -31,8 +31,8 @@ import org.apache.zookeeper.ZooDefs.Perms;
 import org.apache.zookeeper.data.ACL;
 import org.junit.Test;
 
-import com.google.common.base.Charsets;
-import com.google.common.io.Files;
+import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
+import org.apache.hadoop.thirdparty.com.google.common.io.Files;
 
 public class TestZKUtil {
   private static final String TEST_ROOT_DIR = GenericTestUtils.getTempPath(
@@ -131,7 +131,7 @@ public class TestZKUtil {
     assertEquals("x", ZKUtil.resolveConfIndirection("x"));
     
     TEST_FILE.getParentFile().mkdirs();
-    Files.write("hello world", TEST_FILE, Charsets.UTF_8);
+    Files.asCharSink(TEST_FILE, Charsets.UTF_8).write("hello world");
     assertEquals("hello world", ZKUtil.resolveConfIndirection(
         "@" + TEST_FILE.getAbsolutePath()));
     

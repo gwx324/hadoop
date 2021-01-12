@@ -17,7 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.erasurecode;
 
-import com.google.common.base.Preconditions;
+import java.util.concurrent.TimeUnit;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -26,6 +27,7 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.server.datanode.CachingStrategy;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
+import org.apache.hadoop.hdfs.util.StripedBlockUtil.BlockReadStats;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil.StripingChunkReadResult;
 import org.apache.hadoop.util.DataChecksum;
 import org.slf4j.Logger;
@@ -68,6 +70,8 @@ class StripedReader {
   private int[] successList;
 
   private final int minRequiredSources;
+  // the number of xmits used by the re-construction task.
+  private final int xmits;
   // The buffers and indices for striped blocks whose length is 0
   private ByteBuffer[] zeroStripeBuffers;
   private short[] zeroStripeIndices;
@@ -78,8 +82,8 @@ class StripedReader {
 
   private final List<StripedBlockReader> readers;
 
-  private final Map<Future<Void>, Integer> futures = new HashMap<>();
-  private final CompletionService<Void> readService;
+  private final Map<Future<BlockReadStats>, Integer> futures = new HashMap<>();
+  private final CompletionService<BlockReadStats> readService;
 
   StripedReader(StripedReconstructor reconstructor, DataNode datanode,
       Configuration conf, StripedReconstructionInfo stripedReconInfo) {
@@ -106,6 +110,12 @@ class StripedReader {
       zeroStripeBuffers = new ByteBuffer[zeroStripNum];
       zeroStripeIndices = new short[zeroStripNum];
     }
+
+    // It is calculated by the maximum number of connections from either sources
+    // or targets.
+    xmits = Math.max(minRequiredSources,
+        stripedReconInfo.getTargets() != null ?
+        stripedReconInfo.getTargets().length : 0);
 
     this.liveIndices = stripedReconInfo.getLiveIndices();
     assert liveIndices != null;
@@ -281,9 +291,9 @@ class StripedReader {
       int toRead = getReadLength(liveIndices[successList[i]],
           reconstructLength);
       if (toRead > 0) {
-        Callable<Void> readCallable =
+        Callable<BlockReadStats> readCallable =
             reader.readFromBlock(toRead, corruptedBlocks);
-        Future<Void> f = readService.submit(readCallable);
+        Future<BlockReadStats> f = readService.submit(readCallable);
         futures.put(f, successList[i]);
       } else {
         // If the read length is 0, we don't need to do real read
@@ -319,14 +329,14 @@ class StripedReader {
             // cancel remaining reads if we read successfully from minimum
             // number of source DNs required by reconstruction.
             cancelReads(futures.keySet());
-            futures.clear();
+            clearFuturesAndService();
             break;
           }
         }
       } catch (InterruptedException e) {
         LOG.info("Read data interrupted.", e);
         cancelReads(futures.keySet());
-        futures.clear();
+        clearFuturesAndService();
         break;
       }
     }
@@ -403,9 +413,9 @@ class StripedReader {
 
     // step3: schedule if find a correct source DN and need to do real read.
     if (reader != null) {
-      Callable<Void> readCallable =
+      Callable<BlockReadStats> readCallable =
           reader.readFromBlock(toRead, corruptedBlocks);
-      Future<Void> f = readService.submit(readCallable);
+      Future<BlockReadStats> f = readService.submit(readCallable);
       futures.put(f, m);
       used.set(m);
     }
@@ -414,9 +424,23 @@ class StripedReader {
   }
 
   // Cancel all reads.
-  private static void cancelReads(Collection<Future<Void>> futures) {
-    for (Future<Void> future : futures) {
+  private static void cancelReads(Collection<Future<BlockReadStats>> futures) {
+    for (Future<BlockReadStats> future : futures) {
       future.cancel(true);
+    }
+  }
+
+  // remove all stale futures from readService, and clear futures.
+  private void clearFuturesAndService() {
+    while (!futures.isEmpty()) {
+      try {
+        Future<BlockReadStats> future = readService.poll(
+            stripedReadTimeoutInMills, TimeUnit.MILLISECONDS
+        );
+        futures.remove(future);
+      } catch (InterruptedException e) {
+        LOG.info("Clear stale futures from service is interrupted.", e);
+      }
     }
   }
 
@@ -429,10 +453,14 @@ class StripedReader {
     zeroStripeBuffers = null;
 
     for (StripedBlockReader reader : readers) {
+      reader.closeBlockReader();
       reconstructor.freeBuffer(reader.getReadBuffer());
       reader.freeReadBuffer();
-      reader.closeBlockReader();
     }
+  }
+
+  StripedReconstructor getReconstructor() {
+    return reconstructor;
   }
 
   StripedBlockReader getReader(int i) {
@@ -467,5 +495,17 @@ class StripedReader {
 
   CachingStrategy getCachingStrategy() {
     return reconstructor.getCachingStrategy();
+  }
+
+  /**
+   * Return the xmits of this EC reconstruction task.
+   * <p>
+   * DN uses it to coordinate with NN to adjust the speed of scheduling the
+   * EC reconstruction tasks to this DN.
+   *
+   * @return the xmits of this reconstruction task.
+   */
+  int getXmits() {
+    return xmits;
   }
 }

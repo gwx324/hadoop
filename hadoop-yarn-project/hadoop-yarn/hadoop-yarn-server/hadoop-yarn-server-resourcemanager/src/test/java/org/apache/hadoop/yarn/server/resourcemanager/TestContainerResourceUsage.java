@@ -23,15 +23,18 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
-import org.apache.commons.lang.time.DateUtils;
+import org.apache.commons.lang3.time.DateUtils;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerState;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore;
@@ -43,9 +46,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptS
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.AggregateAppResourceUsage;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
-import org.apache.log4j.Level;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.event.Level;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -57,8 +58,7 @@ public class TestContainerResourceUsage {
 
   @Before
   public void setup() throws UnknownHostException {
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.DEBUG);
+    GenericTestUtils.setRootLogLevel(Level.DEBUG);
     conf = new YarnConfiguration();
     UserGroupInformation.setConfiguration(conf);
     conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
@@ -78,7 +78,7 @@ public class TestContainerResourceUsage {
         new MockNM("127.0.0.1:1234", 15120, rm.getResourceTrackerService());
     nm.registerNode();
 
-    RMApp app0 = rm.submitApp(200);
+    RMApp app0 = MockRMAppSubmitter.submitWithMemory(200, rm);
 
     RMAppMetrics rmAppMetrics = app0.getRMAppMetrics();
     Assert.assertTrue(
@@ -123,7 +123,7 @@ public class TestContainerResourceUsage {
     AggregateAppResourceUsage ru = calculateContainerResourceMetrics(rmContainer);
     rmAppMetrics = app0.getRMAppMetrics();
 
-    Assert.assertEquals("Unexcpected MemorySeconds value",
+    Assert.assertEquals("Unexpected MemorySeconds value",
         ru.getMemorySeconds(), rmAppMetrics.getMemorySeconds());
     Assert.assertEquals("Unexpected VcoreSeconds value",
         ru.getVcoreSeconds(), rmAppMetrics.getVcoreSeconds());
@@ -138,16 +138,16 @@ public class TestContainerResourceUsage {
     conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 1);
     conf.setBoolean(YarnConfiguration.RECOVERY_ENABLED, true);
     conf.setBoolean(YarnConfiguration.RM_WORK_PRESERVING_RECOVERY_ENABLED, false);
-    MemoryRMStateStore memStore = new MemoryRMStateStore();
-    memStore.init(conf);
-
-    MockRM rm0 = new MockRM(conf, memStore);
+    conf.set(YarnConfiguration.RM_STORE, MemoryRMStateStore.class.getName());
+    MockRM rm0 = new MockRM(conf);
     rm0.start();
+    MockMemoryRMStateStore memStore =
+        (MockMemoryRMStateStore) rm0.getRMStateStore();
     MockNM nm =
         new MockNM("127.0.0.1:1234", 65536, rm0.getResourceTrackerService());
     nm.registerNode();
 
-    RMApp app0 = rm0.submitApp(200);
+    RMApp app0 = MockRMAppSubmitter.submitWithMemory(200, rm0);
 
     rm0.waitForState(app0.getApplicationId(), RMAppState.ACCEPTED);
     RMAppAttempt attempt0 = app0.getCurrentAppAttempt();
@@ -223,10 +223,12 @@ public class TestContainerResourceUsage {
     }
 
     RMAppMetrics metricsBefore = app0.getRMAppMetrics();
-    Assert.assertEquals("Unexcpected MemorySeconds value",
+    Assert.assertEquals("Unexpected MemorySeconds value",
         memorySeconds, metricsBefore.getMemorySeconds());
     Assert.assertEquals("Unexpected VcoreSeconds value",
         vcoreSeconds, metricsBefore.getVcoreSeconds());
+    Assert.assertEquals("Unexpected totalAllocatedContainers value",
+        NUM_CONTAINERS + 1, metricsBefore.getTotalAllocatedContainers());
 
     // create new RM to represent RM restart. Load up the state store.
     MockRM rm1 = new MockRM(conf, memStore);
@@ -240,6 +242,9 @@ public class TestContainerResourceUsage {
         metricsBefore.getVcoreSeconds(), metricsAfter.getVcoreSeconds());
     Assert.assertEquals("Memory seconds were not the same after RM Restart",
         metricsBefore.getMemorySeconds(), metricsAfter.getMemorySeconds());
+    Assert.assertEquals("TotalAllocatedContainers was not the same after " +
+        "RM Restart", metricsBefore.getTotalAllocatedContainers(),
+        metricsAfter.getTotalAllocatedContainers());
 
     rm0.stop();
     rm0.close();
@@ -262,10 +267,21 @@ public class TestContainerResourceUsage {
     MockRM rm = new MockRM(conf);
     rm.start();
 
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(200, rm)
+        .withAppName("name")
+        .withUser("user")
+        .withAcls(new HashMap<ApplicationAccessType, String>())
+        .withUnmanagedAM(false)
+        .withQueue("default")
+        .withMaxAppAttempts(-1)
+        .withCredentials(null)
+        .withAppType("MAPREDUCE")
+        .withWaitForAppAcceptedState(false)
+        .withKeepContainers(keepRunningContainers)
+        .build();
     RMApp app =
-        rm.submitApp(200, "name", "user",
-          new HashMap<ApplicationAccessType, String>(), false, "default", -1,
-          null, "MAPREDUCE", false, keepRunningContainers);
+        MockRMAppSubmitter.submit(rm, data);
     MockNM nm = 
         new MockNM("127.0.0.1:1234", 10240, rm.getResourceTrackerService());
     nm.registerNode();
@@ -392,7 +408,7 @@ public class TestContainerResourceUsage {
     
     RMAppMetrics rmAppMetrics = app.getRMAppMetrics();
 
-    Assert.assertEquals("Unexcpected MemorySeconds value",
+    Assert.assertEquals("Unexpected MemorySeconds value",
         memorySeconds, rmAppMetrics.getMemorySeconds());
     Assert.assertEquals("Unexpected VcoreSeconds value",
         vcoreSeconds, rmAppMetrics.getVcoreSeconds());
@@ -424,6 +440,9 @@ public class TestContainerResourceUsage {
                           * usedMillis / DateUtils.MILLIS_PER_SECOND;
     long vcoreSeconds = resource.getVirtualCores()
                           * usedMillis / DateUtils.MILLIS_PER_SECOND;
-    return new AggregateAppResourceUsage(memorySeconds, vcoreSeconds);
+    Map<String, Long> map = new HashMap<>();
+    map.put(ResourceInformation.MEMORY_MB.getName(), memorySeconds);
+    map.put(ResourceInformation.VCORES.getName(), vcoreSeconds);
+    return new AggregateAppResourceUsage(map);
   }
 }

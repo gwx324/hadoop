@@ -34,14 +34,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.BlockWrite.ReplaceDatanodeOnFailure;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.TestFileTruncate;
@@ -52,7 +51,7 @@ import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 /**
  * Test randomly mixing append, snapshot and truncate operations.
@@ -63,7 +62,8 @@ public class TestAppendSnapshotTruncate {
   static {
     GenericTestUtils.setLogLevel(NameNode.stateChangeLog, Level.ALL);
   }
-  private static final Log LOG = LogFactory.getLog(TestAppendSnapshotTruncate.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestAppendSnapshotTruncate.class);
   private static final int BLOCK_SIZE = 1024;
   private static final int DATANODE_NUM = 4;
   private static final short REPLICATION = 3;
@@ -90,7 +90,6 @@ public class TestAppendSnapshotTruncate {
     cluster = new MiniDFSCluster.Builder(conf)
         .format(true)
         .numDataNodes(DATANODE_NUM)
-        .nameNodePort(HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT)
         .waitSafeMode(true)
         .build();
     dfs = cluster.getFileSystem();

@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs.web.resources;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
@@ -25,8 +26,9 @@ import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.StorageType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.Options;
@@ -36,12 +38,13 @@ import org.apache.hadoop.fs.XAttrSetFlag;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.junit.Assert;
 import org.junit.Test;
 
 public class TestParam {
-  public static final Log LOG = LogFactory.getLog(TestParam.class);
+  public static final Logger LOG = LoggerFactory.getLogger(TestParam.class);
 
   final Configuration conf = new Configuration();
  
@@ -351,6 +354,40 @@ public class TestParam {
       LOG.info("EXPECTED: " + e);
     }
   }
+
+  @Test
+  public void testUserGroupOkAfterAlteringAclPattern() {
+    // Preserve default pattern value
+    AclPermissionParam.Domain oldDomain =
+        AclPermissionParam.getAclPermissionPattern();
+
+    // Override the pattern with one that accepts '@' and numbers
+    // in the first character of usernames/groupnames
+    String newPattern =
+        "^(default:)?(user|group|mask|other):" +
+            "[[0-9A-Za-z_][@A-Za-z0-9._-]]*:([rwx-]{3})?" +
+            "(,(default:)?(user|group|mask|other):" +
+            "[[0-9A-Za-z_][@A-Za-z0-9._-]]*:([rwx-]{3})?)*$";
+
+    try {
+      AclPermissionParam.setAclPermissionPattern(newPattern);
+
+      String numericUserSpec = "user:110201:rwx";
+      AclPermissionParam aclNumericUserParam =
+          new AclPermissionParam(numericUserSpec);
+      Assert.assertEquals(numericUserSpec, aclNumericUserParam.getValue());
+
+      String oddGroupSpec = "group:foo@bar:rwx";
+      AclPermissionParam aclGroupWithDomainParam =
+          new AclPermissionParam(oddGroupSpec);
+      Assert.assertEquals(oddGroupSpec, aclGroupWithDomainParam.getValue());
+
+    } finally {
+      // Revert back to the default rules for remainder of tests
+      AclPermissionParam.setAclPermissionPattern(oldDomain);
+    }
+
+  }
  
   @Test
   public void testXAttrNameParam() {
@@ -452,6 +489,96 @@ public class TestParam {
       Assert.fail();
     } catch(IllegalArgumentException e) {
       LOG.info("EXPECTED: " + e);
+    }
+  }
+
+  @Test
+  public void testStartAfterParam() throws Exception {
+    String s = "/helloWorld";
+    StartAfterParam param = new StartAfterParam(s);
+    Assert.assertEquals(s, param.getValue());
+  }
+
+  @Test
+  public void testStoragePolicyParam() {
+    StoragePolicyParam p = new StoragePolicyParam(StoragePolicyParam.DEFAULT);
+    Assert.assertEquals(null, p.getValue());
+    p = new StoragePolicyParam("COLD");
+    Assert.assertEquals("COLD", p.getValue());
+  }
+
+  @Test
+  public void testNamespaceQuotaParam() {
+    NameSpaceQuotaParam p =
+        new NameSpaceQuotaParam(NameSpaceQuotaParam.DEFAULT);
+    assertEquals(Long.valueOf(NameSpaceQuotaParam.DEFAULT), p.getValue());
+    p = new NameSpaceQuotaParam(100L);
+    assertEquals(100L, p.getValue().longValue());
+  }
+
+  @Test
+  public void testStorageSpaceQuotaParam() {
+    StorageSpaceQuotaParam sp = new StorageSpaceQuotaParam(
+        StorageSpaceQuotaParam.DEFAULT);
+    assertEquals(Long.valueOf(StorageSpaceQuotaParam.DEFAULT),
+        sp.getValue());
+    sp = new StorageSpaceQuotaParam(100L);
+    assertEquals(100L, sp.getValue().longValue());
+  }
+
+  @Test
+  public void testStorageTypeParam() {
+    StorageTypeParam p = new StorageTypeParam(StorageTypeParam.DEFAULT);
+    assertNull(p.getValue());
+    p = new StorageTypeParam(StorageType.DISK.name());
+    assertEquals(StorageType.DISK.name(), p.getValue());
+  }
+
+  @Test
+  public void testECPolicyParam() {
+    ECPolicyParam p = new ECPolicyParam(ECPolicyParam.DEFAULT);
+    Assert.assertEquals(null, p.getValue());
+    p = new ECPolicyParam("RS-6-3-1024k");
+    Assert.assertEquals("RS-6-3-1024k", p.getValue());
+  }
+
+  @Test
+  public void testHttpOpParams() {
+    try {
+      new PostOpParam("TEST");
+      Assert
+          .fail("Construct the PostOpParam with param value 'TEST' should be"
+              + " failed.");
+    } catch (IllegalArgumentException e) {
+      GenericTestUtils.assertExceptionContains(
+          "TEST is not a valid POST operation.", e);
+    }
+    try {
+      new PutOpParam("TEST");
+      Assert
+          .fail("Construct the PutOpParam with param value 'TEST' should be"
+              + " failed.");
+    } catch (IllegalArgumentException e) {
+      GenericTestUtils.assertExceptionContains(
+          "TEST is not a valid PUT operation.", e);
+    }
+    try {
+      new DeleteOpParam("TEST");
+      Assert
+          .fail("Construct the DeleteOpParam with param value 'TEST' should be"
+              + " failed.");
+    } catch (IllegalArgumentException e) {
+      GenericTestUtils.assertExceptionContains(
+          "TEST is not a valid DELETE operation.", e);
+    }
+    try {
+      new GetOpParam("TEST");
+      Assert
+          .fail("Construct the GetOpParam with param value 'TEST' should be"
+              + " failed.");
+    } catch (IllegalArgumentException e) {
+      GenericTestUtils.assertExceptionContains(
+          "TEST is not a valid GET operation.", e);
     }
   }
 }

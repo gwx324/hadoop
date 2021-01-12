@@ -17,14 +17,11 @@
  */
 package org.apache.hadoop.mapred.nativetask.kvtest;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -41,13 +38,16 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Splitter;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 @RunWith(Parameterized.class)
 public class KVTest {
-  private static final Log LOG = LogFactory.getLog(KVTest.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(KVTest.class);
 
   private static Configuration nativekvtestconf = ScenarioConfiguration.getNativeConfiguration();
   private static Configuration hadoopkvtestconf = ScenarioConfiguration.getNormalConfiguration();
@@ -126,7 +126,9 @@ public class KVTest {
     nativekvtestconf.set(TestConstants.NATIVETASK_KVTEST_CREATEFILE, "true");
     final KVJob nativeJob = new KVJob(jobName, nativekvtestconf, keyclass,
         valueclass, inputPath, nativeOutputPath);
-    assertTrue("job should complete successfully", nativeJob.runJob());
+    assertThat(nativeJob.runJob())
+        .withFailMessage("job should complete successfully")
+        .isTrue();
 
     final String normalOutputPath = TestConstants.NATIVETASK_KVTEST_NORMAL_OUTPUTDIR
         + "/" + keyclass.getName() + "/" + valueclass.getName();
@@ -135,11 +137,13 @@ public class KVTest {
     hadoopkvtestconf.set(TestConstants.NATIVETASK_KVTEST_CREATEFILE, "false");
     final KVJob normalJob = new KVJob(jobName, hadoopkvtestconf, keyclass,
         valueclass, inputPath, normalOutputPath);
-    assertTrue("job should complete successfully", normalJob.runJob());
+    assertThat(normalJob.runJob())
+        .withFailMessage("job should complete successfully")
+        .isTrue();
 
     final boolean compareRet = ResultVerifier.verify(normalOutputPath,
         nativeOutputPath);
-    assertEquals("job output not the same", true, compareRet);
+    assertThat(compareRet).withFailMessage("job output not the same").isTrue();
     ResultVerifier.verifyCounters(normalJob.job, nativeJob.job);
     fs.close();
   }

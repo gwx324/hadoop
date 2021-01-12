@@ -24,16 +24,19 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogConfigurationException;
 import org.apache.commons.logging.LogFactory;
 import org.apache.log4j.Appender;
-import org.apache.log4j.Logger;
-import org.mortbay.jetty.NCSARequestLog;
-import org.mortbay.jetty.RequestLog;
+import org.eclipse.jetty.server.AsyncRequestLogWriter;
+import org.eclipse.jetty.server.CustomRequestLog;
+import org.eclipse.jetty.server.RequestLog;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * RequestLog object for use with Http
  */
 public class HttpRequestLog {
 
-  public static final Log LOG = LogFactory.getLog(HttpRequestLog.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(HttpRequestLog.class);
   private static final HashMap<String, String> serverToComponent;
 
   static {
@@ -65,38 +68,34 @@ public class HttpRequestLog {
     }
     if (isLog4JLogger) {
       Log4JLogger httpLog4JLog = (Log4JLogger)logger;
-      Logger httpLogger = httpLog4JLog.getLogger();
+      org.apache.log4j.Logger httpLogger = httpLog4JLog.getLogger();
       Appender appender = null;
 
       try {
         appender = httpLogger.getAppender(appenderName);
       } catch (LogConfigurationException e) {
-        LOG.warn("Http request log for " + loggerName
-            + " could not be created");
+        LOG.warn("Http request log for {} could not be created", loggerName);
         throw e;
       }
 
       if (appender == null) {
-        LOG.info("Http request log for " + loggerName
-            + " is not defined");
+        LOG.info("Http request log for {} is not defined", loggerName);
         return null;
       }
 
       if (appender instanceof HttpRequestLogAppender) {
         HttpRequestLogAppender requestLogAppender
           = (HttpRequestLogAppender)appender;
-        NCSARequestLog requestLog = new NCSARequestLog();
-        requestLog.setFilename(requestLogAppender.getFilename());
-        requestLog.setRetainDays(requestLogAppender.getRetainDays());
-        return requestLog;
-      }
-      else {
-        LOG.warn("Jetty request log for " + loggerName
-            + " was of the wrong class");
+        AsyncRequestLogWriter logWriter = new AsyncRequestLogWriter();
+        logWriter.setFilename(requestLogAppender.getFilename());
+        logWriter.setRetainDays(requestLogAppender.getRetainDays());
+        return new CustomRequestLog(logWriter,
+            CustomRequestLog.EXTENDED_NCSA_FORMAT);
+      } else {
+        LOG.warn("Jetty request log for {} was of the wrong class", loggerName);
         return null;
       }
-    }
-    else {
+    } else {
       LOG.warn("Jetty request log can only be enabled using Log4j");
       return null;
     }

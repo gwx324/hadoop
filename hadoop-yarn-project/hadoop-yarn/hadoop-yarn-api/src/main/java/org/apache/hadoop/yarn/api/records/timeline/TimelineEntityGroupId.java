@@ -24,7 +24,7 @@ import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
-import com.google.common.base.Splitter;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
 
 /**
  * <p><code>TimelineEntityGroupId</code> is an abstract way for
@@ -136,9 +136,9 @@ public class TimelineEntityGroupId implements
     StringBuilder sb = new StringBuilder();
     sb.append(TIMELINE_ENTITY_GROUPID_STR_PREFIX + "_");
     ApplicationId appId = getApplicationId();
-    sb.append(appId.getClusterTimestamp()).append("_");
-    sb.append(appId.getId()).append("_");
-    sb.append(getTimelineEntityGroupId());
+    sb.append(appId.getClusterTimestamp()).append("_")
+        .append(appId.getId()).append("_")
+        .append(getTimelineEntityGroupId());
     return sb.toString();
   }
 

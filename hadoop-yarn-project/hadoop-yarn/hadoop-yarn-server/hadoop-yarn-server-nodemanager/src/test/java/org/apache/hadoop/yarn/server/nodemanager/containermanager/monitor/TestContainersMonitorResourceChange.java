@@ -21,9 +21,11 @@ package org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor;
 import java.io.IOException;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.protocol.datatransfer.IOStreamPair;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -32,13 +34,18 @@ import org.apache.hadoop.yarn.api.records.ResourceUtilization;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.AsyncDispatcher;
 import org.apache.hadoop.yarn.event.EventHandler;
+import org.apache.hadoop.yarn.exceptions.ConfigurationException;
 import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerEvent;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerEventType;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerImpl;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor.ContainersMonitorImpl.ProcessTreeInfo;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerExecutionException;
+import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerExecContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerLivenessContext;
+import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerReapContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerSignalContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerStartContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.DeletionAsUserContext;
@@ -64,12 +71,13 @@ public class TestContainersMonitorResourceChange {
   private AsyncDispatcher dispatcher;
   private Context context;
   private MockContainerEventHandler containerEventHandler;
+  private ConcurrentMap<ContainerId, Container> containerMap;
 
   static final int WAIT_MS_PER_LOOP = 20; // 20 milli seconds
 
   private static class MockExecutor extends ContainerExecutor {
     @Override
-    public void init() throws IOException {
+    public void init(Context nmContext) throws IOException {
     }
     @Override
     public void startLocalizer(LocalizerStartContext ctx)
@@ -77,7 +85,12 @@ public class TestContainersMonitorResourceChange {
     }
     @Override
     public int launchContainer(ContainerStartContext ctx) throws
-        IOException {
+        IOException, ConfigurationException {
+      return 0;
+    }
+    @Override
+    public int relaunchContainer(ContainerStartContext ctx) throws
+        IOException, ConfigurationException {
       return 0;
     }
     @Override
@@ -86,9 +99,28 @@ public class TestContainersMonitorResourceChange {
       return true;
     }
     @Override
+    public boolean reapContainer(ContainerReapContext ctx)
+        throws IOException {
+      return true;
+    }
+
+    @Override
+    public IOStreamPair execContainer(ContainerExecContext ctx)
+        throws ContainerExecutionException {
+      return new IOStreamPair(null, null);
+    }
+
+    @Override
     public void deleteAsUser(DeletionAsUserContext ctx)
         throws IOException, InterruptedException {
     }
+
+    @Override
+    public void symLink(String target, String symlink)
+        throws IOException {
+
+    }
+
     @Override
     public String getProcessId(ContainerId containerId) {
       return String.valueOf(containerId.getContainerId());
@@ -97,6 +129,10 @@ public class TestContainersMonitorResourceChange {
     public boolean isContainerAlive(ContainerLivenessContext ctx)
         throws IOException {
       return true;
+    }
+    @Override
+    public void updateYarnSysFS(Context ctx, String user, String appId,
+        String spec) throws IOException {
     }
   }
 
@@ -124,8 +160,10 @@ public class TestContainersMonitorResourceChange {
     executor = new MockExecutor();
     dispatcher = new AsyncDispatcher();
     context = Mockito.mock(Context.class);
-    Mockito.doReturn(new ConcurrentSkipListMap<ContainerId, Container>())
-        .when(context).getContainers();
+    containerMap = new ConcurrentSkipListMap<>();
+    Container container = Mockito.mock(ContainerImpl.class);
+    containerMap.put(getContainerId(1), container);
+    Mockito.doReturn(containerMap).when(context).getContainers();
     conf = new Configuration();
     conf.set(
         YarnConfiguration.NM_CONTAINER_MON_RESOURCE_CALCULATOR,
@@ -150,9 +188,10 @@ public class TestContainersMonitorResourceChange {
   }
 
   @Test
-  public void testContainersResourceChange() throws Exception {
+  public void testContainersResourceChangePolling() throws Exception {
     // set container monitor interval to be 20ms
     conf.setLong(YarnConfiguration.NM_CONTAINER_MON_INTERVAL_MS, 20L);
+    conf.setBoolean(YarnConfiguration.NM_MEMORY_RESOURCE_ENFORCED, false);
     containersMonitor = createContainersMonitor(executor, dispatcher, context);
     containersMonitor.init(conf);
     containersMonitor.start();
@@ -174,7 +213,12 @@ public class TestContainersMonitorResourceChange {
             getContainerId(1)).getProcessTree();
     mockTree.setRssMemorySize(2500L);
     // verify that this container is killed
-    Thread.sleep(200);
+    for (int waitMs = 0; waitMs < 5000; waitMs += 50) {
+      if (containerEventHandler.isContainerKilled(getContainerId(1))) {
+        break;
+      }
+      Thread.sleep(50);
+    }
     assertTrue(containerEventHandler
         .isContainerKilled(getContainerId(1)));
     // create container 2

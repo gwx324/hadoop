@@ -27,9 +27,11 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
+import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
@@ -49,11 +51,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.BitSet;
+import java.util.Iterator;
 import java.util.List;
 
-import static org.apache.hadoop.hdfs.StripedFileTestUtil.BLOCK_STRIPED_CELL_SIZE;
-import static org.apache.hadoop.hdfs.StripedFileTestUtil.NUM_DATA_BLOCKS;
-import static org.apache.hadoop.hdfs.StripedFileTestUtil.NUM_PARITY_BLOCKS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -61,9 +61,14 @@ import static org.junit.Assert.assertTrue;
 public class TestReconstructStripedBlocks {
   public static final Logger LOG = LoggerFactory.getLogger(
       TestReconstructStripedBlocks.class);
-  private static final int cellSize = StripedFileTestUtil.BLOCK_STRIPED_CELL_SIZE;
-  private final short GROUP_SIZE =
-      (short) (NUM_DATA_BLOCKS + NUM_PARITY_BLOCKS);
+  private final ErasureCodingPolicy ecPolicy =
+      StripedFileTestUtil.getDefaultECPolicy();
+  private final int cellSize = ecPolicy.getCellSize();
+  private final short dataBlocks = (short) ecPolicy.getNumDataUnits();
+  private final short parityBlocks = (short) ecPolicy.getNumParityUnits();
+  private final short groupSize = (short) (dataBlocks + parityBlocks);
+  private final int blockSize = 4 * cellSize;
+
 
   private MiniDFSCluster cluster;
   private final Path dirPath = new Path("/dir");
@@ -88,7 +93,7 @@ public class TestReconstructStripedBlocks {
 
   @Test
   public void testMissingStripedBlockWithBusyNode() throws Exception {
-    for (int i = 1; i <= NUM_PARITY_BLOCKS; i++) {
+    for (int i = 1; i <= parityBlocks; i++) {
       doTestMissingStripedBlock(i, 1);
     }
   }
@@ -105,11 +110,12 @@ public class TestReconstructStripedBlocks {
       throws Exception {
     Configuration conf = new HdfsConfiguration();
     initConf(conf);
-    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(GROUP_SIZE + 1)
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(groupSize + 1)
         .build();
-
     try {
       cluster.waitActive();
+      cluster.getFileSystem().enableErasureCodingPolicy(
+          StripedFileTestUtil.getDefaultECPolicy().getName());
       final int numBlocks = 4;
       DFSTestUtil.createStripedFile(cluster, filePath,
           dirPath, numBlocks, 1, true);
@@ -126,10 +132,10 @@ public class TestReconstructStripedBlocks {
       for (BlockInfo blk : blocks) {
         assertTrue(blk.isStriped());
         assertTrue(blk.isComplete());
-        assertEquals(BLOCK_STRIPED_CELL_SIZE * NUM_DATA_BLOCKS,
+        assertEquals(cellSize * dataBlocks,
             blk.getNumBytes());
         final BlockInfoStriped sb = (BlockInfoStriped) blk;
-        assertEquals(GROUP_SIZE, sb.numNodes());
+        assertEquals(groupSize, sb.numNodes());
       }
 
       final BlockManager bm = cluster.getNamesystem().getBlockManager();
@@ -152,11 +158,13 @@ public class TestReconstructStripedBlocks {
         assertEquals(numBlocks, missedNode.numBlocks());
         bm.getDatanodeManager().removeDatanode(missedNode);
       }
+      BlockManagerTestUtil.updateState(bm);
+      DFSTestUtil.verifyClientStats(conf, cluster);
 
       BlockManagerTestUtil.getComputedDatanodeWork(bm);
 
       // all the reconstruction work will be scheduled on the last DN
-      DataNode lastDn = cluster.getDataNodes().get(GROUP_SIZE);
+      DataNode lastDn = cluster.getDataNodes().get(groupSize);
       DatanodeDescriptor last =
           bm.getDatanodeManager().getDatanode(lastDn.getDatanodeId());
       assertEquals("Counting the number of outstanding EC tasks", numBlocks,
@@ -168,18 +176,20 @@ public class TestReconstructStripedBlocks {
         assertEquals(last, info.getTargetDnInfos()[0]);
         assertEquals(info.getSourceDnInfos().length,
             info.getLiveBlockIndices().length);
-        if (GROUP_SIZE - numOfMissed == NUM_DATA_BLOCKS) {
+        if (groupSize - numOfMissed == dataBlocks) {
           // It's a QUEUE_HIGHEST_PRIORITY block, so the busy DNs will be chosen
           // to make sure we have NUM_DATA_BLOCKS DNs to do reconstruction
           // work.
-          assertEquals(NUM_DATA_BLOCKS, info.getSourceDnInfos().length);
+          assertEquals(dataBlocks, info.getSourceDnInfos().length);
         } else {
           // The block has no highest priority, so we don't use the busy DNs as
           // sources
-          assertEquals(GROUP_SIZE - numOfMissed - numOfBusy,
+          assertEquals(groupSize - numOfMissed - numOfBusy,
               info.getSourceDnInfos().length);
         }
       }
+      BlockManagerTestUtil.updateState(bm);
+      DFSTestUtil.verifyClientStats(conf, cluster);
     } finally {
       cluster.shutdown();
     }
@@ -189,35 +199,47 @@ public class TestReconstructStripedBlocks {
   public void test2RecoveryTasksForSameBlockGroup() throws Exception {
     Configuration conf = new HdfsConfiguration();
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1000);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1000);
-    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, StripedFileTestUtil.blockSize);
-    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(GROUP_SIZE + 2)
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
+        1000);
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(groupSize + 2)
         .build();
     try {
       cluster.waitActive();
       DistributedFileSystem fs = cluster.getFileSystem();
       BlockManager bm = cluster.getNamesystem().getBlockManager();
-      fs.getClient().setErasureCodingPolicy("/", null);
-      int fileLen = NUM_DATA_BLOCKS * StripedFileTestUtil.blockSize;
+      fs.enableErasureCodingPolicy(
+          StripedFileTestUtil.getDefaultECPolicy().getName());
+      fs.getClient().setErasureCodingPolicy("/",
+          StripedFileTestUtil.getDefaultECPolicy().getName());
+      int fileLen = dataBlocks * blockSize;
       Path p = new Path("/test2RecoveryTasksForSameBlockGroup");
       final byte[] data = new byte[fileLen];
       DFSTestUtil.writeFile(fs, p, data);
+      DFSTestUtil.waitForReplication(fs, p, groupSize, 5000);
+      BlockManagerTestUtil.updateState(bm);
+      DFSTestUtil.verifyClientStats(conf, cluster);
 
       LocatedStripedBlock lb = (LocatedStripedBlock)fs.getClient()
           .getLocatedBlocks(p.toString(), 0).get(0);
       LocatedBlock[] lbs = StripedBlockUtil.parseStripedBlockGroup(lb,
-          cellSize, NUM_DATA_BLOCKS, NUM_PARITY_BLOCKS);
+          cellSize, dataBlocks, parityBlocks);
 
+      BlockManagerTestUtil.getComputedDatanodeWork(bm);
+      BlockManagerTestUtil.updateState(bm);
       assertEquals(0, getNumberOfBlocksToBeErasureCoded(cluster));
       assertEquals(0, bm.getPendingReconstructionBlocksCount());
+      DFSTestUtil.verifyClientStats(conf, cluster);
 
       // missing 1 block, so 1 task should be scheduled
       DatanodeInfo dn0 = lbs[0].getLocations()[0];
       cluster.stopDataNode(dn0.getName());
       cluster.setDataNodeDead(dn0);
       BlockManagerTestUtil.getComputedDatanodeWork(bm);
+      BlockManagerTestUtil.updateState(bm);
       assertEquals(1, getNumberOfBlocksToBeErasureCoded(cluster));
       assertEquals(1, bm.getPendingReconstructionBlocksCount());
+      DFSTestUtil.verifyClientStats(conf, cluster);
 
       // missing another block, but no new task should be scheduled because
       // previous task isn't finished.
@@ -225,8 +247,10 @@ public class TestReconstructStripedBlocks {
       cluster.stopDataNode(dn1.getName());
       cluster.setDataNodeDead(dn1);
       BlockManagerTestUtil.getComputedDatanodeWork(bm);
+      BlockManagerTestUtil.updateState(bm);
       assertEquals(1, getNumberOfBlocksToBeErasureCoded(cluster));
       assertEquals(1, bm.getPendingReconstructionBlocksCount());
+      DFSTestUtil.verifyClientStats(conf, cluster);
     } finally {
       cluster.shutdown();
     }
@@ -252,19 +276,19 @@ public class TestReconstructStripedBlocks {
   @Test
   public void testCountLiveReplicas() throws Exception {
     final HdfsConfiguration conf = new HdfsConfiguration();
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY,
-        false);
-    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(GROUP_SIZE + 2)
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(groupSize + 2)
         .build();
     cluster.waitActive();
     DistributedFileSystem fs = cluster.getFileSystem();
-
+    fs.enableErasureCodingPolicy(
+        StripedFileTestUtil.getDefaultECPolicy().getName());
     try {
       fs.mkdirs(dirPath);
-      fs.setErasureCodingPolicy(dirPath, null);
+      fs.setErasureCodingPolicy(dirPath,
+          StripedFileTestUtil.getDefaultECPolicy().getName());
       DFSTestUtil.createFile(fs, filePath,
-          BLOCK_STRIPED_CELL_SIZE * NUM_DATA_BLOCKS * 2, (short) 1, 0L);
+          cellSize * dataBlocks * 2, (short) 1, 0L);
 
       // stop a dn
       LocatedBlocks blks = fs.getClient().getLocatedBlocks(filePath.toString(), 0);
@@ -275,11 +299,12 @@ public class TestReconstructStripedBlocks {
       cluster.setDataNodeDead(dnToStop);
 
       // wait for reconstruction to happen
-      DFSTestUtil.waitForReplication(fs, filePath, GROUP_SIZE, 15 * 1000);
+      DFSTestUtil.waitForReplication(fs, filePath, groupSize, 15 * 1000);
 
       // bring the dn back: 10 internal blocks now
       cluster.restartDataNode(dnProp);
       cluster.waitActive();
+      DFSTestUtil.verifyClientStats(conf, cluster);
 
       // stop another dn: 9 internal blocks, but only cover 8 real one
       dnToStop = block.getLocations()[1];
@@ -296,7 +321,7 @@ public class TestReconstructStripedBlocks {
       FSNamesystem fsn = cluster.getNamesystem();
       BlockManager bm = fsn.getBlockManager();
 
-      Thread.sleep(3000); // wait 3 running cycles of replication monitor
+      Thread.sleep(3000); // wait 3 running cycles of redundancy monitor
       for (DataNode dn : cluster.getDataNodes()) {
         DataNodeTestUtils.triggerHeartbeat(dn);
       }
@@ -304,7 +329,7 @@ public class TestReconstructStripedBlocks {
       // check if NN can detect the missing internal block and finish the
       // reconstruction
       StripedFileTestUtil.waitForReconstructionFinished(filePath, fs,
-          GROUP_SIZE);
+          groupSize);
       boolean reconstructed = false;
       for (int i = 0; i < 5; i++) {
         NumberReplicas num = null;
@@ -316,7 +341,7 @@ public class TestReconstructStripedBlocks {
         } finally {
           fsn.readUnlock();
         }
-        if (num.liveReplicas() >= GROUP_SIZE) {
+        if (num.liveReplicas() >= groupSize) {
           reconstructed = true;
           break;
         } else {
@@ -327,15 +352,82 @@ public class TestReconstructStripedBlocks {
 
       blks = fs.getClient().getLocatedBlocks(filePath.toString(), 0);
       block = (LocatedStripedBlock) blks.getLastLocatedBlock();
-      BitSet bitSet = new BitSet(GROUP_SIZE);
+      BitSet bitSet = new BitSet(groupSize);
       for (byte index : block.getBlockIndices()) {
         bitSet.set(index);
       }
-      for (int i = 0; i < GROUP_SIZE; i++) {
+      for (int i = 0; i < groupSize; i++) {
         Assert.assertTrue(bitSet.get(i));
       }
     } finally {
       cluster.shutdown();
+    }
+  }
+
+  @Test(timeout=120000) // 1 min timeout
+  public void testReconstructionWork() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    conf.setLong(DFSConfigKeys.DFS_NAMENODE_MIN_BLOCK_SIZE_KEY, 0);
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1000);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
+        1000);
+    conf.setInt(
+        DFSConfigKeys.DFS_NAMENODE_REPLICATION_WORK_MULTIPLIER_PER_ITERATION,
+        5);
+
+    ErasureCodingPolicy policy =  SystemErasureCodingPolicies.getByID(
+        SystemErasureCodingPolicies.XOR_2_1_POLICY_ID);
+    Path ecDir = new Path("/ec");
+    Path ecFilePath = new Path(ecDir, "ec-file");
+    int blockGroups = 2;
+    int totalDataNodes = policy.getNumDataUnits() +
+        policy.getNumParityUnits() + 1;
+
+    MiniDFSCluster dfsCluster = new MiniDFSCluster.Builder(conf).numDataNodes(
+        totalDataNodes).build();
+    try {
+      // create an EC file with 2 block groups
+      final DistributedFileSystem fs = dfsCluster.getFileSystem();
+      fs.enableErasureCodingPolicy(policy.getName());
+      fs.mkdirs(ecDir);
+      fs.setErasureCodingPolicy(ecDir, policy.getName());
+      DFSTestUtil.createStripedFile(dfsCluster, ecFilePath, ecDir,
+          blockGroups, 2, false, policy);
+
+      final BlockManager bm = dfsCluster.getNamesystem().getBlockManager();
+      LocatedBlocks lbs = fs.getClient().getNamenode().getBlockLocations(
+          ecFilePath.toString(), 0, blockGroups);
+      assert lbs.get(0) instanceof LocatedStripedBlock;
+      LocatedStripedBlock bg = (LocatedStripedBlock) (lbs.get(0));
+
+      Iterator<DatanodeStorageInfo> storageInfos =
+          bm.getStorages(bg.getBlock().getLocalBlock()).iterator();
+      DatanodeDescriptor firstDn = storageInfos.next().getDatanodeDescriptor();
+
+      BlockManagerTestUtil.updateState(bm);
+      DFSTestUtil.verifyClientStats(conf, dfsCluster);
+
+      // Remove one of the DataUnit nodes
+      bm.getDatanodeManager().removeDatanode(firstDn);
+
+      // Verify low redundancy count matching EC block groups count
+      BlockManagerTestUtil.updateState(bm);
+      assertEquals(blockGroups, bm.getLowRedundancyECBlockGroups());
+      DFSTestUtil.verifyClientStats(conf, dfsCluster);
+
+
+      // Trigger block group reconstruction
+      BlockManagerTestUtil.getComputedDatanodeWork(bm);
+      BlockManagerTestUtil.updateState(bm);
+
+      // Verify pending reconstruction count
+      assertEquals(blockGroups, getNumberOfBlocksToBeErasureCoded(dfsCluster));
+      assertEquals(0, bm.getLowRedundancyECBlockGroups());
+      DFSTestUtil.verifyClientStats(conf, dfsCluster);
+    } finally {
+      dfsCluster.shutdown();
     }
   }
 }

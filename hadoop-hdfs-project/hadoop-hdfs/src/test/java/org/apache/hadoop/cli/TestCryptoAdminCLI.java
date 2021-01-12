@@ -35,7 +35,7 @@ import org.apache.hadoop.cli.util.CommandExecutor.Result;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
 import org.apache.hadoop.crypto.key.KeyProvider;
-import org.apache.hadoop.crypto.key.KeyProviderFactory;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -63,10 +63,11 @@ public class TestCryptoAdminCLI extends CLITestHelperDFS {
     conf.setClass(PolicyProvider.POLICY_PROVIDER_CONFIG,
         HDFSPolicyProvider.class, PolicyProvider.class);
     conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
+    conf.setLong(CommonConfigurationKeysPublic.FS_TRASH_INTERVAL_KEY, 10);
 
     tmpDir = GenericTestUtils.getTestDir(UUID.randomUUID().toString());
     final Path jksPath = new Path(tmpDir.toString(), "test.jks");
-    conf.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
+    conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
         JavaKeyStoreProvider.SCHEME_NAME + "://file" + jksPath.toUri());
 
     dfsCluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
@@ -127,7 +128,7 @@ public class TestCryptoAdminCLI extends CLITestHelperDFS {
   }
 
   private class TestConfigFileParserCryptoAdmin extends
-      CLITestHelper.TestConfigFileParser {
+      CLITestHelperDFS.TestConfigFileParserDFS {
     @Override
     public void endElement(String uri, String localName, String qName)
         throws SAXException {

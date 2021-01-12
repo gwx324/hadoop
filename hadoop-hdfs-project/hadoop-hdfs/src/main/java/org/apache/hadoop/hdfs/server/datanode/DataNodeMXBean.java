@@ -24,9 +24,11 @@ import java.util.Map;
 
 /**
  * 
- * This is the JMX management interface for data node information
+ * This is the JMX management interface for data node information.
+ * End users shouldn't be implementing these interfaces, and instead
+ * access this information through the JMX APIs.
  */
-@InterfaceAudience.Public
+@InterfaceAudience.Private
 @InterfaceStability.Stable
 public interface DataNodeMXBean {
   
@@ -73,6 +75,13 @@ public interface DataNodeMXBean {
   public String getNamenodeAddresses();
 
   /**
+   * Gets the datanode hostname.
+   *
+   * @return the datanode hostname for the datanode.
+   */
+  public String getDatanodeHostname();
+
+  /**
    * Gets information of the block pool service actors.
    *
    * @return block pool service actors info
@@ -95,10 +104,20 @@ public interface DataNodeMXBean {
   public String getClusterId();
 
   /**
-   * Returns an estimate of the number of Datanode threads
-   * actively transferring blocks.
+   * Returns the number of active xceivers.
    */
   public int getXceiverCount();
+
+  /**
+   * Returns the number of Datanode threads actively transferring blocks.
+   */
+  int getActiveTransferThreadCount();
+
+  /**
+   * Returns an estimate of the number of data replication/reconstruction tasks
+   * running currently.
+   */
+  public int getXmitsInProgress();
 
   /**
    * Gets the network error counts on a per-Datanode basis.
@@ -112,4 +131,30 @@ public interface DataNodeMXBean {
    * @return  DiskBalancer Status
    */
   String getDiskBalancerStatus();
+
+  /**
+   * Gets the average info (e.g. time) of SendPacketDownstream when the DataNode
+   * acts as the penultimate (2nd to the last) node in pipeline.
+   * <p>
+   * Example Json:
+   * {"[185.164.159.81:9801]RollingAvgTime":504.867,
+   *  "[49.236.149.246:9801]RollingAvgTime":504.463,
+   *  "[84.125.113.65:9801]RollingAvgTime":497.954}
+   * </p>
+   */
+  String getSendPacketDownstreamAvgInfo();
+
+  /**
+   * Gets the slow disks in the Datanode.
+   *
+   * @return list of slow disks
+   */
+  String getSlowDisks();
+
+  /**
+   * Gets if security is enabled.
+   *
+   * @return true, if security is enabled.
+   */
+  boolean isSecurityEnabled();
 }

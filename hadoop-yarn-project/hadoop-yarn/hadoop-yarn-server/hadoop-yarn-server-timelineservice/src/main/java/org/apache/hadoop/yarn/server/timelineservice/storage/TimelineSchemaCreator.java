@@ -15,258 +15,66 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.hadoop.yarn.server.timelineservice.storage;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-
-import org.apache.commons.cli.CommandLine;
-import org.apache.commons.cli.CommandLineParser;
-import org.apache.commons.cli.HelpFormatter;
-import org.apache.commons.cli.Option;
-import org.apache.commons.cli.Options;
-import org.apache.commons.cli.ParseException;
-import org.apache.commons.cli.PosixParser;
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.HBaseConfiguration;
-import org.apache.hadoop.hbase.client.Admin;
-import org.apache.hadoop.hbase.client.Connection;
-import org.apache.hadoop.hbase.client.ConnectionFactory;
-import org.apache.hadoop.util.GenericOptionsParser;
-import org.apache.hadoop.yarn.server.timelineservice.storage.application.ApplicationTable;
-import org.apache.hadoop.yarn.server.timelineservice.storage.apptoflow.AppToFlowTable;
-import org.apache.hadoop.yarn.server.timelineservice.storage.entity.EntityTable;
-import org.apache.hadoop.yarn.server.timelineservice.storage.flow.FlowActivityTable;
-import org.apache.hadoop.yarn.server.timelineservice.storage.flow.FlowRunTable;
-
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.conf.Configured;
+import org.apache.hadoop.util.ReflectionUtils;
+import org.apache.hadoop.util.Tool;
+import org.apache.hadoop.util.ToolRunner;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * This creates the schema for a hbase based backend for storing application
- * timeline information.
+ * This creates the timeline schema for storing application timeline
+ * information. Each backend has to implement the {@link SchemaCreator} for
+ * creating the schema in its backend and should be configured in yarn-site.xml.
  */
-@InterfaceAudience.Private
-@InterfaceStability.Unstable
-public final class TimelineSchemaCreator {
-  private TimelineSchemaCreator() {
-  }
+public class TimelineSchemaCreator extends Configured implements Tool {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TimelineSchemaCreator.class);
 
-  final static String NAME = TimelineSchemaCreator.class.getSimpleName();
-  private static final Log LOG = LogFactory.getLog(TimelineSchemaCreator.class);
-  private static final String PHOENIX_OPTION_SHORT = "p";
-  private static final String SKIP_EXISTING_TABLE_OPTION_SHORT = "s";
-  private static final String APP_TABLE_NAME_SHORT = "a";
-  private static final String APP_TO_FLOW_TABLE_NAME_SHORT = "a2f";
-  private static final String TTL_OPTION_SHORT = "m";
-  private static final String ENTITY_TABLE_NAME_SHORT = "e";
-
-  public static void main(String[] args) throws Exception {
-
-    Configuration hbaseConf = HBaseConfiguration.create();
-    // Grab input args and allow for -Dxyz style arguments
-    String[] otherArgs = new GenericOptionsParser(hbaseConf, args)
-        .getRemainingArgs();
-
-    // Grab the arguments we're looking for.
-    CommandLine commandLine = parseArgs(otherArgs);
-
-    // Grab the entityTableName argument
-    String entityTableName
-        = commandLine.getOptionValue(ENTITY_TABLE_NAME_SHORT);
-    if (StringUtils.isNotBlank(entityTableName)) {
-      hbaseConf.set(EntityTable.TABLE_NAME_CONF_NAME, entityTableName);
-    }
-    String entityTableTTLMetrics = commandLine.getOptionValue(TTL_OPTION_SHORT);
-    if (StringUtils.isNotBlank(entityTableTTLMetrics)) {
-      int metricsTTL = Integer.parseInt(entityTableTTLMetrics);
-      new EntityTable().setMetricsTTL(metricsTTL, hbaseConf);
-    }
-    // Grab the appToflowTableName argument
-    String appToflowTableName = commandLine.getOptionValue(
-        APP_TO_FLOW_TABLE_NAME_SHORT);
-    if (StringUtils.isNotBlank(appToflowTableName)) {
-      hbaseConf.set(AppToFlowTable.TABLE_NAME_CONF_NAME, appToflowTableName);
-    }
-    // Grab the applicationTableName argument
-    String applicationTableName = commandLine.getOptionValue(
-        APP_TABLE_NAME_SHORT);
-    if (StringUtils.isNotBlank(applicationTableName)) {
-      hbaseConf.set(ApplicationTable.TABLE_NAME_CONF_NAME,
-          applicationTableName);
-    }
-
-    List<Exception> exceptions = new ArrayList<>();
+  public static void main(String[] args) {
     try {
-      boolean skipExisting
-          = commandLine.hasOption(SKIP_EXISTING_TABLE_OPTION_SHORT);
-      if (skipExisting) {
-        LOG.info("Will skip existing tables and continue on htable creation "
-            + "exceptions!");
-      }
-      createAllTables(hbaseConf, skipExisting);
-      LOG.info("Successfully created HBase schema. ");
-    } catch (IOException e) {
-      LOG.error("Error in creating hbase tables: " + e.getMessage());
-      exceptions.add(e);
-    }
-
-    // Create Phoenix data schema if needed
-    if (commandLine.hasOption(PHOENIX_OPTION_SHORT)) {
-      Configuration phoenixConf = new Configuration();
-      try {
-        PhoenixOfflineAggregationWriterImpl phoenixWriter =
-            new PhoenixOfflineAggregationWriterImpl();
-        phoenixWriter.init(phoenixConf);
-        phoenixWriter.start();
-        phoenixWriter.createPhoenixTables();
-        phoenixWriter.stop();
-        LOG.info("Successfully created Phoenix offline aggregation schema. ");
-      } catch (IOException e) {
-        LOG.error("Error in creating phoenix tables: " + e.getMessage());
-        exceptions.add(e);
-      }
-    }
-    if (exceptions.size() > 0) {
-      LOG.warn("Schema creation finished with the following exceptions");
-      for (Exception e : exceptions) {
-        LOG.warn(e.getMessage());
-      }
-      System.exit(-1);
-    } else {
-      LOG.info("Schema creation finished successfully");
-    }
-  }
-
-  /**
-   * Parse command-line arguments.
-   *
-   * @param args
-   *          command line arguments passed to program.
-   * @return parsed command line.
-   * @throws ParseException
-   */
-  private static CommandLine parseArgs(String[] args) throws ParseException {
-    Options options = new Options();
-
-    // Input
-    Option o = new Option(ENTITY_TABLE_NAME_SHORT, "entityTableName", true,
-        "entity table name");
-    o.setArgName("entityTableName");
-    o.setRequired(false);
-    options.addOption(o);
-
-    o = new Option(TTL_OPTION_SHORT, "metricsTTL", true,
-        "TTL for metrics column family");
-    o.setArgName("metricsTTL");
-    o.setRequired(false);
-    options.addOption(o);
-
-    o = new Option(APP_TO_FLOW_TABLE_NAME_SHORT, "appToflowTableName", true,
-        "app to flow table name");
-    o.setArgName("appToflowTableName");
-    o.setRequired(false);
-    options.addOption(o);
-
-    o = new Option(APP_TABLE_NAME_SHORT, "applicationTableName", true,
-        "application table name");
-    o.setArgName("applicationTableName");
-    o.setRequired(false);
-    options.addOption(o);
-
-    // Options without an argument
-    // No need to set arg name since we do not need an argument here
-    o = new Option(PHOENIX_OPTION_SHORT, "usePhoenix", false,
-        "create Phoenix offline aggregation tables");
-    o.setRequired(false);
-    options.addOption(o);
-
-    o = new Option(SKIP_EXISTING_TABLE_OPTION_SHORT, "skipExistingTable",
-        false, "skip existing Hbase tables and continue to create new tables");
-    o.setRequired(false);
-    options.addOption(o);
-
-    CommandLineParser parser = new PosixParser();
-    CommandLine commandLine = null;
-    try {
-      commandLine = parser.parse(options, args);
+      int status = ToolRunner.run(new YarnConfiguration(),
+          new TimelineSchemaCreator(), args);
+      System.exit(status);
     } catch (Exception e) {
-      LOG.error("ERROR: " + e.getMessage() + "\n");
-      HelpFormatter formatter = new HelpFormatter();
-      formatter.printHelp(NAME + " ", options, true);
-      System.exit(-1);
+      LOG.error("Error while creating Timeline Schema : ", e);
     }
+  }
 
-    return commandLine;
+  @Override
+  public int run(String[] args) throws Exception {
+    Configuration conf = getConf();
+    return createTimelineSchema(args, conf);
   }
 
   @VisibleForTesting
-  public static void createAllTables(Configuration hbaseConf,
-      boolean skipExisting) throws IOException {
-
-    Connection conn = null;
+  int createTimelineSchema(String[] args, Configuration conf) throws Exception {
+    String schemaCreatorClassName = conf.get(
+        YarnConfiguration.TIMELINE_SERVICE_SCHEMA_CREATOR_CLASS,
+        YarnConfiguration.DEFAULT_TIMELINE_SERVICE_SCHEMA_CREATOR_CLASS);
+    LOG.info("Using {} for creating Timeline Service Schema ",
+        schemaCreatorClassName);
     try {
-      conn = ConnectionFactory.createConnection(hbaseConf);
-      Admin admin = conn.getAdmin();
-      if (admin == null) {
-        throw new IOException("Cannot create table since admin is null");
+      Class<?> schemaCreatorClass = Class.forName(schemaCreatorClassName);
+      if (SchemaCreator.class.isAssignableFrom(schemaCreatorClass)) {
+        SchemaCreator schemaCreator = (SchemaCreator) ReflectionUtils
+            .newInstance(schemaCreatorClass, conf);
+        schemaCreator.createTimelineSchema(args);
+        return 0;
+      } else {
+        throw new YarnRuntimeException("Class: " + schemaCreatorClassName
+            + " not instance of " + SchemaCreator.class.getCanonicalName());
       }
-      try {
-        new EntityTable().createTable(admin, hbaseConf);
-      } catch (IOException e) {
-        if (skipExisting) {
-          LOG.warn("Skip and continue on: " + e.getMessage());
-        } else {
-          throw e;
-        }
-      }
-      try {
-        new AppToFlowTable().createTable(admin, hbaseConf);
-      } catch (IOException e) {
-        if (skipExisting) {
-          LOG.warn("Skip and continue on: " + e.getMessage());
-        } else {
-          throw e;
-        }
-      }
-      try {
-        new ApplicationTable().createTable(admin, hbaseConf);
-      } catch (IOException e) {
-        if (skipExisting) {
-          LOG.warn("Skip and continue on: " + e.getMessage());
-        } else {
-          throw e;
-        }
-      }
-      try {
-        new FlowRunTable().createTable(admin, hbaseConf);
-      } catch (IOException e) {
-        if (skipExisting) {
-          LOG.warn("Skip and continue on: " + e.getMessage());
-        } else {
-          throw e;
-        }
-      }
-      try {
-        new FlowActivityTable().createTable(admin, hbaseConf);
-      } catch (IOException e) {
-        if (skipExisting) {
-          LOG.warn("Skip and continue on: " + e.getMessage());
-        } else {
-          throw e;
-        }
-      }
-    } finally {
-      if (conn != null) {
-        conn.close();
-      }
+    } catch (ClassNotFoundException e) {
+      throw new YarnRuntimeException("Could not instantiate TimelineReader: "
+          + schemaCreatorClassName, e);
     }
   }
-
-
 }

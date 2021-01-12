@@ -18,14 +18,17 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.security;
 
+import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.ContainerId;
+import org.apache.hadoop.yarn.api.records.ExecutionType;
 import org.apache.hadoop.yarn.api.records.LogAggregationContext;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
@@ -48,8 +51,8 @@ import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 public class RMContainerTokenSecretManager extends
     BaseContainerTokenSecretManager {
 
-  private static Log LOG = LogFactory
-      .getLog(RMContainerTokenSecretManager.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(RMContainerTokenSecretManager.class);
 
   private MasterKeyData nextMasterKey;
 
@@ -165,42 +168,39 @@ public class RMContainerTokenSecretManager extends
     }
   }
 
-  /**
-   * Helper function for creating ContainerTokens
-   *
-   * @param containerId
-   * @param nodeId
-   * @param appSubmitter
-   * @param capability
-   * @param priority
-   * @param createTime
-   * @return the container-token
-   */
-  public Token createContainerToken(ContainerId containerId, NodeId nodeId,
-      String appSubmitter, Resource capability, Priority priority,
-      long createTime) {
-    return createContainerToken(containerId, nodeId, appSubmitter, capability,
-      priority, createTime, null, null, ContainerType.TASK);
+  @VisibleForTesting
+  public Token createContainerToken(ContainerId containerId,
+      int containerVersion, NodeId nodeId, String appSubmitter,
+      Resource capability, Priority priority, long createTime) {
+    return createContainerToken(containerId, containerVersion, nodeId,
+        appSubmitter, capability, priority, createTime,
+        null, null, ContainerType.TASK,
+        ExecutionType.GUARANTEED, -1, null);
   }
 
   /**
-   * Helper function for creating ContainerTokens
+   * Helper function for creating ContainerTokens.
    *
-   * @param containerId
-   * @param nodeId
-   * @param appSubmitter
-   * @param capability
-   * @param priority
-   * @param createTime
-   * @param logAggregationContext
-   * @param nodeLabelExpression
-   * @param containerType
+   * @param containerId Container Id
+   * @param containerVersion Container version
+   * @param nodeId Node Id
+   * @param appSubmitter App Submitter
+   * @param capability Capability
+   * @param priority Priority
+   * @param createTime Create Time
+   * @param logAggregationContext Log Aggregation Context
+   * @param nodeLabelExpression Node Label Expression
+   * @param containerType Container Type
+   * @param execType Execution Type
+   * @param allocationRequestId allocationRequestId
    * @return the container-token
    */
-  public Token createContainerToken(ContainerId containerId, NodeId nodeId,
-      String appSubmitter, Resource capability, Priority priority,
-      long createTime, LogAggregationContext logAggregationContext,
-      String nodeLabelExpression, ContainerType containerType) {
+  public Token createContainerToken(ContainerId containerId,
+      int containerVersion, NodeId nodeId, String appSubmitter,
+      Resource capability, Priority priority, long createTime,
+      LogAggregationContext logAggregationContext, String nodeLabelExpression,
+      ContainerType containerType, ExecutionType execType,
+      long allocationRequestId, Set<String> allocationTags) {
     byte[] password;
     ContainerTokenIdentifier tokenIdentifier;
     long expiryTimeStamp =
@@ -210,11 +210,12 @@ public class RMContainerTokenSecretManager extends
     this.readLock.lock();
     try {
       tokenIdentifier =
-          new ContainerTokenIdentifier(containerId, nodeId.toString(),
-            appSubmitter, capability, expiryTimeStamp, this.currentMasterKey
-              .getMasterKey().getKeyId(),
-            ResourceManager.getClusterTimeStamp(), priority, createTime,
-            logAggregationContext, nodeLabelExpression, containerType);
+          new ContainerTokenIdentifier(containerId, containerVersion,
+              nodeId.toString(), appSubmitter, capability, expiryTimeStamp,
+              this.currentMasterKey.getMasterKey().getKeyId(),
+              ResourceManager.getClusterTimeStamp(), priority, createTime,
+              logAggregationContext, nodeLabelExpression, containerType,
+              execType, allocationRequestId, allocationTags);
       password = this.createPassword(tokenIdentifier);
 
     } finally {

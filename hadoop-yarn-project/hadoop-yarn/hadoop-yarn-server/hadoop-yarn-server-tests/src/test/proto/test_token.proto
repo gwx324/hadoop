@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+syntax = "proto2";
 option java_package = "org.apache.hadoop.yarn.proto";
 option java_outer_classname = "YarnSecurityTestTokenProtos";
 option java_generic_services = true;
@@ -44,5 +45,6 @@ message ContainerTokenIdentifierForTestProto {
   optional int64 creationTime = 9;
   optional LogAggregationContextProto logAggregationContext = 10;
   optional string message = 11;
+  optional int32 version = 14 [default = 0];
 }
 

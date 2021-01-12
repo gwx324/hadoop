@@ -26,14 +26,35 @@ import org.apache.hadoop.hdfs.protocol.LayoutVersion;
 import org.apache.hadoop.hdfs.protocol.LayoutVersion.FeatureInfo;
 import org.apache.hadoop.hdfs.protocol.LayoutVersion.LayoutFeature;
 
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+
 @InterfaceAudience.Private
 public class DataNodeLayoutVersion {  
   /** Build layout version and corresponding feature matrix */
   public final static Map<Integer, SortedSet<LayoutFeature>> FEATURES = 
     new HashMap<Integer, SortedSet<LayoutFeature>>();
   
-  public static final int CURRENT_LAYOUT_VERSION
+  private static int currentLayoutVersion
       = LayoutVersion.getCurrentLayoutVersion(Feature.values());
+
+  /**
+   * Method for testing rolling upgrade.
+   * Do not call this method from production.
+   *
+   * @param lv new layout version to set
+   */
+  @VisibleForTesting
+  static void setCurrentLayoutVersionForTesting(int lv) {
+    currentLayoutVersion = lv;
+  }
+
+  /**
+   * Get current layout version of the DataNode.
+   * @return the current layout version of the DataNode
+   */
+  public static int getCurrentLayoutVersion() {
+    return currentLayoutVersion;
+  }
 
   static{
     LayoutVersion.updateMap(FEATURES, LayoutVersion.Feature.values());
@@ -61,7 +82,7 @@ public class DataNodeLayoutVersion {
    * </li>
    * </ul>
    */
-  public static enum Feature implements LayoutFeature {
+  public enum Feature implements LayoutFeature {
     FIRST_LAYOUT(-55, -53, "First datanode layout", false),
     BLOCKID_BASED_LAYOUT(-56,
         "The block ID of a finalized block uniquely determines its position " +

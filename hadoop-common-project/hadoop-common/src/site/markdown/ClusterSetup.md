@@ -27,7 +27,7 @@ This document does not cover advanced topics such as [Security](./SecureMode.htm
 Prerequisites
 -------------
 
-* Install Java. See the [Hadoop Wiki](http://wiki.apache.org/hadoop/HadoopJavaVersions) for known good versions.
+* Install Java. See the [Hadoop Wiki](https://cwiki.apache.org/confluence/display/HADOOP/Hadoop+Java+Versions) for known good versions.
 * Download a stable version of Hadoop from Apache mirrors.
 
 Installation
@@ -35,7 +35,7 @@ Installation
 
 Installing a Hadoop cluster typically involves unpacking the software on all the machines in the cluster or installing it via a packaging system as appropriate for your operating system. It is important to divide up the hardware into functions.
 
-Typically one machine in the cluster is designated as the NameNode and another machine the as ResourceManager, exclusively. These are the masters. Other services (such as Web App Proxy Server and MapReduce Job History server) are usually run either on dedicated hardware or on shared infrastrucutre, depending upon the load.
+Typically one machine in the cluster is designated as the NameNode and another machine as the ResourceManager, exclusively. These are the masters. Other services (such as Web App Proxy Server and MapReduce Job History server) are usually run either on dedicated hardware or on shared infrastructure, depending upon the load.
 
 The rest of the machines in the cluster act as both DataNode and NodeManager. These are the workers.
 
@@ -64,17 +64,17 @@ Administrators can configure individual daemons using the configuration options 
 
 | Daemon | Environment Variable |
 |:---- |:---- |
-| NameNode | HADOOP\_NAMENODE\_OPTS |
-| DataNode | HADOOP\_DATANODE\_OPTS |
-| Secondary NameNode | HADOOP\_SECONDARYNAMENODE\_OPTS |
+| NameNode | HDFS\_NAMENODE\_OPTS |
+| DataNode | HDFS\_DATANODE\_OPTS |
+| Secondary NameNode | HDFS\_SECONDARYNAMENODE\_OPTS |
 | ResourceManager | YARN\_RESOURCEMANAGER\_OPTS |
 | NodeManager | YARN\_NODEMANAGER\_OPTS |
 | WebAppProxy | YARN\_PROXYSERVER\_OPTS |
-| Map Reduce Job History Server | HADOOP\_JOB\_HISTORYSERVER\_OPTS |
+| Map Reduce Job History Server | MAPRED\_HISTORYSERVER\_OPTS |
 
-For example, To configure Namenode to use parallelGC, the following statement should be added in hadoop-env.sh :
+For example, To configure Namenode to use parallelGC and a 4GB Java Heap, the following statement should be added in hadoop-env.sh :
 
-      export HADOOP_NAMENODE_OPTS="-XX:+UseParallelGC"
+      export HDFS_NAMENODE_OPTS="-XX:+UseParallelGC -Xmx4g"
 
 See `etc/hadoop/hadoop-env.sh` for other examples.
 
@@ -90,13 +90,6 @@ It is also traditional to configure `HADOOP_HOME` in the system-wide shell envir
 
       HADOOP_HOME=/path/to/hadoop
       export HADOOP_HOME
-
-| Daemon | Environment Variable |
-|:---- |:---- |
-| ResourceManager | YARN\_RESOURCEMANAGER\_HEAPSIZE |
-| NodeManager | YARN\_NODEMANAGER\_HEAPSIZE |
-| WebAppProxy | YARN\_PROXYSERVER\_HEAPSIZE |
-| Map Reduce Job History Server | HADOOP\_JOB\_HISTORYSERVER\_HEAPSIZE |
 
 ### Configuring the Hadoop Daemons
 
@@ -146,7 +139,7 @@ This section deals with important parameters to be specified in the given config
 | `yarn.resourcemanager.admin.address` | `ResourceManager` host:port for administrative commands. | *host:port* If set, overrides the hostname set in `yarn.resourcemanager.hostname`. |
 | `yarn.resourcemanager.webapp.address` | `ResourceManager` web-ui host:port. | *host:port* If set, overrides the hostname set in `yarn.resourcemanager.hostname`. |
 | `yarn.resourcemanager.hostname` | `ResourceManager` host. | *host* Single hostname that can be set in place of setting all `yarn.resourcemanager*address` resources. Results in default ports for ResourceManager components. |
-| `yarn.resourcemanager.scheduler.class` | `ResourceManager` Scheduler class. | `CapacityScheduler` (recommended), `FairScheduler` (also recommended), or `FifoScheduler` |
+| `yarn.resourcemanager.scheduler.class` | `ResourceManager` Scheduler class. | `CapacityScheduler` (recommended), `FairScheduler` (also recommended), or `FifoScheduler`. Use a fully qualified class name, e.g., `org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler`. |
 | `yarn.scheduler.minimum-allocation-mb` | Minimum limit of memory to allocate to each container request at the `Resource Manager`. | In MBs |
 | `yarn.scheduler.maximum-allocation-mb` | Maximum limit of memory to allocate to each container request at the `Resource Manager`. | In MBs |
 | `yarn.resourcemanager.nodes.include-path` / `yarn.resourcemanager.nodes.exclude-path` | List of permitted/excluded NodeManagers. | If necessary, use these files to control the list of allowable NodeManagers. |
@@ -163,6 +156,7 @@ This section deals with important parameters to be specified in the given config
 | `yarn.nodemanager.remote-app-log-dir` | */logs* | HDFS directory where the application logs are moved on application completion. Need to set appropriate permissions. Only applicable if log-aggregation is enabled. |
 | `yarn.nodemanager.remote-app-log-dir-suffix` | *logs* | Suffix appended to the remote log dir. Logs will be aggregated to ${yarn.nodemanager.remote-app-log-dir}/${user}/${thisParam} Only applicable if log-aggregation is enabled. |
 | `yarn.nodemanager.aux-services` | mapreduce\_shuffle | Shuffle service that needs to be set for Map Reduce applications. |
+| `yarn.nodemanager.env-whitelist` | Environment properties to be inherited by containers from NodeManagers | For mapreduce application in addition to the default values HADOOP\_MAPRED_HOME should to be added. Property value should JAVA\_HOME,HADOOP\_COMMON\_HOME,HADOOP\_HDFS\_HOME,HADOOP\_CONF\_DIR,CLASSPATH\_PREPEND\_DISTCACHE,HADOOP\_YARN\_HOME,HADOOP\_HOME,PATH,LANG,TZ,HADOOP\_MAPRED\_HOME |
 
   * Configurations for History Server (Needs to be moved elsewhere):
 
@@ -208,7 +202,7 @@ The following parameters can be used to control the node health monitoring scrip
 |:---- |:---- |:---- |
 | `yarn.nodemanager.health-checker.script.path` | Node health script | Script to check for node's health status. |
 | `yarn.nodemanager.health-checker.script.opts` | Node health script options | Options for script to check for node's health status. |
-| `yarn.nodemanager.health-checker.script.interval-ms` | Node health script interval | Time interval for running health script. |
+| `yarn.nodemanager.health-checker.interval-ms` | Node health script interval | Time interval for running health script. |
 | `yarn.nodemanager.health-checker.script.timeout-ms` | Node health script timeout interval | Timeout for health script execution. |
 
 The health checker script is not supposed to give ERROR if only some of the local disks become bad. NodeManager has the ability to periodically check the health of the local disks (specifically checks nodemanager-local-dirs and nodemanager-log-dirs) and after reaching the threshold of number of bad directories based on the value set for the config property yarn.nodemanager.disk-health-checker.min-healthy-disks, the whole node is marked unhealthy and this info is sent to resource manager also. The boot disk is either raided or a failure in the boot disk is identified by the health checker script.

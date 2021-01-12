@@ -20,9 +20,18 @@ package org.apache.hadoop.hdfs.server.datanode.extdataset;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.channels.ClosedChannelException;
+import java.util.Collection;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.DF;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.server.datanode.DirectoryScanner.ReportCompiler;
+import org.apache.hadoop.hdfs.server.datanode.FileIoProvider;
+import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
+import org.apache.hadoop.hdfs.server.datanode.checker.VolumeCheckResult;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.DataNodeVolumeMetrics;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeReference;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
@@ -44,21 +53,6 @@ public class ExternalVolumeImpl implements FsVolumeSpi {
   }
 
   @Override
-  public String getBasePath() {
-    return null;
-  }
-
-  @Override
-  public String getPath(String bpid) throws IOException {
-    return null;
-  }
-
-  @Override
-  public File getFinalizedDir(String bpid) throws IOException {
-    return null;
-  }
-
-  @Override
   public String getStorageID() {
     return null;
   }
@@ -70,6 +64,11 @@ public class ExternalVolumeImpl implements FsVolumeSpi {
 
   @Override
   public boolean isTransientStorage() {
+    return false;
+  }
+
+  @Override
+  public boolean isRAMStorage() {
     return false;
   }
 
@@ -99,5 +98,47 @@ public class ExternalVolumeImpl implements FsVolumeSpi {
   @Override
   public FsDatasetSpi getDataset() {
     return null;
+  }
+
+  @Override
+  public StorageLocation getStorageLocation() {
+    return null;
+  }
+
+  @Override
+  public URI getBaseURI() {
+    return null;
+  }
+
+  @Override
+  public DF getUsageStats(Configuration conf) {
+    return null;
+  }
+
+  @Override
+  public byte[] loadLastPartialChunkChecksum(
+      File blockFile, File metaFile) throws IOException {
+    return null;
+  }
+
+  @Override
+  public void compileReport(String bpid, Collection<ScanInfo> report,
+      ReportCompiler reportCompiler) throws InterruptedException, IOException {
+  }
+
+  @Override
+  public FileIoProvider getFileIoProvider() {
+    return null;
+  }
+
+  @Override
+  public DataNodeVolumeMetrics getMetrics() {
+    return null;
+  }
+
+  @Override
+  public VolumeCheckResult check(VolumeCheckContext context)
+      throws Exception {
+    return VolumeCheckResult.HEALTHY;
   }
 }

@@ -22,16 +22,16 @@ import java.util.Arrays;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.ipc.metrics.RetryCacheMetrics;
 import org.apache.hadoop.util.LightWeightCache;
 import org.apache.hadoop.util.LightWeightGSet;
 import org.apache.hadoop.util.LightWeightGSet.LinkedElement;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Maintains a cache of non-idempotent requests that have been successfully
@@ -44,7 +44,7 @@ import com.google.common.base.Preconditions;
  */
 @InterfaceAudience.Private
 public class RetryCache {
-  public static final Log LOG = LogFactory.getLog(RetryCache.class);
+  public static final Logger LOG = LoggerFactory.getLogger(RetryCache.class);
   private final RetryCacheMetrics retryCacheMetrics;
   private static final int MAX_CAPACITY = 16;
 
@@ -290,7 +290,7 @@ public class RetryCache {
           Thread.currentThread().interrupt();
         }
       }
-      // Previous request has failed, the expectation is is that it will be
+      // Previous request has failed, the expectation is that it will be
       // retried again.
       if (mapEntry.state != CacheEntry.SUCCESS) {
         mapEntry.state = CacheEntry.INPROGRESS;

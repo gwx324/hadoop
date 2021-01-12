@@ -18,10 +18,13 @@
 
 package org.apache.hadoop.mapreduce.v2.hs.webapp;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.v2.app.webapp.App;
 import org.apache.hadoop.mapreduce.v2.util.MRApps;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.DIV;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.server.webapp.WebPageUtils;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.DIV;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
 
 import com.google.inject.Inject;
@@ -31,8 +34,12 @@ import com.google.inject.Inject;
  */
 public class HsNavBlock extends HtmlBlock {
   final App app;
+  private Configuration conf;
 
-  @Inject HsNavBlock(App app) { this.app = app; }
+  @Inject HsNavBlock(App app, Configuration conf) {
+    this.app = app;
+    this.conf = conf;
+  }
 
   /*
    * (non-Javadoc)
@@ -43,33 +50,32 @@ public class HsNavBlock extends HtmlBlock {
       div("#nav").
       h3("Application").
         ul().
-          li().a(url("about"), "About")._().
-          li().a(url("app"), "Jobs")._()._();
+          li().a(url("about"), "About").__().
+          li().a(url("app"), "Jobs").__().__();
     if (app.getJob() != null) {
       String jobid = MRApps.toString(app.getJob().getID());
       nav.
         h3("Job").
         ul().
-          li().a(url("job", jobid), "Overview")._().
-          li().a(url("jobcounters", jobid), "Counters")._().
-          li().a(url("conf", jobid), "Configuration")._().
-          li().a(url("tasks", jobid, "m"), "Map tasks")._().
-          li().a(url("tasks", jobid, "r"), "Reduce tasks")._()._();
+          li().a(url("job", jobid), "Overview").__().
+          li().a(url("jobcounters", jobid), "Counters").__().
+          li().a(url("conf", jobid), "Configuration").__().
+          li().a(url("tasks", jobid, "m"), "Map tasks").__().
+          li().a(url("tasks", jobid, "r"), "Reduce tasks").__().__();
       if (app.getTask() != null) {
         String taskid = MRApps.toString(app.getTask().getID());
         nav.
           h3("Task").
           ul().
-            li().a(url("task", taskid), "Task Overview")._().
-            li().a(url("taskcounters", taskid), "Counters")._()._();
+            li().a(url("task", taskid), "Task Overview").__().
+            li().a(url("taskcounters", taskid), "Counters").__().__();
       }
     }
-    nav.
-      h3("Tools").
-        ul().
-          li().a("/conf", "Configuration")._().
-          li().a("/logs", "Local logs")._().
-          li().a("/stacks", "Server stacks")._().
-          li().a("/jmx?qry=Hadoop:*", "Server metrics")._()._()._();
+
+    Hamlet.UL<DIV<Hamlet>> tools = WebPageUtils.appendToolSection(nav, conf);
+
+    if (tools != null) {
+      tools.__().__();
+    }
   }
 }

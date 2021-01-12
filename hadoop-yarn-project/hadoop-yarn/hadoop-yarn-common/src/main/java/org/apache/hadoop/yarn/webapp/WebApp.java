@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.webapp;
 
-import static com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.hadoop.thirdparty.com.google.common.base.Preconditions.checkNotNull;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
@@ -26,15 +26,16 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.http.HttpServer2;
+import org.apache.hadoop.yarn.webapp.view.RobotsTextPage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.CharMatcher;
-import com.google.common.base.Splitter;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import com.google.inject.Provides;
 import com.google.inject.servlet.GuiceFilter;
 import com.google.inject.servlet.ServletModule;
@@ -158,7 +159,8 @@ public abstract class WebApp extends ServletModule {
   public void configureServlets() {
     setup();
 
-    serve("/", "/__stop").with(Dispatcher.class);
+    serve("/", "/__stop", RobotsTextPage.ROBOTS_TXT_PATH)
+        .with(Dispatcher.class);
 
     for (String path : this.servePathSpecs) {
       serve(path).with(Dispatcher.class);
@@ -206,6 +208,19 @@ public abstract class WebApp extends ServletModule {
     List<String> res = parseRoute(pathSpec);
     router.add(method, res.get(R_PATH), cls, action,
                res.subList(R_PARAMS, res.size()));
+  }
+
+  /**
+   * Setup of a webapp serving route without default views added to the page.
+   * @param pathSpec  the path spec in the form of /controller/action/:args etc.
+   * @param cls the controller class
+   * @param action the controller method
+   */
+  public void routeWithoutDefaultView(String pathSpec,
+                    Class<? extends Controller> cls, String action) {
+    List<String> res = parseRoute(pathSpec);
+    router.addWithoutDefaultView(HTTP.GET, res.get(R_PATH), cls, action,
+        res.subList(R_PARAMS, res.size()));
   }
 
   public void route(String pathSpec, Class<? extends Controller> cls,
@@ -260,7 +275,7 @@ public abstract class WebApp extends ServletModule {
 
   static String getPrefix(String pathSpec) {
     int start = 0;
-    while (CharMatcher.WHITESPACE.matches(pathSpec.charAt(start))) {
+    while (StringUtils.isAnyBlank(Character.toString(pathSpec.charAt(start)))) {
       ++start;
     }
     if (pathSpec.charAt(start) != '/') {
@@ -276,7 +291,7 @@ public abstract class WebApp extends ServletModule {
     char c;
     do {
       c = pathSpec.charAt(--ci);
-    } while (c == '/' || CharMatcher.WHITESPACE.matches(c));
+    } while (c == '/' || StringUtils.isAnyBlank(Character.toString(c)));
     return pathSpec.substring(start, ci + 1);
   }
 

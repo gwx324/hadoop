@@ -21,16 +21,27 @@ import java.io.File;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileSystemTestHelper;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.StripedFileTestUtil;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants.StoragePolicySatisfierMode;
 import org.junit.Test;
 import org.junit.runners.model.FrameworkMethod;
 import org.junit.runners.model.Statement;
 
 public class TestHdfsHelper extends TestDirHelper {
+
+  private HdfsStatement statement;
 
   @Override
   @Test
@@ -47,23 +58,32 @@ public class TestHdfsHelper extends TestDirHelper {
   public Statement apply(Statement statement, FrameworkMethod frameworkMethod, Object o) {
     TestHdfs testHdfsAnnotation = frameworkMethod.getAnnotation(TestHdfs.class);
     if (testHdfsAnnotation != null) {
-      statement = new HdfsStatement(statement, frameworkMethod.getName());
+      this.statement = new HdfsStatement(statement, frameworkMethod.getName());
+      statement = this.statement;
     }
     return super.apply(statement, frameworkMethod, o);
+  }
+
+  public MiniDFSCluster getMiniDFSCluster() {
+    return statement.getMiniDFSCluster();
   }
 
   private static class HdfsStatement extends Statement {
     private Statement statement;
     private String testName;
+    private MiniDFSCluster miniHdfs = null;
 
     public HdfsStatement(Statement statement, String testName) {
       this.statement = statement;
       this.testName = testName;
     }
 
+    public MiniDFSCluster getMiniDFSCluster() {
+      return miniHdfs;
+    }
+
     @Override
     public void evaluate() throws Throwable {
-      MiniDFSCluster miniHdfs = null;
       Configuration conf = HadoopUsersConfTestHelper.getBaseConf();
       if (Boolean.parseBoolean(System.getProperty(HADOOP_MINI_HDFS, "true"))) {
         miniHdfs = startMiniHdfs(conf);
@@ -129,6 +149,13 @@ public class TestHdfsHelper extends TestDirHelper {
     return new Configuration(conf);
   }
 
+  public static final Path ENCRYPTION_ZONE = new Path("/ez");
+  public static final Path ENCRYPTED_FILE = new Path("/ez/encfile");
+  public static final Path ERASURE_CODING_DIR = new Path("/ec");
+  public static final Path ERASURE_CODING_FILE = new Path("/ec/ecfile");
+  public static final ErasureCodingPolicy ERASURE_CODING_POLICY =
+      StripedFileTestUtil.getDefaultECPolicy();
+
   private static MiniDFSCluster MINI_DFS = null;
 
   private static synchronized MiniDFSCluster startMiniHdfs(Configuration conf) throws Exception {
@@ -148,14 +175,49 @@ public class TestHdfsHelper extends TestDirHelper {
       conf.set("hadoop.security.authentication", "simple");
       conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY, true);
       conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_XATTRS_ENABLED_KEY, true);
+      conf.set(DFSConfigKeys.DFS_STORAGE_POLICY_SATISFIER_MODE_KEY,
+          StoragePolicySatisfierMode.EXTERNAL.toString());
+      // For BaseTestHttpFSWith#testFileAclsCustomizedUserAndGroupNames
+      conf.set(HdfsClientConfigKeys.DFS_WEBHDFS_USER_PATTERN_KEY,
+          "^[A-Za-z0-9_][A-Za-z0-9._-]*[$]?$");
+      conf.set(HdfsClientConfigKeys.DFS_WEBHDFS_ACL_PERMISSION_PATTERN_KEY,
+          "^(default:)?(user|group|mask|other):" +
+              "[[0-9A-Za-z_][@A-Za-z0-9._-]]*:([rwx-]{3})?(,(default:)?" +
+              "(user|group|mask|other):[[0-9A-Za-z_][@A-Za-z0-9._-]]*:" +
+              "([rwx-]{3})?)*$");
+      FileSystemTestHelper helper = new FileSystemTestHelper();
+      Path targetFile = new Path(new File(helper.getTestRootDir())
+          .getAbsolutePath(), "test.jks");
+      final String jceksPath = JavaKeyStoreProvider.SCHEME_NAME + "://file" +
+          targetFile.toUri();
+      conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
+          jceksPath);
       MiniDFSCluster.Builder builder = new MiniDFSCluster.Builder(conf);
-      builder.numDataNodes(2);
+      int totalDataNodes = ERASURE_CODING_POLICY.getNumDataUnits() +
+          ERASURE_CODING_POLICY.getNumParityUnits();
+      builder.numDataNodes(totalDataNodes);
       MiniDFSCluster miniHdfs = builder.build();
-      FileSystem fileSystem = miniHdfs.getFileSystem();
+      final String testkey = "testkey";
+      DFSTestUtil.createKey(testkey, miniHdfs, conf);
+
+      DistributedFileSystem fileSystem = miniHdfs.getFileSystem();
+      fileSystem.enableErasureCodingPolicy(ERASURE_CODING_POLICY.getName());
+      fileSystem.getClient().setKeyProvider(miniHdfs.getNameNode()
+          .getNamesystem().getProvider());
+
       fileSystem.mkdirs(new Path("/tmp"));
       fileSystem.mkdirs(new Path("/user"));
       fileSystem.setPermission(new Path("/tmp"), FsPermission.valueOf("-rwxrwxrwx"));
       fileSystem.setPermission(new Path("/user"), FsPermission.valueOf("-rwxrwxrwx"));
+      fileSystem.mkdirs(ENCRYPTION_ZONE);
+      fileSystem.createEncryptionZone(ENCRYPTION_ZONE, testkey);
+      fileSystem.create(ENCRYPTED_FILE).close();
+
+      fileSystem.mkdirs(ERASURE_CODING_DIR);
+      fileSystem.setErasureCodingPolicy(ERASURE_CODING_DIR,
+          ERASURE_CODING_POLICY.getName());
+      fileSystem.create(ERASURE_CODING_FILE).close();
+
       MINI_DFS = miniHdfs;
     }
     return MINI_DFS;

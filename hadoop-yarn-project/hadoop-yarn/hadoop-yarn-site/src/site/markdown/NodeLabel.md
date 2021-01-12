@@ -15,18 +15,7 @@
 YARN Node Labels
 ===============
 
-* [Overview](#Overview)
-* [Features](#Features)
-* [Configuration](#Configuration)
-    * [Setting up ResourceManager to enable Node Labels](#Setting_up_ResourceManager_to_enable_Node_Labels)
-    * [Add/modify node labels list to YARN](#Add/modify_node_labels_list_to_YARN)
-    * [Add/modify node-to-labels mapping to YARN](#Add/modify_node-to-labels_mapping_to_YARN)
-    * [Configuration of Schedulers for node labels](#Configuration_of_Schedulers_for_node_labels)
-* [Specifying node label for application](#Specifying_node_label_for_application)
-* [Monitoring](#Monitoring)
-    * [Monitoring through web UI](#Monitoring_through_web_UI)
-    * [Monitoring through commandline](#Monitoring_through_commandline)
-* [Useful links](#Useful_links)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Overview
 --------
@@ -86,10 +75,17 @@ Notes:
     * If user don’t specify “(exclusive=…)”, exclusive will be ```true``` by default.
     * Run ```yarn cluster --list-node-labels``` to check added node labels are visible in the cluster.
 
+###Remove node labels from YARN
+
+* Remove cluster node labels:
+    * To remove one or more node labels, execute the following command: ```yarn rmadmin -removeFromClusterNodeLabels "<label>[,<label>,...]"```. The command argument should be a comma-separated list of node labels to remove.
+    * It is not allowed to remove a label which has been associated with queues, i.e., one or more queues have access to this label.
+    * To verify if specified node labels have been successfully removed, run ```yarn cluster --list-node-labels```.
+
 ###Add/modify node-to-labels mapping to YARN
 
 * Configuring nodes to labels mapping in **Centralized** NodeLabel setup
-    * Executing ```yarn rmadmin -replaceLabelsOnNode “node1[:port]=label1 node2=label2”```. Added label1 to node1, label2 to node2. If user don’t specify port, it added the label to all ```NodeManagers``` running on the node.
+    * Executing ```yarn rmadmin -replaceLabelsOnNode “node1[:port]=label1 node2=label2” [-failOnUnknownNodes]```. Added label1 to node1, label2 to node2. If user don’t specify port, it adds the label to all ```NodeManagers``` running on the node. If option ```-failOnUnknownNodes``` is set, this command will fail if specified nodes are unknown.
 
 * Configuring nodes to labels mapping in **Distributed** NodeLabel setup
 
@@ -192,5 +188,5 @@ Following label-related fields can be seen on web UI:
 Useful links
 ------------
 
-* [YARN Capacity Scheduler](http://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/CapacityScheduler.html), if you need more understanding about how to configure Capacity Scheduler
+* [YARN Capacity Scheduler](./CapacityScheduler.html), if you need more understanding about how to configure Capacity Scheduler
 * Write YARN application using node labels, you can see following two links as examples: [YARN distributed shell](https://issues.apache.org/jira/browse/YARN-2502), [Hadoop MapReduce](https://issues.apache.org/jira/browse/MAPREDUCE-6304)

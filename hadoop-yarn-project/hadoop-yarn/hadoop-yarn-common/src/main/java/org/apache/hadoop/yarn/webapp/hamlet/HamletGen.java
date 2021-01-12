@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.webapp.hamlet;
 
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -43,7 +43,9 @@ import org.slf4j.LoggerFactory;
 /**
  * Generates a specific hamlet implementation class from a spec class
  * using a generic hamlet implementation class.
+ * @deprecated Use org.apache.hadoop.yarn.webapp.hamlet2 package instead.
  */
+@Deprecated
 @InterfaceAudience.LimitedPrivate({"YARN", "MapReduce"})
 public class HamletGen {
   static final Logger LOG = LoggerFactory.getLogger(HamletGen.class);

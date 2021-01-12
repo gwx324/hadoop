@@ -52,6 +52,7 @@ import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.VersionResponsePro
 import org.apache.hadoop.hdfs.server.protocol.DatanodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
+import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.HeartbeatResponse;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
@@ -60,9 +61,9 @@ import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 
-import com.google.common.base.Preconditions;
-import com.google.protobuf.RpcController;
-import com.google.protobuf.ServiceException;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.protobuf.RpcController;
+import org.apache.hadoop.thirdparty.protobuf.ServiceException;
 
 public class DatanodeProtocolServerSideTranslatorPB implements
     DatanodeProtocolPB {
@@ -119,7 +120,9 @@ public class DatanodeProtocolServerSideTranslatorPB implements
           report, request.getCacheCapacity(), request.getCacheUsed(),
           request.getXmitsInProgress(),
           request.getXceiverCount(), request.getFailedVolumes(),
-          volumeFailureSummary, request.getRequestFullBlockReportLease());
+          volumeFailureSummary, request.getRequestFullBlockReportLease(),
+          PBHelper.convertSlowPeerInfo(request.getSlowPeersList()),
+          PBHelper.convertSlowDiskInfo(request.getSlowDisksList()));
     } catch (IOException e) {
       throw new ServiceException(e);
     }
@@ -230,7 +233,8 @@ public class DatanodeProtocolServerSideTranslatorPB implements
         info[i] = new StorageReceivedDeletedBlocks(
             PBHelperClient.convert(sBlock.getStorage()), rdBlocks);
       } else {
-        info[i] = new StorageReceivedDeletedBlocks(sBlock.getStorageUuid(), rdBlocks);
+        info[i] = new StorageReceivedDeletedBlocks(
+            new DatanodeStorage(sBlock.getStorageUuid()), rdBlocks);
       }
     }
     try {

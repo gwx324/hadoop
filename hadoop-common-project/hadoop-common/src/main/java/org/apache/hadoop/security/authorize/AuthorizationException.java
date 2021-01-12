@@ -29,7 +29,7 @@ import org.apache.hadoop.security.AccessControlException;
  * 
  * This class <em>does not</em> provide the stack trace for security purposes.
  */
-@InterfaceAudience.LimitedPrivate({"HDFS", "MapReduce", "YARN"})
+@InterfaceAudience.Public
 @InterfaceStability.Evolving
 public class AuthorizationException extends AccessControlException {
   private static final long serialVersionUID = 1L;
@@ -64,17 +64,19 @@ public class AuthorizationException extends AccessControlException {
 
   @Override
   public void printStackTrace() {
-    // Do not provide the stack-trace
+    printStackTrace(System.err);
   }
 
   @Override
   public void printStackTrace(PrintStream s) {
     // Do not provide the stack-trace
+    s.println(this);
   }
 
   @Override
   public void printStackTrace(PrintWriter s) {
     // Do not provide the stack-trace
+    s.println(this);
   }
-  
+
 }

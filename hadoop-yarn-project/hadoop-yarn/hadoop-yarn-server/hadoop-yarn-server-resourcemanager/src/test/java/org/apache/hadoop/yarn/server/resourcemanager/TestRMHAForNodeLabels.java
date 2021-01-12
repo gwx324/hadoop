@@ -24,8 +24,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -33,11 +33,11 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
-import com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 
 public class TestRMHAForNodeLabels extends RMHATestBase {
-  public static final Log LOG = LogFactory
-      .getLog(TestSubmitApplicationWithRMHA.class);
+  public static final Logger LOG = LoggerFactory
+      .getLogger(TestRMHAForNodeLabels.class);
 
   @Before
   @Override

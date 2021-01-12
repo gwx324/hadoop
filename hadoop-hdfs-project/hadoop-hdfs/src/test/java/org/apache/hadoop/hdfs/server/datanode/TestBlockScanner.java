@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCK_SCANNER_SKIP_RECENT_ACCESSED;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCK_SCANNER_VOLUME_JOIN_TIMEOUT_MSEC_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_SCAN_PERIOD_HOURS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCK_SCANNER_VOLUME_BYTES_PER_SECOND;
 import static org.apache.hadoop.hdfs.server.datanode.BlockScanner.Conf.INTERNAL_DFS_DATANODE_SCAN_PERIOD_MS;
@@ -25,18 +27,25 @@ import static org.apache.hadoop.hdfs.server.datanode.BlockScanner.Conf.INTERNAL_
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.fail;
 
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.hdfs.AppendTestUtil;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.datanode.FsDatasetTestUtils.MaterializedReplica;
@@ -88,9 +97,20 @@ public class TestBlockScanner {
 
     TestContext(Configuration conf, int numNameServices) throws Exception {
       this.numNameServices = numNameServices;
-      MiniDFSCluster.Builder bld = new MiniDFSCluster.Builder(conf).
+      File basedir = new File(GenericTestUtils.getRandomizedTempPath());
+      long volumeScannerTimeOutFromConf =
+          conf.getLong(DFS_BLOCK_SCANNER_VOLUME_JOIN_TIMEOUT_MSEC_KEY, -1);
+      long expectedVScannerTimeOut =
+          volumeScannerTimeOutFromConf == -1
+              ? MiniDFSCluster.DEFAULT_SCANNER_VOLUME_JOIN_TIMEOUT_MSEC
+              : volumeScannerTimeOutFromConf;
+      MiniDFSCluster.Builder bld = new MiniDFSCluster.Builder(conf, basedir).
           numDataNodes(1).
           storagesPerDatanode(1);
+      // verify that the builder was initialized to get the default
+      // configuration designated for Junit tests.
+      assertEquals(expectedVScannerTimeOut,
+            conf.getLong(DFS_BLOCK_SCANNER_VOLUME_JOIN_TIMEOUT_MSEC_KEY, -1));
       if (numNameServices > 1) {
         bld.nnTopology(MiniDFSNNTopology.
               simpleFederatedTopology(numNameServices));
@@ -120,6 +140,7 @@ public class TestBlockScanner {
       if (cluster != null) {
         for (int i = 0; i < numNameServices; i++) {
           dfs[i].delete(new Path("/test"), true);
+          dfs[i].close();
         }
         cluster.shutdown();
       }
@@ -549,8 +570,8 @@ public class TestBlockScanner {
       info.shouldRun = false;
     }
     ctx.datanode.shutdown();
-    String vPath = ctx.volumes.get(0).getBasePath();
-    File cursorPath = new File(new File(new File(vPath, "current"),
+    URI vURI = ctx.volumes.get(0).getStorageLocation().getUri();
+    File cursorPath = new File(new File(new File(new File(vURI), "current"),
           ctx.bpids[0]), "scanner.cursor");
     assertTrue("Failed to find cursor save file in " +
         cursorPath.getAbsolutePath(), cursorPath.exists());
@@ -812,6 +833,7 @@ public class TestBlockScanner {
           "in recentSuspectBlocks.", info.goodBlocks.contains(first));
       info.blocksScanned = 0;
     }
+    ctx.close();
   }
 
   /**
@@ -868,5 +890,268 @@ public class TestBlockScanner {
       info.blocksScanned = 0;
     }
     info.sem.release(1);
+    ctx.close();
+  }
+
+  /**
+   * Test concurrent append and scan.
+   * @throws Exception
+   */
+  @Test(timeout=120000)
+  public void testAppendWhileScanning() throws Exception {
+    GenericTestUtils.setLogLevel(DataNode.LOG, Level.ALL);
+    Configuration conf = new Configuration();
+    // throttle the block scanner: 1MB per second
+    conf.setLong(DFS_BLOCK_SCANNER_VOLUME_BYTES_PER_SECOND, 1048576);
+    // Set a really long scan period.
+    conf.setLong(DFS_DATANODE_SCAN_PERIOD_HOURS_KEY, 100L);
+    conf.set(INTERNAL_VOLUME_SCANNER_SCAN_RESULT_HANDLER,
+        TestScanResultHandler.class.getName());
+    conf.setLong(INTERNAL_DFS_BLOCK_SCANNER_CURSOR_SAVE_INTERVAL_MS, 0L);
+    final int numExpectedFiles = 1;
+    final int numExpectedBlocks = 1;
+    final int numNameServices = 1;
+    // the initial file length can not be too small.
+    // Otherwise checksum file stream buffer will be pre-filled and
+    // BlockSender will not see the updated checksum.
+    final int initialFileLength = 2*1024*1024+100;
+    final TestContext ctx = new TestContext(conf, numNameServices);
+    // create one file, with one block.
+    ctx.createFiles(0, numExpectedFiles, initialFileLength);
+    final TestScanResultHandler.Info info =
+        TestScanResultHandler.getInfo(ctx.volumes.get(0));
+    String storageID = ctx.volumes.get(0).getStorageID();
+    synchronized (info) {
+      info.sem = new Semaphore(numExpectedBlocks*2);
+      info.shouldRun = true;
+      info.notify();
+    }
+    // VolumeScanner scans the first block when DN starts.
+    // Due to throttler, this should take approximately 2 seconds.
+    waitForRescan(info, numExpectedBlocks);
+
+    // update throttler to schedule rescan immediately.
+    // this number must be larger than initial file length, otherwise
+    // throttler prevents immediate rescan.
+    conf.setLong(DFS_BLOCK_SCANNER_VOLUME_BYTES_PER_SECOND,
+        initialFileLength+32*1024);
+    BlockScanner.Conf newConf = new BlockScanner.Conf(conf);
+    ctx.datanode.getBlockScanner().setConf(newConf);
+    // schedule the first block for scanning
+    ExtendedBlock first = ctx.getFileBlock(0, 0);
+    ctx.datanode.getBlockScanner().markSuspectBlock(storageID, first);
+
+    // append the file before VolumeScanner completes scanning the block,
+    // which takes approximately 2 seconds to complete.
+    FileSystem fs = ctx.cluster.getFileSystem();
+    FSDataOutputStream os = fs.append(ctx.getPath(0));
+    long seed = -1;
+    int size = 200;
+    final byte[] bytes = AppendTestUtil.randomBytes(seed, size);
+    os.write(bytes);
+    os.hflush();
+    os.close();
+
+    // verify that volume scanner does not find bad blocks after append.
+    waitForRescan(info, numExpectedBlocks);
+
+    GenericTestUtils.setLogLevel(DataNode.LOG, Level.INFO);
+    ctx.close();
+  }
+
+  private void waitForRescan(final TestScanResultHandler.Info info,
+      final int numExpectedBlocks)
+      throws TimeoutException, InterruptedException {
+    LOG.info("Waiting for the first 1 blocks to be scanned.");
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        synchronized (info) {
+          if (info.blocksScanned >= numExpectedBlocks) {
+            LOG.info("info = {}.  blockScanned has now reached 1.", info);
+            return true;
+          } else {
+            LOG.info("info = {}.  Waiting for blockScanned to reach 1.", info);
+            return false;
+          }
+        }
+      }
+    }, 1000, 30000);
+
+    synchronized (info) {
+      assertEquals("Expected 1 good block.",
+          numExpectedBlocks, info.goodBlocks.size());
+      info.goodBlocks.clear();
+      assertEquals("Expected 1 blocksScanned",
+          numExpectedBlocks, info.blocksScanned);
+      assertEquals("Did not expect bad blocks.", 0, info.badBlocks.size());
+      info.blocksScanned = 0;
+    }
+  }
+
+  @Test
+  public void testSkipRecentAccessFile() throws Exception {
+    Configuration conf = new Configuration();
+    conf.setBoolean(DFS_BLOCK_SCANNER_SKIP_RECENT_ACCESSED, true);
+    conf.setLong(INTERNAL_DFS_DATANODE_SCAN_PERIOD_MS, 2000L);
+    conf.set(INTERNAL_VOLUME_SCANNER_SCAN_RESULT_HANDLER,
+        TestScanResultHandler.class.getName());
+    final TestContext ctx = new TestContext(conf, 1);
+    final int totalBlocks =  5;
+    ctx.createFiles(0, totalBlocks, 4096);
+
+    final TestScanResultHandler.Info info =
+        TestScanResultHandler.getInfo(ctx.volumes.get(0));
+    synchronized (info) {
+      info.shouldRun = true;
+      info.notify();
+    }
+    try {
+      GenericTestUtils.waitFor(() -> {
+        synchronized (info) {
+          return info.blocksScanned > 0;
+        }
+      }, 10, 500);
+      fail("Scan nothing for all files are accessed in last period.");
+    } catch (TimeoutException e) {
+      LOG.debug("Timeout for all files are accessed in last period.");
+    }
+    synchronized (info) {
+      info.shouldRun = false;
+      info.notify();
+    }
+    assertEquals("Should not scan block accessed in last period",
+        0, info.blocksScanned);
+    ctx.close();
+  }
+
+  /**
+   * Test a DN does not wait for the VolumeScanners to finish before shutting
+   * down.
+   *
+   * @throws Exception
+   */
+  @Test(timeout=120000)
+  public void testFastDatanodeShutdown() throws Exception {
+    // set the joinTimeOut to a value smaller than the completion time of the
+    // VolumeScanner.
+    testDatanodeShutDown(50L, 1000L, true);
+  }
+
+  /**
+   * Test a DN waits for the VolumeScanners to finish before shutting down.
+   *
+   * @throws Exception
+   */
+  @Test(timeout=120000)
+  public void testSlowDatanodeShutdown() throws Exception {
+    // Set the joinTimeOut to a value larger than the completion time of the
+    // volume scanner
+    testDatanodeShutDown(TimeUnit.MINUTES.toMillis(5), 1000L,
+        false);
+  }
+
+  private void testDatanodeShutDown(final long joinTimeOutMS,
+      final long delayMS, boolean isFastShutdown) throws Exception {
+    VolumeScannerCBInjector prevVolumeScannerCBInject =
+        VolumeScannerCBInjector.get();
+    try {
+      DelayVolumeScannerResponseToInterrupt injectDelay =
+          new DelayVolumeScannerResponseToInterrupt(delayMS);
+      VolumeScannerCBInjector.set(injectDelay);
+      Configuration conf = new Configuration();
+      conf.setLong(DFS_DATANODE_SCAN_PERIOD_HOURS_KEY, 100L);
+      conf.set(INTERNAL_VOLUME_SCANNER_SCAN_RESULT_HANDLER,
+          TestScanResultHandler.class.getName());
+      conf.setLong(INTERNAL_DFS_BLOCK_SCANNER_CURSOR_SAVE_INTERVAL_MS, 0L);
+      conf.setLong(DFS_BLOCK_SCANNER_VOLUME_JOIN_TIMEOUT_MSEC_KEY,
+          joinTimeOutMS);
+      final TestContext ctx = new TestContext(conf, 1);
+      final int numExpectedBlocks = 10;
+      ctx.createFiles(0, numExpectedBlocks, 1);
+      final TestScanResultHandler.Info info =
+          TestScanResultHandler.getInfo(ctx.volumes.get(0));
+      synchronized (info) {
+        info.sem = new Semaphore(5);
+        info.shouldRun = true;
+        info.notify();
+      }
+      // make sure that the scanners are doing progress
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override
+        public Boolean get() {
+          synchronized (info) {
+            return info.blocksScanned >= 1;
+          }
+        }
+      }, 3, 30000);
+      // mark the time where the
+      long startShutdownTime = Time.monotonicNow();
+      ctx.datanode.shutdown();
+      long endShutdownTime = Time.monotonicNow();
+      long totalTimeShutdown = endShutdownTime - startShutdownTime;
+
+      if (isFastShutdown) {
+        assertTrue("total shutdown time of DN must be smaller than "
+                + "VolumeScanner Response time: " + totalTimeShutdown,
+            totalTimeShutdown < delayMS
+                && totalTimeShutdown >= joinTimeOutMS);
+        // wait for scanners to terminate before we move to the next test.
+        injectDelay.waitForScanners();
+        return;
+      }
+      assertTrue("total shutdown time of DN must be larger than " +
+              "VolumeScanner Response time: " + totalTimeShutdown,
+          totalTimeShutdown >= delayMS
+              && totalTimeShutdown < joinTimeOutMS);
+    } finally {
+      // restore the VolumeScanner callback injector.
+      VolumeScannerCBInjector.set(prevVolumeScannerCBInject);
+    }
+  }
+
+  private static class DelayVolumeScannerResponseToInterrupt extends
+      VolumeScannerCBInjector {
+    final private long delayAmountNS;
+    final private Set<VolumeScanner> scannersToShutDown;
+
+    DelayVolumeScannerResponseToInterrupt(long delayMS) {
+      delayAmountNS =
+          TimeUnit.NANOSECONDS.convert(delayMS, TimeUnit.MILLISECONDS);
+      scannersToShutDown = ConcurrentHashMap.newKeySet();
+    }
+
+    @Override
+    public void preSavingBlockIteratorTask(VolumeScanner volumeScanner) {
+      long remainingTimeNS = delayAmountNS;
+      // busy delay without sleep().
+      long startTime = Time.monotonicNowNanos();
+      long endTime = startTime + remainingTimeNS;
+      long currTime, waitTime = 0;
+      while ((currTime = Time.monotonicNowNanos()) < endTime) {
+        // empty loop. No need to sleep because the thread could be in an
+        // interrupt mode.
+        waitTime = currTime - startTime;
+      }
+      LOG.info("VolumeScanner {} finished delayed Task after {}",
+          volumeScanner.toString(),
+          TimeUnit.NANOSECONDS.convert(waitTime, TimeUnit.MILLISECONDS));
+    }
+
+    @Override
+    public void shutdownCallBack(VolumeScanner volumeScanner) {
+      scannersToShutDown.add(volumeScanner);
+    }
+
+    @Override
+    public void terminationCallBack(VolumeScanner volumeScanner) {
+      scannersToShutDown.remove(volumeScanner);
+    }
+
+    public void waitForScanners() throws TimeoutException,
+        InterruptedException {
+      GenericTestUtils.waitFor(
+          () -> scannersToShutDown.isEmpty(), 10, 120000);
+    }
   }
 }

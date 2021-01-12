@@ -15,17 +15,16 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-                      http://maven.apache.org/xsd/maven-4.0.0.xsd">
+                      https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project</artifactId>
-    <version>3.0.0-alpha2-SNAPSHOT</version>
+    <version>3.4.0-SNAPSHOT</version>
     <relativePath>../hadoop-project</relativePath>
   </parent>
-  <groupId>org.apache.hadoop</groupId>
   <artifactId>hadoop-project-dist</artifactId>
-  <version>3.0.0-alpha2-SNAPSHOT</version>
+  <version>3.4.0-SNAPSHOT</version>
   <description>Apache Hadoop Project Dist POM</description>
   <name>Apache Hadoop Project Dist POM</name>
   <packaging>pom</packaging>
@@ -41,7 +40,9 @@
     <hadoop.component>UNDEF</hadoop.component>
     <snappy.lib></snappy.lib>
     <bundle.snappy>false</bundle.snappy>
-    <bundle.snappy.in.bin>false</bundle.snappy.in.bin>
+    <zstd.lib></zstd.lib>
+    <bundle.zstd>false</bundle.zstd>
+    <bundle.zstd.in.bin>false</bundle.zstd.in.bin>
     <isal.lib></isal.lib>
     <bundle.isal>false</bundle.isal>
     <openssl.lib></openssl.lib>
@@ -88,22 +89,6 @@
         </executions>
       </plugin>
       <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-source-plugin</artifactId>
-        <executions>
-          <execution>
-            <phase>prepare-package</phase>
-            <goals>
-              <goal>jar</goal>
-              <goal>test-jar</goal>
-            </goals>
-          </execution>
-        </executions>
-        <configuration>
-          <attach>true</attach>
-        </configuration>
-      </plugin>
-      <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>findbugs-maven-plugin</artifactId>
         <configuration>
@@ -116,29 +101,19 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-javadoc-plugin</artifactId>
         <configuration>
-          <linksource>true</linksource>
-          <maxmemory>512m</maxmemory>
+          <maxmemory>768m</maxmemory>
           <quiet>true</quiet>
           <verbose>false</verbose>
           <source>${maven.compile.source}</source>
           <charset>${maven.compile.encoding}</charset>
           <reportOutputDirectory>${project.build.directory}/site</reportOutputDirectory>
-          <destDir>api</destDir>
+          <destDir>${project.build.directory}/api</destDir>
           <groups>
             <group>
               <title>${project.name} API</title>
               <packages>org.apache.hadoop*</packages>
             </group>
           </groups>
-          <doclet>org.apache.hadoop.classification.tools.ExcludePrivateAnnotationsStandardDoclet</doclet>
-          <docletArtifacts>
-            <docletArtifact>
-              <groupId>org.apache.hadoop</groupId>
-              <artifactId>hadoop-annotations</artifactId>
-              <version>${project.version}</version>
-            </docletArtifact>
-          </docletArtifacts>
-          <useStandardDocletOptions>true</useStandardDocletOptions>
 
           <!-- switch on dependency-driven aggregation -->
           <includeDependencySources>false</includeDependencySources>
@@ -160,41 +135,33 @@
         <activeByDefault>false</activeByDefault>
       </activation>
       <properties>
-        <jdiff.stable.api>2.6.0</jdiff.stable.api>
+        <jdiff.stable.api>3.2.2</jdiff.stable.api>
         <jdiff.stability>-unstable</jdiff.stability>
         <!-- Commented out for HADOOP-11776 -->
         <!-- Uncomment param name="${jdiff.compatibility}" in javadoc doclet if compatibility is not empty -->
         <jdiff.compatibility></jdiff.compatibility>
         <jdiff.javadoc.maxmemory>512m</jdiff.javadoc.maxmemory>
       </properties>
+      <dependencies>
+        <dependency>
+          <groupId>xerces</groupId>
+          <artifactId>xercesImpl</artifactId>
+          <version>${xerces.jdiff.version}</version>
+        </dependency>
+      </dependencies>
       <build>
         <plugins>
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-javadoc-plugin</artifactId>
             <executions>
-              <execution>
+             <execution>
                 <goals>
-                  <goal>javadoc</goal>
+                  <goal>javadoc-no-fork</goal>
                 </goals>
                 <phase>prepare-package</phase>
               </execution>
             </executions>
-          </plugin>
-          <plugin>
-            <groupId>org.codehaus.mojo</groupId>
-            <artifactId>findbugs-maven-plugin</artifactId>
-            <executions>
-              <execution>
-                <goals>
-                  <goal>findbugs</goal>
-                </goals>
-                <phase>prepare-package</phase>
-              </execution>
-            </executions>
-            <configuration>
-              <excludeFilterFile>${basedir}/dev-support/findbugsExcludeFile.xml</excludeFilterFile>
-            </configuration>
           </plugin>
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
@@ -241,6 +208,26 @@
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-antrun-plugin</artifactId>
             <executions>
+
+              <!-- Pre site -->
+              <execution>
+                <id>pre-site</id>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>run</goal>
+                </goals>
+                <configuration>
+                  <target if="is.hadoop.common.component">
+                    <!-- HADOOP-13428: This is for workaround issues of JDiff
+                         - https://sourceforge.net/p/javadiff/bugs/19/ -->
+                    <exec executable="patch" input="dev-support/jdiff-workaround.patch" dir="${basedir}">
+                        <arg value="-p3"/>
+                    </exec>
+                  </target>
+                </configuration>
+              </execution>
+
+
               <execution>
                 <id>site</id>
                 <phase>prepare-package</phase>
@@ -249,7 +236,6 @@
                 </goals>
                 <configuration>
                   <target if="is.hadoop.component">
-
                     <mkdir dir="${project.build.directory}/docs-src"/>
 
                     <!-- Docs -->
@@ -262,7 +248,7 @@
                     <mkdir dir="${project.build.directory}/site/jdiff/xml"/>
 
                     <javadoc maxmemory="${jdiff.javadoc.maxmemory}" verbose="yes">
-                      <doclet name="org.apache.hadoop.classification.tools.ExcludePrivateAnnotationsJDiffDoclet"
+                      <doclet name="org.apache.hadoop.classification.tools.IncludePublicAnnotationsJDiffDoclet"
                               path="${project.build.directory}/hadoop-annotations.jar:${project.build.directory}/jdiff.jar">
                         <param name="-apidir" value="${project.build.directory}/site/jdiff/xml"/>
                         <param name="-apiname" value="${project.name} ${project.version}"/>
@@ -277,14 +263,14 @@
                              destdir="${project.build.directory}/site/jdiff/xml"
                              sourceFiles="${basedir}/dev-support/jdiff/Null.java"
                              maxmemory="${jdiff.javadoc.maxmemory}">
-                      <doclet name="org.apache.hadoop.classification.tools.ExcludePrivateAnnotationsJDiffDoclet"
+                      <doclet name="org.apache.hadoop.classification.tools.IncludePublicAnnotationsJDiffDoclet"
                               path="${project.build.directory}/hadoop-annotations.jar:${project.build.directory}/jdiff.jar:${project.build.directory}/xerces.jar">
                         <param name="-oldapi" value="${project.name} ${jdiff.stable.api}"/>
                         <param name="-newapi" value="${project.name} ${project.version}"/>
                         <param name="-oldapidir" value="${basedir}/dev-support/jdiff"/>
                         <param name="-newapidir" value="${project.build.directory}/site/jdiff/xml"/>
                         <param name="-javadocold"
-                               value="http://hadoop.apache.org/docs/r${jdiff.stable.api}/api/"/>
+                               value="https://hadoop.apache.org/docs/r${jdiff.stable.api}/api/"/>
                         <param name="-javadocnew" value="${project.build.directory}/site/api"/>
                         <param name="-stats"/>
                         <param name="${jdiff.stability}"/>
@@ -294,14 +280,28 @@
                         <path refid="maven.compile.classpath"/>
                       </classpath>
                     </javadoc>
-
-                    <xslt style="${env.FINDBUGS_HOME}/src/xsl/default.xsl"
-                          in="${project.build.directory}/findbugsXml.xml"
-                          out="${project.build.directory}/site/findbugs.html"/>
-
                   </target>
                 </configuration>
               </execution>
+
+              <!-- post site phase -->
+              <execution>
+                <id>post-site</id>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>run</goal>
+                </goals>
+                <configuration>
+                  <target if="is.hadoop.common.component">
+                    <!-- HADOOP-13428: Revert temporary patch-->
+                    <exec executable="patch" input="dev-support/jdiff-workaround.patch" dir="${basedir}">
+                        <arg value="-p3"/>
+                        <arg value="-R"/>
+                    </exec>
+                  </target>
+                </configuration>
+              </execution>
+
             </executions>
           </plugin>
         </plugins>
@@ -340,9 +340,11 @@
                     <argument>--openssllib=${openssl.lib}</argument>
                     <argument>--opensslbinbundle=${bundle.openssl.in.bin}</argument>
                     <argument>--openssllibbundle=${bundle.openssl}</argument>
-                    <argument>--snappybinbundle=${bundle.snappy.in.bin}</argument>
                     <argument>--snappylib=${snappy.lib}</argument>
                     <argument>--snappylibbundle=${bundle.snappy}</argument>
+                    <argument>--zstdbinbundle=${bundle.zstd.in.bin}</argument>
+                    <argument>--zstdlib=${zstd.lib}</argument>
+                    <argument>--zstdlibbundle=${bundle.zstd}</argument>
                   </arguments>
                 </configuration>
               </execution>
@@ -380,13 +382,13 @@
               <dependency>
                 <groupId>org.apache.hadoop</groupId>
                 <artifactId>hadoop-assemblies</artifactId>
-                <version>${project.version}</version>
+                <version>${hadoop.version}</version>
               </dependency>
             </dependencies>
             <executions>
               <execution>
                 <id>dist</id>
-                <phase>prepare-package</phase>
+                <phase>package</phase>
                 <goals>
                   <goal>single</goal>
                 </goals>
@@ -400,6 +402,31 @@
                 </configuration>
               </execution>
             </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>doclet</id>
+      <activation>
+        <jdk>(,10)</jdk>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <configuration>
+              <doclet>org.apache.hadoop.classification.tools.ExcludePrivateAnnotationsStandardDoclet</doclet>
+              <docletArtifacts>
+                <docletArtifact>
+                  <groupId>org.apache.hadoop</groupId>
+                  <artifactId>hadoop-annotations</artifactId>
+                  <version>${hadoop.version}</version>
+                </docletArtifact>
+              </docletArtifacts>
+              <useStandardDocletOptions>true</useStandardDocletOptions>
+            </configuration>
           </plugin>
         </plugins>
       </build>

@@ -18,22 +18,23 @@
 
 package org.apache.hadoop.mapred;
 
-import org.apache.commons.logging.Log;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
+import org.slf4j.Logger;
 import org.junit.Test;
 
 import java.io.IOException;
 import java.util.Random;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 
 public class TestSequenceFileInputFilter {
-  private static final Log LOG = FileInputFormat.LOG;
+  private static final Logger LOG = FileInputFormat.LOG;
 
   private static final int MAX_LENGTH = 15000;
   private static final Configuration conf = new Configuration();
@@ -147,7 +148,7 @@ public class TestSequenceFileInputFilter {
       int expectedCount = length/1000;
       if (expectedCount*1000!=length)
         expectedCount++;
-      assertEquals(count, expectedCount);
+      assertThat(count).isEqualTo(expectedCount);
     }
       
     // clean up

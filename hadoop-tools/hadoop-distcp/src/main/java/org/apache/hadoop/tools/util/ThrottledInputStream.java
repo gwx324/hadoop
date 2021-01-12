@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.tools.util;
 
-import org.apache.hadoop.fs.PositionedReadable;
+import org.apache.hadoop.fs.Seekable;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -33,7 +33,7 @@ import java.io.InputStream;
  * (Thus, while the read-rate might exceed the maximum for a given short interval,
  * the average tends towards the specified maximum, overall.)
  */
-public class ThrottledInputStream extends InputStream {
+public class ThrottledInputStream extends InputStream implements Seekable {
 
   private final InputStream rawStream;
   private final float maxBytesPerSec;
@@ -84,27 +84,11 @@ public class ThrottledInputStream extends InputStream {
   /** {@inheritDoc} */
   @Override
   public int read(byte[] b, int off, int len) throws IOException {
+    if (len == 0) {
+      return 0;
+    }
     throttle();
     int readLen = rawStream.read(b, off, len);
-    if (readLen != -1) {
-      bytesRead += readLen;
-    }
-    return readLen;
-  }
-
-  /**
-   * Read bytes starting from the specified position. This requires rawStream is
-   * an instance of {@link PositionedReadable}.
-   */
-  public int read(long position, byte[] buffer, int offset, int length)
-      throws IOException {
-    if (!(rawStream instanceof PositionedReadable)) {
-      throw new UnsupportedOperationException(
-          "positioned read is not supported by the internal stream");
-    }
-    throttle();
-    int readLen = ((PositionedReadable) rawStream).read(position, buffer,
-        offset, length);
     if (readLen != -1) {
       bytesRead += readLen;
     }
@@ -161,5 +145,30 @@ public class ThrottledInputStream extends InputStream {
         ", bytesPerSec=" + getBytesPerSec() +
         ", totalSleepTime=" + totalSleepTime +
         '}';
+  }
+
+  private void checkSeekable() throws IOException {
+    if (!(rawStream instanceof Seekable)) {
+      throw new UnsupportedOperationException(
+          "seek operations are unsupported by the internal stream");
+    }
+  }
+
+  @Override
+  public void seek(long pos) throws IOException {
+    checkSeekable();
+    ((Seekable) rawStream).seek(pos);
+  }
+
+  @Override
+  public long getPos() throws IOException {
+    checkSeekable();
+    return ((Seekable) rawStream).getPos();
+  }
+
+  @Override
+  public boolean seekToNewSource(long targetPos) throws IOException {
+    checkSeekable();
+    return ((Seekable) rawStream).seekToNewSource(targetPos);
   }
 }

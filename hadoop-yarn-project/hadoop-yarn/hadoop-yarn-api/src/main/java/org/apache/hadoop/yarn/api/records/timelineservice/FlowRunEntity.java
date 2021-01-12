@@ -63,11 +63,11 @@ public class FlowRunEntity extends HierarchicalTimelineEntity {
     String id = super.getId();
     if (id == null) {
       StringBuilder sb = new StringBuilder();
-      sb.append(getInfo().get(USER_INFO_KEY).toString());
-      sb.append('@');
-      sb.append(getInfo().get(FLOW_NAME_INFO_KEY).toString());
-      sb.append('/');
-      sb.append(getInfo().get(FLOW_RUN_ID_INFO_KEY).toString());
+      sb.append(getInfo().get(USER_INFO_KEY).toString())
+          .append('@')
+          .append(getInfo().get(FLOW_NAME_INFO_KEY).toString())
+          .append('/')
+          .append(getInfo().get(FLOW_RUN_ID_INFO_KEY).toString());
       id = sb.toString();
       setId(id);
     }
@@ -100,7 +100,7 @@ public class FlowRunEntity extends HierarchicalTimelineEntity {
 
   public long getRunId() {
     Object runId = getInfo().get(FLOW_RUN_ID_INFO_KEY);
-    return runId == null ? 0L : (Long) runId;
+    return runId == null ? 0L : ((Number) runId).longValue();
   }
 
   public void setRunId(long runId) {
@@ -117,7 +117,7 @@ public class FlowRunEntity extends HierarchicalTimelineEntity {
 
   public long getMaxEndTime() {
     Object time = getInfo().get(FLOW_RUN_END_TIME);
-    return time == null ? 0L : (Long)time;
+    return time == null ? 0L : ((Number) time).longValue();
   }
 
   public void setMaxEndTime(long endTime) {

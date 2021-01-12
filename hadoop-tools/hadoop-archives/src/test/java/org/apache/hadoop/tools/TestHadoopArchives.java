@@ -28,8 +28,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.StringTokenizer;
 
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -43,15 +41,19 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.JarFinder;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
-import org.apache.log4j.Level;
 import org.junit.After;
 import org.junit.Assert;
 import static org.junit.Assert.*;
+import static org.slf4j.LoggerFactory.getLogger;
+import static org.assertj.core.api.Assertions.assertThat;
+
 import org.junit.Before;
 import org.junit.Test;
+import org.slf4j.event.Level;
 
 /**
  * test {@link HadoopArchives}
@@ -62,9 +64,8 @@ public class TestHadoopArchives {
       .getJar(HadoopArchives.class);
 
   {
-    ((Log4JLogger) LogFactory.getLog(org.apache.hadoop.security.Groups.class))
-        .getLogger().setLevel(Level.ERROR);
-
+    GenericTestUtils.setLogLevel(
+        getLogger(org.apache.hadoop.security.Groups.class), Level.ERROR);
   }
 
   private static final String inputDir = "input";
@@ -400,7 +401,7 @@ public class TestHadoopArchives {
           readFileCount++;
         }
       }
-      assertEquals(fileList.size(), readFileCount);
+      assertThat(fileList.size()).isEqualTo(readFileCount);
     } finally {
       harFileSystem.close();
     }
@@ -444,7 +445,7 @@ public class TestHadoopArchives {
       int read; 
       while (true) {
         read = fsdis.read(buffer, readIntoBuffer, buffer.length - readIntoBuffer);
-        if (read < 0) {
+        if (read <= 0) {
           // end of stream:
           if (readIntoBuffer > 0) {
             baos.write(buffer, 0, readIntoBuffer);

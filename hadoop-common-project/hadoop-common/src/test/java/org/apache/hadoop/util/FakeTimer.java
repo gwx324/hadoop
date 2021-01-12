@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.util;
 
+import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
@@ -28,25 +29,43 @@ import org.apache.hadoop.classification.InterfaceStability;
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 public class FakeTimer extends Timer {
-  private long nowMillis;
+  private long now;
+  private long nowNanos;
 
   /** Constructs a FakeTimer with a non-zero value */
   public FakeTimer() {
-    nowMillis = 1000;  // Initialize with a non-trivial value.
+    // Initialize with a non-trivial value.
+    now = 1577836800000L; // 2020-01-01 00:00:00,000+0000
+    nowNanos = TimeUnit.MILLISECONDS.toNanos(1000);
   }
 
   @Override
   public long now() {
-    return nowMillis;
+    return now;
   }
 
   @Override
   public long monotonicNow() {
-    return nowMillis;
+    return TimeUnit.NANOSECONDS.toMillis(nowNanos);
+  }
+
+  @Override
+  public long monotonicNowNanos() {
+    return nowNanos;
   }
 
   /** Increases the time by milliseconds */
   public void advance(long advMillis) {
-    nowMillis += advMillis;
+    now += advMillis;
+    nowNanos += TimeUnit.MILLISECONDS.toNanos(advMillis);
+  }
+
+  /**
+   * Increases the time by nanoseconds.
+   * @param advNanos Nanoseconds to advance by.
+   */
+  public void advanceNanos(long advNanos) {
+    now += TimeUnit.NANOSECONDS.toMillis(advNanos);
+    nowNanos += advNanos;
   }
 }

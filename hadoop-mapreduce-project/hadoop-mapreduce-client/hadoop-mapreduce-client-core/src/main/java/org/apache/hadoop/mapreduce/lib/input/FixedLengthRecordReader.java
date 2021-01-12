@@ -25,9 +25,10 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FutureDataInputStreamBuilder;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.Seekable;
+import org.apache.hadoop.fs.impl.FutureIOSupport;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.compress.CodecPool;
@@ -36,10 +37,11 @@ import org.apache.hadoop.io.compress.CompressionCodecFactory;
 import org.apache.hadoop.io.compress.CompressionInputStream;
 import org.apache.hadoop.io.compress.Decompressor;
 import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.Log;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A reader to read fixed length records from a split.  Record offset is
@@ -49,8 +51,8 @@ import org.apache.commons.logging.Log;
 @InterfaceStability.Evolving
 public class FixedLengthRecordReader
     extends RecordReader<LongWritable, BytesWritable> {
-  private static final Log LOG 
-      = LogFactory.getLog(FixedLengthRecordReader.class);
+  private static final Logger LOG
+      = LoggerFactory.getLogger(FixedLengthRecordReader.class);
 
   private int recordLength;
   private long start;
@@ -89,9 +91,13 @@ public class FixedLengthRecordReader
       numBytesToSkip = recordLength - partialRecordLength;
     }
 
-    // open the file and seek to the start of the split
-    final FileSystem fs = file.getFileSystem(job);
-    fileIn = fs.open(file);
+    // open the file
+    final FutureDataInputStreamBuilder builder =
+        file.getFileSystem(job).openFile(file);
+    FutureIOSupport.propagateOptions(builder, job,
+        MRJobConfig.INPUT_FILE_OPTION_PREFIX,
+        MRJobConfig.INPUT_FILE_MANDATORY_PREFIX);
+    fileIn = FutureIOSupport.awaitFuture(builder.build());
 
     CompressionCodec codec = new CompressionCodecFactory(job).getCodec(file);
     if (null != codec) {

@@ -1,5 +1,3 @@
-package org.apache.hadoop.examples;
-
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -17,6 +15,8 @@ package org.apache.hadoop.examples;
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+package org.apache.hadoop.examples;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -37,7 +37,7 @@ import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
-import com.google.common.base.Charsets;
+import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
 
 public class WordStandardDeviation extends Configured implements Tool {
 

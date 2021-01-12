@@ -23,10 +23,10 @@ import java.io.DataInput;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.security.DigestInputStream;
 import java.security.DigestOutputStream;
 import java.security.MessageDigest;
@@ -38,14 +38,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
-import org.apache.commons.logging.Log;
+import org.slf4j.Logger;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.PathIsNotDirectoryException;
-import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.fs.permission.PermissionStatus;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
@@ -56,9 +54,11 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockIdManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.FileDiffList;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
@@ -75,8 +75,8 @@ import org.apache.hadoop.io.MD5Hash;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.util.StringUtils;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 /**
  * Contains inner classes for reading or writing the on-disk format for
@@ -182,7 +182,7 @@ import com.google.common.base.Preconditions;
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
 public class FSImageFormat {
-  private static final Log LOG = FSImage.LOG;
+  private static final Logger LOG = FSImage.LOG;
 
   // Static-only class
   private FSImageFormat() {}
@@ -216,9 +216,9 @@ public class FSImageFormat {
         throws IOException {
       Preconditions.checkState(impl == null, "Image already loaded!");
 
-      FileInputStream is = null;
+      InputStream is = null;
       try {
-        is = new FileInputStream(file);
+        is = Files.newInputStream(file.toPath());
         byte[] magic = new byte[FSImageUtil.MAGIC_HEADER.length];
         IOUtils.readFully(is, magic, 0, magic.length);
         if (Arrays.equals(magic, FSImageUtil.MAGIC_HEADER)) {
@@ -232,7 +232,7 @@ public class FSImageFormat {
           loader.load(file);
         }
       } finally {
-        IOUtils.cleanup(LOG, is);
+        IOUtils.cleanupWithLogger(LOG, is);
       }
     }
   }
@@ -319,7 +319,7 @@ public class FSImageFormat {
       //
       MessageDigest digester = MD5Hash.getDigester();
       DigestInputStream fin = new DigestInputStream(
-           new FileInputStream(curFile), digester);
+          Files.newInputStream(curFile.toPath()), digester);
 
       DataInputStream in = new DataInputStream(fin);
       try {
@@ -600,7 +600,7 @@ public class FSImageFormat {
      // Rename .snapshot paths if we're doing an upgrade
      parentPath = renameReservedPathsOnUpgrade(parentPath, getLayoutVersion());
      final INodeDirectory parent = INodeDirectory.valueOf(
-         namesystem.dir.getINode(parentPath, true), parentPath);
+         namesystem.dir.getINode(parentPath, DirOp.READ), parentPath);
      return loadChildren(parent, in, counter);
    }
 
@@ -651,15 +651,14 @@ public class FSImageFormat {
     }
   }
 
-  private INodeDirectory getParentINodeDirectory(byte[][] pathComponents
-      ) throws FileNotFoundException, PathIsNotDirectoryException,
-      UnresolvedLinkException {
+  private INodeDirectory getParentINodeDirectory(byte[][] pathComponents)
+      throws IOException {
     if (pathComponents.length < 2) { // root
       return null;
     }
     // Gets the parent INode
-    final INodesInPath inodes = namesystem.dir.getExistingPathINodes(
-        pathComponents);
+    final INodesInPath inodes =
+        namesystem.dir.getINodesInPath(pathComponents, DirOp.WRITE);
     return INodeDirectory.valueOf(inodes.getINode(-2), pathComponents);
   }
 
@@ -898,8 +897,9 @@ public class FSImageFormat {
           in.readShort());
       final long preferredBlockSize = in.readLong();
 
-      return new INodeFileAttributes.SnapshotCopy(name, permissions, null, modificationTime,
-          accessTime, replication, preferredBlockSize, (byte) 0, null, false);
+      return new INodeFileAttributes.SnapshotCopy(name, permissions, null,
+          modificationTime, accessTime, replication, null, preferredBlockSize,
+          (byte) 0, null, BlockType.CONTIGUOUS);
     }
 
     public INodeDirectoryAttributes loadINodeDirectoryAttributes(DataInput in)
@@ -954,7 +954,7 @@ public class FSImageFormat {
           inSnapshot = true;
         } else {
           path = renameReservedPathsOnUpgrade(path, getLayoutVersion());
-          final INodesInPath iip = fsDir.getINodesInPath(path, true);
+          final INodesInPath iip = fsDir.getINodesInPath(path, DirOp.WRITE);
           oldnode = INodeFile.valueOf(iip.getLastINode(), path);
         }
 

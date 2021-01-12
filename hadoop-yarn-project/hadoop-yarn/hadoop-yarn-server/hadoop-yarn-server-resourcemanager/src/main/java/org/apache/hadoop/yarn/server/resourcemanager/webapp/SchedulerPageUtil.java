@@ -27,8 +27,9 @@ public class SchedulerPageUtil {
     private void reopenQueue(Block html) {
       html.
           script().$type("text/javascript").
-          _("function reopenQueryNodes() {",
-            "  var currentParam = window.location.href.split('?');",
+          __("function reopenQueryNodes() {",
+            "  var currentParam = decodeURIComponent(window.location.href)"
+                + ".split('?');",
             "  var tmpCurrentParam = currentParam;",
             "  var queryQueuesString = '';",
             "  if (tmpCurrentParam.length > 1) {",
@@ -52,13 +53,13 @@ public class SchedulerPageUtil {
             "                  'open_node.jstree' :function(e, data) { storeExpandedQueue(e, data); },",
             "                  'close_node.jstree':function(e, data) { storeExpandedQueue(e, data); }",
             "  });",
-            "}")._();
+            "}").__();
     }
 
     private void storeExpandedQueue (Block html) {
       html.
           script().$type("text/javascript").
-          _("function storeExpandedQueue(e, data) {",
+          __("function storeExpandedQueue(e, data) {",
             "  var OPEN_QUEUES = 'openQueues';",
             "  var ACTION_OPEN = 'open';",
             "  var ACTION_CLOSED = 'closed';",
@@ -136,6 +137,7 @@ public class SchedulerPageUtil {
             "};",
             "",
             "function removeQueueName(queryString, queueName) {",
+            "  queryString = decodeURIComponent(queryString);",
             "  var index = queryString.indexOf(queueName);",
             "  // Finding if queue is present in query param then only remove it",
             "  if (index != -1) {",
@@ -166,7 +168,7 @@ public class SchedulerPageUtil {
             "    queryString = queryString + '#' + queueName;",
             "  }",
             "  return queryString;",
-            "}")._();
+            "}").__();
     }
 
     @Override protected void render(Block html) {

@@ -20,18 +20,19 @@ package org.apache.hadoop.service;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This is the base implementation class for services.
@@ -40,7 +41,8 @@ import com.google.common.annotations.VisibleForTesting;
 @Evolving
 public abstract class AbstractService implements Service {
 
-  private static final Log LOG = LogFactory.getLog(AbstractService.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(AbstractService.class);
 
   /**
    * Service name.
@@ -193,9 +195,7 @@ public abstract class AbstractService implements Service {
           serviceStart();
           if (isInState(STATE.STARTED)) {
             //if the service started (and isn't now in a later state), notify
-            if (LOG.isDebugEnabled()) {
-              LOG.debug("Service " + getName() + " is started");
-            }
+            LOG.debug("Service {} is started", getName());
             notifyListeners();
           }
         } catch (Exception e) {
@@ -234,9 +234,7 @@ public abstract class AbstractService implements Service {
         }
       } else {
         //already stopped: note it
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Ignoring re-entrant call to stop()");
-        }
+        LOG.debug("Ignoring re-entrant call to stop()");
       }
     }
   }
@@ -257,9 +255,7 @@ public abstract class AbstractService implements Service {
    * @param exception the exception
    */
   protected final void noteFailure(Exception exception) {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("noteFailure " + exception, null);
-    }
+    LOG.debug("noteFailure", exception);
     if (exception == null) {
       //make sure failure logic doesn't itself cause problems
       return;
@@ -269,10 +265,8 @@ public abstract class AbstractService implements Service {
       if (failureCause == null) {
         failureCause = exception;
         failureState = getServiceState();
-        LOG.info("Service " + getName()
-                 + " failed in state " + failureState
-                 + "; cause: " + exception,
-                 exception);
+        LOG.info("Service {} failed in state {}",
+            getName(), failureState, exception);
       }
     }
   }
@@ -313,7 +307,7 @@ public abstract class AbstractService implements Service {
    * a new configuration instance, and if so, updates the base class value
    * @param conf configuration
    * @throws Exception on a failure -these will be caught,
-   * possibly wrapped, and wil; trigger a service stop
+   * possibly wrapped, and will trigger a service stop
    */
   protected void serviceInit(Configuration conf) throws Exception {
     if (conf != config) {
@@ -417,8 +411,7 @@ public abstract class AbstractService implements Service {
       listeners.notifyListeners(this);
       globalListeners.notifyListeners(this);
     } catch (Throwable e) {
-      LOG.warn("Exception while notifying listeners of " + this + ": " + e,
-               e);
+      LOG.warn("Exception while notifying listeners of {}", this, e);
     }
   }
 
@@ -434,7 +427,7 @@ public abstract class AbstractService implements Service {
 
   @Override
   public synchronized List<LifecycleEvent> getLifecycleHistory() {
-    return new ArrayList<LifecycleEvent>(lifecycleHistory);
+    return Collections.unmodifiableList(new ArrayList<>(lifecycleHistory));
   }
 
   /**
@@ -448,10 +441,8 @@ public abstract class AbstractService implements Service {
     assert stateModel != null : "null state in " + name + " " + this.getClass();
     STATE oldState = stateModel.enterState(newState);
     if (oldState != newState) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug(
-          "Service: " + getName() + " entered state " + getServiceState());
-      }
+      LOG.debug("Service: {} entered state {}", getName(), getServiceState());
+
       recordLifecycleEvent();
     }
     return oldState;
@@ -493,8 +484,7 @@ public abstract class AbstractService implements Service {
   @Override
   public Map<String, String> getBlockers() {
     synchronized (blockerMap) {
-      Map<String, String> map = new HashMap<String, String>(blockerMap);
-      return map;
+      return Collections.unmodifiableMap(new HashMap<>(blockerMap));
     }
   }
 }

@@ -19,24 +19,25 @@ package org.apache.hadoop.security;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.util.Time;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.BiMap;
-import com.google.common.collect.HashBiMap;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.BiMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.HashBiMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A simple shell-based implementation of {@link IdMappingServiceProvider} 
@@ -62,8 +63,8 @@ import com.google.common.collect.HashBiMap;
  */
 public class ShellBasedIdMapping implements IdMappingServiceProvider {
 
-  private static final Log LOG =
-      LogFactory.getLog(ShellBasedIdMapping.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ShellBasedIdMapping.class);
 
   private final static String OS = System.getProperty("os.name");
 
@@ -534,7 +535,7 @@ public class ShellBasedIdMapping implements IdMappingServiceProvider {
   static final class PassThroughMap<K> extends HashMap<K, K> {
     
     public PassThroughMap() {
-      this(new HashMap<K, K>());
+      this(Collections.emptyMap());
     }
     
     public PassThroughMap(Map<K, K> mapping) {
@@ -583,7 +584,7 @@ public class ShellBasedIdMapping implements IdMappingServiceProvider {
     Map<Integer, Integer> gidMapping = new HashMap<Integer, Integer>();
     
     BufferedReader in = new BufferedReader(new InputStreamReader(
-        new FileInputStream(staticMapFile), StandardCharsets.UTF_8));
+        Files.newInputStream(staticMapFile.toPath()), StandardCharsets.UTF_8));
     
     try {
       String line = null;

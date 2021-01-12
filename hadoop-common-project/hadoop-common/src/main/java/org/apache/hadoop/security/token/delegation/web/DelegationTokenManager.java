@@ -33,7 +33,7 @@ import org.apache.hadoop.security.token.delegation.ZKDelegationTokenSecretManage
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Delegation Token Manager used by the
@@ -127,7 +127,7 @@ public class DelegationTokenManager {
   /**
    * Sets an external <code>DelegationTokenSecretManager</code> instance to
    * manage creation and verification of Delegation Tokens.
-   * <p/>
+   * <p>
    * This is useful for use cases where secrets must be shared across multiple
    * services.
    *
@@ -160,7 +160,14 @@ public class DelegationTokenManager {
   @SuppressWarnings("unchecked")
   public Token<? extends AbstractDelegationTokenIdentifier> createToken(
       UserGroupInformation ugi, String renewer) {
-    LOG.debug("Creating token with ugi:{}, renewer:{}.", ugi, renewer);
+    return createToken(ugi, renewer, null);
+  }
+
+  @SuppressWarnings("unchecked")
+  public Token<? extends AbstractDelegationTokenIdentifier> createToken(
+      UserGroupInformation ugi, String renewer, String service) {
+    LOG.debug("Creating token with ugi:{}, renewer:{}, service:{}.",
+        ugi, renewer, service !=null ? service : "");
     renewer = (renewer == null) ? ugi.getShortUserName() : renewer;
     String user = ugi.getUserName();
     Text owner = new Text(user);
@@ -173,7 +180,11 @@ public class DelegationTokenManager {
     tokenIdentifier.setOwner(owner);
     tokenIdentifier.setRenewer(new Text(renewer));
     tokenIdentifier.setRealUser(realUser);
-    return new Token(tokenIdentifier, secretManager);
+    Token token = new Token(tokenIdentifier, secretManager);
+    if (service != null) {
+      token.setService(new Text(service));
+    }
+    return token;
   }
 
   @SuppressWarnings("unchecked")

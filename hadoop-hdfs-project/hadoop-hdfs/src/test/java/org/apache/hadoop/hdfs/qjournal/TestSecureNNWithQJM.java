@@ -49,8 +49,10 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.http.HttpConfig;
+import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.minikdc.MiniKdc;
+import org.apache.hadoop.security.AuthenticationFilterInitializer;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
@@ -68,9 +70,12 @@ public class TestSecureNNWithQJM {
 
   private static final Path TEST_PATH = new Path("/test-dir");
   private static final Path TEST_PATH_2 = new Path("/test-dir-2");
+  private static final String PREFIX = "hadoop.http.authentication.";
 
   private static HdfsConfiguration baseConf;
   private static File baseDir;
+  private static String keystoresDir;
+  private static String sslConfDir;
   private static MiniKdc kdc;
 
   private MiniDFSCluster cluster;
@@ -79,7 +84,7 @@ public class TestSecureNNWithQJM {
   private MiniJournalCluster mjc;
 
   @Rule
-  public Timeout timeout = new Timeout(30000);
+  public Timeout timeout = new Timeout(180000);
 
   @BeforeClass
   public static void init() throws Exception {
@@ -110,6 +115,11 @@ public class TestSecureNNWithQJM {
     String hdfsPrincipal = userName + "/" + krbInstance + "@" + kdc.getRealm();
     String spnegoPrincipal = "HTTP/" + krbInstance + "@" + kdc.getRealm();
 
+    baseConf.set(HttpServer2.FILTER_INITIALIZER_PROPERTY,
+        AuthenticationFilterInitializer.class.getName());
+    baseConf.set(PREFIX + "type", "kerberos");
+    baseConf.set(PREFIX + "kerberos.keytab", keytab);
+    baseConf.set(PREFIX + "kerberos.principal", spnegoPrincipal);
     baseConf.set(DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, hdfsPrincipal);
     baseConf.set(DFS_NAMENODE_KEYTAB_FILE_KEY, keytab);
     baseConf.set(DFS_DATANODE_KERBEROS_PRINCIPAL_KEY, hdfsPrincipal);
@@ -127,8 +137,8 @@ public class TestSecureNNWithQJM {
     baseConf.set(DFS_JOURNALNODE_HTTPS_ADDRESS_KEY, "localhost:0");
     baseConf.setInt(IPC_CLIENT_CONNECT_MAX_RETRIES_ON_SASL_KEY, 10);
 
-    String keystoresDir = baseDir.getAbsolutePath();
-    String sslConfDir = KeyStoreTestUtil.getClasspathDir(
+    keystoresDir = baseDir.getAbsolutePath();
+    sslConfDir = KeyStoreTestUtil.getClasspathDir(
       TestSecureNNWithQJM.class);
     KeyStoreTestUtil.setupSSLConfig(keystoresDir, sslConfDir, baseConf, false);
     baseConf.set(DFS_CLIENT_HTTPS_KEYSTORE_RESOURCE_KEY,
@@ -138,11 +148,12 @@ public class TestSecureNNWithQJM {
   }
 
   @AfterClass
-  public static void destroy() {
+  public static void destroy() throws Exception {
     if (kdc != null) {
       kdc.stop();
     }
     FileUtil.fullyDelete(baseDir);
+    KeyStoreTestUtil.cleanupSSLConfig(keystoresDir, sslConfDir);
   }
 
   @Before

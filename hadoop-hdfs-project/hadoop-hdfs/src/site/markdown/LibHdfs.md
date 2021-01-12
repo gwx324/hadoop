@@ -15,13 +15,7 @@
 C API libhdfs
 =============
 
-* [C API libhdfs](#C_API_libhdfs)
-    * [Overview](#Overview)
-    * [The APIs](#The_APIs)
-    * [A Sample Program](#A_Sample_Program)
-    * [How To Link With The Library](#How_To_Link_With_The_Library)
-    * [Common Problems](#Common_Problems)
-    * [Thread Safe](#Thread_Safe)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Overview
 --------
@@ -67,7 +61,8 @@ See the CMake file for `test_libhdfs_ops.c` in the libhdfs source directory (`ha
 Common Problems
 ---------------
 
-The most common problem is the `CLASSPATH` is not set properly when calling a program that uses libhdfs. Make sure you set it to all the Hadoop jars needed to run Hadoop itself as well as the right configuration directory containing `hdfs-site.xml`. It is not valid to use wildcard syntax for specifying multiple jars. It may be useful to run `hadoop classpath --glob` or `hadoop classpath --jar <path`\> to generate the correct classpath for your deployment. See [Hadoop Commands Reference](../hadoop-common/CommandsManual.html#classpath) for more information on this command.
+The most common problem is the `CLASSPATH` is not set properly when calling a program that uses libhdfs. Make sure you set it to all the Hadoop jars needed to run Hadoop itself as well as the right configuration directory containing `hdfs-site.xml`.
+Wildcard entries in the `CLASSPATH` are now supported by libhdfs.
 
 Thread Safe
 -----------
@@ -76,7 +71,7 @@ libdhfs is thread safe.
 
 *   Concurrency and Hadoop FS "handles"
 
-    The Hadoop FS implementation includes a FS handle cache which
+    The Hadoop FS implementation includes an FS handle cache which
     caches based on the URI of the namenode along with the user
     connecting. So, all calls to `hdfsConnect` will return the same
     handle but calls to `hdfsConnectAsUser` with different users will

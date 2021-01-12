@@ -27,12 +27,11 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
-import java.io.FileNotFoundException;
 import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileStatus;
@@ -55,7 +54,8 @@ import org.junit.Test;
 
 public class TestPermissionSymlinks {
 
-  private static final Log LOG = LogFactory.getLog(TestPermissionSymlinks.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestPermissionSymlinks.class);
   private static final Configuration conf = new HdfsConfiguration();
   // Non-super user to run commands with
   private static final UserGroupInformation user = UserGroupInformation
@@ -424,8 +424,12 @@ public class TestPermissionSymlinks {
     try {
       myfc.access(badPath, FsAction.READ);
       fail("The access call should have failed");
-    } catch (FileNotFoundException e) {
+    } catch (AccessControlException ace) {
       // expected
+      String message = ace.getMessage();
+      assertTrue(message, message.contains("is not a directory"));
+      assertTrue(message.contains(target.toString()));
+      assertFalse(message.contains(badPath.toString()));
     }
   }
 }

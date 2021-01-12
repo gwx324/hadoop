@@ -18,15 +18,19 @@
 
 package org.apache.hadoop.fs.shell;
 
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.Files;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -139,6 +143,12 @@ class CopyCommands {
         srcs.add(src);
       }
     }
+
+    @Override
+    protected boolean isSorted() {
+      //Sort the children for merge
+      return true;
+    }
   }
 
   static class Cp extends CommandWithDestination {
@@ -229,26 +239,35 @@ class CopyCommands {
    *  Copy local files to a remote filesystem
    */
   public static class Put extends CommandWithDestination {
+    private ThreadPoolExecutor executor = null;
+    private int numThreads = 1;
+
+    private static final int MAX_THREADS =
+        Runtime.getRuntime().availableProcessors() * 2;
+
     public static final String NAME = "put";
     public static final String USAGE =
-        "[-f] [-p] [-l] [-d] <localsrc> ... <dst>";
+        "[-f] [-p] [-l] [-d] [-t <thread count>] <localsrc> ... <dst>";
     public static final String DESCRIPTION =
-      "Copy files from the local file system " +
-      "into fs. Copying fails if the file already " +
-      "exists, unless the -f flag is given.\n" +
-      "Flags:\n" +
-      "  -p : Preserves access and modification times, ownership and the mode.\n" +
-      "  -f : Overwrites the destination if it already exists.\n" +
-      "  -l : Allow DataNode to lazily persist the file to disk. Forces\n" +
-      "       replication factor of 1. This flag will result in reduced\n" +
-      "       durability. Use with care.\n" +
+        "Copy files from the local file system " +
+        "into fs. Copying fails if the file already " +
+        "exists, unless the -f flag is given.\n" +
+        "Flags:\n" +
+        "  -p : Preserves timestamps, ownership and the mode.\n" +
+        "  -f : Overwrites the destination if it already exists.\n" +
+        "  -t <thread count> : Number of threads to be used, default is 1.\n" +
+        "  -l : Allow DataNode to lazily persist the file to disk. Forces" +
+        "  replication factor of 1. This flag will result in reduced" +
+        "  durability. Use with care.\n" +
         "  -d : Skip creation of temporary file(<dst>._COPYING_).\n";
 
     @Override
     protected void processOptions(LinkedList<String> args) throws IOException {
       CommandFormat cf =
           new CommandFormat(1, Integer.MAX_VALUE, "f", "p", "l", "d");
+      cf.addOptionWithValue("t");
       cf.parse(args);
+      setNumberThreads(cf.getOptValue("t"));
       setOverwrite(cf.getOpt("f"));
       setPreserve(cf.getOpt("p"));
       setLazyPersist(cf.getOpt("l"));
@@ -265,12 +284,7 @@ class CopyCommands {
       try {
         items.add(new PathData(new URI(arg), getConf()));
       } catch (URISyntaxException e) {
-        if (Path.WINDOWS) {
-          // Unlike URI, PathData knows how to parse Windows drive-letter paths.
-          items.add(new PathData(arg, getConf()));
-        } else {
-          throw new IOException("unexpected URISyntaxException", e);
-        }
+        items.add(new PathData(arg, getConf()));
       }
       return items;
     }
@@ -283,7 +297,72 @@ class CopyCommands {
         copyStreamToTarget(System.in, getTargetPath(args.get(0)));
         return;
       }
+
+      executor = new ThreadPoolExecutor(numThreads, numThreads, 1,
+          TimeUnit.SECONDS, new ArrayBlockingQueue<>(1024),
+          new ThreadPoolExecutor.CallerRunsPolicy());
       super.processArguments(args);
+
+      // issue the command and then wait for it to finish
+      executor.shutdown();
+      try {
+        executor.awaitTermination(Long.MAX_VALUE, TimeUnit.MINUTES);
+      } catch (InterruptedException e) {
+        executor.shutdownNow();
+        displayError(e);
+        Thread.currentThread().interrupt();
+      }
+    }
+
+    private void setNumberThreads(String numberThreadsString) {
+      if (numberThreadsString == null) {
+        numThreads = 1;
+      } else {
+        int parsedValue = Integer.parseInt(numberThreadsString);
+        if (parsedValue <= 1) {
+          numThreads = 1;
+        } else if (parsedValue > MAX_THREADS) {
+          numThreads = MAX_THREADS;
+        } else {
+          numThreads = parsedValue;
+        }
+      }
+    }
+
+    private void copyFile(PathData src, PathData target) throws IOException {
+      if (isPathRecursable(src)) {
+        throw new PathIsDirectoryException(src.toString());
+      }
+      super.copyFileToTarget(src, target);
+    }
+
+    @Override
+    protected void copyFileToTarget(PathData src, PathData target)
+        throws IOException {
+      // if number of thread is 1, mimic put and avoid threading overhead
+      if (numThreads == 1) {
+        copyFile(src, target);
+        return;
+      }
+
+      Runnable task = () -> {
+        try {
+          copyFile(src, target);
+        } catch (IOException e) {
+          displayError(e);
+        }
+      };
+      executor.submit(task);
+    }
+
+    @VisibleForTesting
+    public int getNumThreads() {
+      return numThreads;
+    }
+
+    @VisibleForTesting
+    public ThreadPoolExecutor getExecutor() {
+      return executor;
     }
   }
 
@@ -357,9 +436,7 @@ class CopyCommands {
       }
 
       InputStream is = null;
-      FSDataOutputStream fos = dst.fs.append(dst.path);
-
-      try {
+      try (FSDataOutputStream fos = dst.fs.append(dst.path)) {
         if (readStdin) {
           if (args.size() == 0) {
             IOUtils.copyBytes(System.in, fos, DEFAULT_IO_LENGTH);
@@ -371,7 +448,7 @@ class CopyCommands {
 
         // Read in each input file and write to the target.
         for (PathData source : args) {
-          is = new FileInputStream(source.toFile());
+          is = Files.newInputStream(source.toFile().toPath());
           IOUtils.copyBytes(is, fos, DEFAULT_IO_LENGTH);
           IOUtils.closeStream(is);
           is = null;
@@ -379,10 +456,6 @@ class CopyCommands {
       } finally {
         if (is != null) {
           IOUtils.closeStream(is);
-        }
-
-        if (fos != null) {
-          IOUtils.closeStream(fos);
         }
       }
     }

@@ -18,18 +18,19 @@
 
 package org.apache.hadoop.conf;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Optional;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Maps;
-import org.apache.commons.logging.*;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.conf.ReconfigurationUtil.PropertyChange;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Utility base class for implementing the Reconfigurable interface.
@@ -41,8 +42,8 @@ import java.util.Map;
 public abstract class ReconfigurableBase 
   extends Configured implements Reconfigurable {
   
-  private static final Log LOG =
-    LogFactory.getLog(ReconfigurableBase.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ReconfigurableBase.class);
   // Use for testing purpose.
   private ReconfigurationUtil reconfigurationUtil = new ReconfigurationUtil();
 
@@ -117,17 +118,24 @@ public abstract class ReconfigurableBase
       final Collection<PropertyChange> changes =
           parent.getChangedProperties(newConf, oldConf);
       Map<PropertyChange, Optional<String>> results = Maps.newHashMap();
+      ConfigRedactor oldRedactor = new ConfigRedactor(oldConf);
+      ConfigRedactor newRedactor = new ConfigRedactor(newConf);
       for (PropertyChange change : changes) {
         String errorMessage = null;
+        String oldValRedacted = oldRedactor.redact(change.prop, change.oldVal);
+        String newValRedacted = newRedactor.redact(change.prop, change.newVal);
         if (!parent.isPropertyReconfigurable(change.prop)) {
           LOG.info(String.format(
               "Property %s is not configurable: old value: %s, new value: %s",
-              change.prop, change.oldVal, change.newVal));
+              change.prop,
+              oldValRedacted,
+              newValRedacted));
           continue;
         }
         LOG.info("Change property: " + change.prop + " from \""
-            + ((change.oldVal == null) ? "<default>" : change.oldVal)
-            + "\" to \"" + ((change.newVal == null) ? "<default>" : change.newVal)
+            + ((change.oldVal == null) ? "<default>" : oldValRedacted)
+            + "\" to \""
+            + ((change.newVal == null) ? "<default>" : newValRedacted)
             + "\".");
         try {
           String effectiveValue =
@@ -138,9 +146,10 @@ public abstract class ReconfigurableBase
             oldConf.unset(change.prop);
           }
         } catch (ReconfigurationException e) {
-          errorMessage = e.getCause().getMessage();
+          Throwable cause = e.getCause();
+          errorMessage = cause == null ? e.getMessage() : cause.getMessage();
         }
-        results.put(change, Optional.fromNullable(errorMessage));
+        results.put(change, Optional.ofNullable(errorMessage));
       }
 
       synchronized (parent.reconfigLock) {
@@ -206,7 +215,7 @@ public abstract class ReconfigurableBase
    * This method makes the change to this objects {@link Configuration}
    * and calls reconfigurePropertyImpl to update internal data structures.
    * This method cannot be overridden, subclasses should instead override
-   * reconfigureProperty.
+   * reconfigurePropertyImpl.
    */
   @Override
   public final void reconfigureProperty(String property, String newVal)
@@ -254,7 +263,7 @@ public abstract class ReconfigurableBase
    * all internal data structures derived from the configuration property
    * that is being changed. If this object owns other Reconfigurable objects
    * reconfigureProperty should be called recursively to make sure that
-   * to make sure that the configuration of these objects is updated.
+   * the configuration of these objects are updated.
    *
    * @param property Name of the property that is being reconfigured.
    * @param newVal Proposed new value of the property.

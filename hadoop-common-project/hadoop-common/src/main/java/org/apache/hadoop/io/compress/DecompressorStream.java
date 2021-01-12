@@ -22,7 +22,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
@@ -221,8 +221,11 @@ public class DecompressorStream extends CompressionInputStream {
   @Override
   public void close() throws IOException {
     if (!closed) {
-      in.close();
-      closed = true;
+      try {
+        super.close();
+      } finally {
+        closed = true;
+      }
     }
   }
 

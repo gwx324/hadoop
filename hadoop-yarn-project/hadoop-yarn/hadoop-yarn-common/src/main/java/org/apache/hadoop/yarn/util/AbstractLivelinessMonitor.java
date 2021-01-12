@@ -22,8 +22,8 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.service.AbstractService;
@@ -37,15 +37,17 @@ import org.apache.hadoop.service.AbstractService;
 @Evolving
 public abstract class AbstractLivelinessMonitor<O> extends AbstractService {
 
-  private static final Log LOG = LogFactory.getLog(AbstractLivelinessMonitor.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(AbstractLivelinessMonitor.class);
 
   //thread which runs periodically to see the last time since a heartbeat is
   //received.
   private Thread checkerThread;
   private volatile boolean stopped;
   public static final int DEFAULT_EXPIRE = 5*60*1000;//5 mins
-  private int expireInterval = DEFAULT_EXPIRE;
-  private int monitorInterval = expireInterval/3;
+  private long expireInterval = DEFAULT_EXPIRE;
+  private long monitorInterval = expireInterval / 3;
+  private volatile boolean resetTimerOnStart = true;
 
   private final Clock clock;
 
@@ -65,7 +67,7 @@ public abstract class AbstractLivelinessMonitor<O> extends AbstractService {
     assert !stopped : "starting when already stopped";
     resetTimer();
     checkerThread = new Thread(new PingChecker());
-    checkerThread.setName("Ping Checker");
+    checkerThread.setName("Ping Checker for "+getName());
     checkerThread.start();
     super.serviceStart();
   }
@@ -85,7 +87,12 @@ public abstract class AbstractLivelinessMonitor<O> extends AbstractService {
     this.expireInterval = expireInterval;
   }
 
-  protected void setMonitorInterval(int monitorInterval) {
+  protected long getExpireInterval(O o) {
+    // by-default return for all the registered object interval.
+    return this.expireInterval;
+  }
+
+  protected void setMonitorInterval(long monitorInterval) {
     this.monitorInterval = monitorInterval;
   }
 
@@ -97,7 +104,11 @@ public abstract class AbstractLivelinessMonitor<O> extends AbstractService {
   }
 
   public synchronized void register(O ob) {
-    running.put(ob, clock.getTime());
+    register(ob, clock.getTime());
+  }
+
+  public synchronized void register(O ob, long expireTime) {
+    running.put(ob, expireTime);
   }
 
   public synchronized void unregister(O ob) {
@@ -105,10 +116,16 @@ public abstract class AbstractLivelinessMonitor<O> extends AbstractService {
   }
 
   public synchronized void resetTimer() {
-    long time = clock.getTime();
-    for (O ob : running.keySet()) {
-      running.put(ob, time);
+    if (resetTimerOnStart) {
+      long time = clock.getTime();
+      for (O ob : running.keySet()) {
+        running.put(ob, time);
+      }
     }
+  }
+
+  protected void setResetTimeOnStart(boolean resetTimeOnStart) {
+    this.resetTimerOnStart = resetTimeOnStart;
   }
 
   private class PingChecker implements Runnable {
@@ -117,19 +134,20 @@ public abstract class AbstractLivelinessMonitor<O> extends AbstractService {
     public void run() {
       while (!stopped && !Thread.currentThread().isInterrupted()) {
         synchronized (AbstractLivelinessMonitor.this) {
-          Iterator<Map.Entry<O, Long>> iterator = 
-            running.entrySet().iterator();
+          Iterator<Map.Entry<O, Long>> iterator = running.entrySet().iterator();
 
-          //avoid calculating current time everytime in loop
+          // avoid calculating current time everytime in loop
           long currentTime = clock.getTime();
 
           while (iterator.hasNext()) {
             Map.Entry<O, Long> entry = iterator.next();
-            if (currentTime > entry.getValue() + expireInterval) {
+            O key = entry.getKey();
+            long interval = getExpireInterval(key);
+            if (currentTime > entry.getValue() + interval) {
               iterator.remove();
-              expire(entry.getKey());
-              LOG.info("Expired:" + entry.getKey().toString() + 
-                      " Timed out after " + expireInterval/1000 + " secs");
+              expire(key);
+              LOG.info("Expired:" + entry.getKey().toString()
+                  + " Timed out after " + interval / 1000 + " secs");
             }
           }
         }

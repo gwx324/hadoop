@@ -1,5 +1,3 @@
-package org.apache.hadoop.mapreduce.security;
-
 /** Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,8 +15,9 @@ package org.apache.hadoop.mapreduce.security;
  * limitations under the License.
  */
 
+package org.apache.hadoop.mapreduce.security;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.fail;
 
 import java.io.File;
@@ -132,7 +131,7 @@ public class TestMRCredentials {
       e.printStackTrace(System.out);
       fail("Job failed");
     }
-    assertEquals("dist job res is not 0", res, 0);
+    assertThat(res).withFailMessage("dist job res is not 0").isEqualTo(0);
 
   }
 }

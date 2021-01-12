@@ -18,9 +18,9 @@
 package org.apache.hadoop.http;
 
 import org.apache.log4j.Logger;
+import org.eclipse.jetty.server.CustomRequestLog;
+import org.eclipse.jetty.server.RequestLog;
 import org.junit.Test;
-import org.mortbay.jetty.NCSARequestLog;
-import org.mortbay.jetty.RequestLog;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -42,6 +42,7 @@ public class TestHttpRequestLog {
     RequestLog requestLog = HttpRequestLog.getRequestLog("test");
     Logger.getLogger("http.requests.test").removeAppender(requestLogAppender);
     assertNotNull("RequestLog should not be null", requestLog);
-    assertEquals("Class mismatch", NCSARequestLog.class, requestLog.getClass());
+    assertEquals("Class mismatch",
+        CustomRequestLog.class, requestLog.getClass());
   }
 }

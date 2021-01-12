@@ -22,27 +22,24 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.security.PrivilegedExceptionAction;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.service.Service.STATE;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.event.Dispatcher;
-import org.apache.hadoop.yarn.event.DrainDispatcher;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
 import org.junit.Before;
-
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public abstract class ACLsTestBase {
 
   protected static final String COMMON_USER = "common_user";
   protected static final String QUEUE_A_USER = "queueA_user";
   protected static final String QUEUE_B_USER = "queueB_user";
+  protected static final String QUEUE_A_GROUP = "queueA_group";
+  protected static final String QUEUE_B_GROUP = "queueB_group";
   protected static final String ROOT_ADMIN = "root_admin";
   protected static final String QUEUE_A_ADMIN = "queueA_admin";
   protected static final String QUEUE_B_ADMIN = "queueB_admin";
@@ -51,9 +48,10 @@ public abstract class ACLsTestBase {
   protected static final String QUEUEB = "queueB";
   protected static final String QUEUEC = "queueC";
 
-  protected static final Log LOG = LogFactory.getLog(TestApplicationACLs.class);
+  protected static final Logger LOG =
+      LoggerFactory.getLogger(TestApplicationACLs.class);
 
-  MockRM resourceManager;
+  protected MockRM resourceManager;
   Configuration conf;
   YarnRPC rpc;
   InetSocketAddress rmAddress;
@@ -68,6 +66,7 @@ public abstract class ACLsTestBase {
 
     AccessControlList adminACL = new AccessControlList("");
     conf.set(YarnConfiguration.YARN_ADMIN_ACL, adminACL.getAclString());
+    conf.setInt(YarnConfiguration.MAX_CLUSTER_LEVEL_APPLICATION_PRIORITY, 10);
 
     resourceManager = new MockRM(conf) {
       protected ClientRMService createClientRMService() {
@@ -75,11 +74,6 @@ public abstract class ACLsTestBase {
           this.rmAppManager, this.applicationACLsManager,
           this.queueACLsManager, getRMContext()
                 .getRMDelegationTokenSecretManager());
-      }
-
-      @Override
-      protected Dispatcher createDispatcher() {
-        return new DrainDispatcher();
       }
 
       @Override
@@ -117,6 +111,10 @@ public abstract class ACLsTestBase {
             }
           });
     return userClient;
+  }
+
+  public Configuration getConf() {
+    return conf;
   }
 
   protected abstract Configuration createConfiguration() throws IOException;

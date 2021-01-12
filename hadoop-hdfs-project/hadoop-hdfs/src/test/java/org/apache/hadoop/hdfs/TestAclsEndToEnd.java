@@ -28,14 +28,15 @@ import java.io.Writer;
 import java.net.URI;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivilegedAction;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
 import org.apache.hadoop.crypto.key.kms.server.KMSConfiguration;
 import org.apache.hadoop.crypto.key.kms.server.KeyAuthorizationKeyProvider;
 import org.apache.hadoop.crypto.key.kms.server.MiniKMS;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystemTestHelper;
@@ -63,8 +64,8 @@ import org.junit.Test;
  * values before interpreting them.)
  */
 public class TestAclsEndToEnd {
-  private static final Log LOG =
-      LogFactory.getLog(TestAclsEndToEnd.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestAclsEndToEnd.class.getName());
   private static final String TEXT =
       "The blue zone is for loading and unloading only. "
       + "Please park in the red zone.";
@@ -190,7 +191,7 @@ public class TestAclsEndToEnd {
         "keyadmin,hdfs,user");
     conf.set(ProxyUsers.CONF_HADOOP_PROXYUSER + "." + realUser + ".hosts",
         "*");
-    conf.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
+    conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
         getKeyProviderURI());
     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_DELEGATION_TOKEN_ALWAYS_USE_KEY,
         true);

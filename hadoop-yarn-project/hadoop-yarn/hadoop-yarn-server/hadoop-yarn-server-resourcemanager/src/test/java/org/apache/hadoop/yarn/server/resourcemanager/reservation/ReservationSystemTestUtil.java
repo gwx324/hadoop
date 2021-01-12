@@ -1,4 +1,4 @@
-/*******************************************************************************
+/******************************************************************************
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -14,16 +14,17 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *******************************************************************************/
+ *****************************************************************************/
 package org.apache.hadoop.yarn.server.resourcemanager.reservation;
 
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anySetOf;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anySet;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
 
-import java.io.FileWriter;
 import java.io.IOException;
-import java.io.PrintWriter;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Random;
@@ -31,6 +32,7 @@ import java.util.TreeMap;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionRequest;
+import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.ReservationDefinition;
 import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.api.records.ReservationRequest;
@@ -52,9 +54,16 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.Capacity
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
+
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair
+    .allocationfile.AllocationFileQueue;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair
+    .allocationfile.AllocationFileWriter;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.MultiNodeSortingManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
+import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.junit.Assert;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
@@ -64,7 +73,8 @@ public class ReservationSystemTestUtil {
 
   private static Random rand = new Random();
 
-  public final static String reservationQ = "dedicated";
+  public final static String RESERVATION_Q_SHORT = "dedicated";
+  public final static String reservationQ = "root." + RESERVATION_Q_SHORT;
 
   public static ReservationId getNewReservationId() {
     return ReservationId.newInstance(rand.nextLong(), rand.nextLong());
@@ -74,7 +84,8 @@ public class ReservationSystemTestUtil {
       String reservationQ, long timeWindow, float instConstraint,
       float avgConstraint) {
 
-    ReservationSchedulerConfiguration realConf = new CapacitySchedulerConfiguration();
+    ReservationSchedulerConfiguration realConf =
+        new CapacitySchedulerConfiguration();
     ReservationSchedulerConfiguration conf = spy(realConf);
     when(conf.getReservationWindow(reservationQ)).thenReturn(timeWindow);
     when(conf.getInstantaneousMaxCapacity(reservationQ))
@@ -97,62 +108,46 @@ public class ReservationSystemTestUtil {
         .assertTrue(plan.getSharingPolicy() instanceof CapacityOverTimePolicy);
   }
 
-  public static void setupFSAllocationFile(String allocationFile)
-      throws IOException {
-    PrintWriter out = new PrintWriter(new FileWriter(allocationFile));
-    out.println("<?xml version=\"1.0\"?>");
-    out.println("<allocations>");
-    out.println("<queue name=\"default\">");
-    out.println("<weight>1</weight>");
-    out.println("</queue>");
-    out.println("<queue name=\"a\">");
-    out.println("<weight>1</weight>");
-    out.println("<queue name=\"a1\">");
-    out.println("<weight>3</weight>");
-    out.println("</queue>");
-    out.println("<queue name=\"a2\">");
-    out.println("<weight>7</weight>");
-    out.println("</queue>");
-    out.println("</queue>");
-    out.println("<queue name=\"dedicated\">");
-    out.println("<reservation></reservation>");
-    out.println("<weight>8</weight>");
-    out.println("</queue>");
-    out.println(
-        "<defaultQueueSchedulingPolicy>drf</defaultQueueSchedulingPolicy>");
-    out.println("</allocations>");
-    out.close();
+  public static void setupFSAllocationFile(String allocationFile) {
+    AllocationFileWriter.create()
+        .drfDefaultQueueSchedulingPolicy()
+        .addQueue(new AllocationFileQueue.Builder("default")
+            .weight(1).build())
+        .addQueue(new AllocationFileQueue.Builder("a")
+            .weight(1)
+            .subQueue(new AllocationFileQueue.Builder("a1")
+                .weight(3).build())
+            .subQueue(new AllocationFileQueue.Builder("a2")
+                .weight(7).build())
+            .build())
+        .addQueue(new AllocationFileQueue.Builder("dedicated")
+            .weight(8)
+            .reservation()
+            .build())
+        .writeToFile(allocationFile);
   }
 
-  public static void updateFSAllocationFile(String allocationFile)
-      throws IOException {
-    PrintWriter out = new PrintWriter(new FileWriter(allocationFile));
-    out.println("<?xml version=\"1.0\"?>");
-    out.println("<allocations>");
-    out.println("<queue name=\"default\">");
-    out.println("<weight>5</weight>");
-    out.println("</queue>");
-    out.println("<queue name=\"a\">");
-    out.println("<weight>5</weight>");
-    out.println("<queue name=\"a1\">");
-    out.println("<weight>3</weight>");
-    out.println("</queue>");
-    out.println("<queue name=\"a2\">");
-    out.println("<weight>7</weight>");
-    out.println("</queue>");
-    out.println("</queue>");
-    out.println("<queue name=\"dedicated\">");
-    out.println("<reservation></reservation>");
-    out.println("<weight>10</weight>");
-    out.println("</queue>");
-    out.println("<queue name=\"reservation\">");
-    out.println("<reservation></reservation>");
-    out.println("<weight>80</weight>");
-    out.println("</queue>");
-    out.println(
-        "<defaultQueueSchedulingPolicy>drf</defaultQueueSchedulingPolicy>");
-    out.println("</allocations>");
-    out.close();
+  public static void updateFSAllocationFile(String allocationFile) {
+    AllocationFileWriter.create()
+        .drfDefaultQueueSchedulingPolicy()
+        .addQueue(new AllocationFileQueue.Builder("default")
+            .weight(5).build())
+        .addQueue(new AllocationFileQueue.Builder("a")
+            .weight(5)
+            .subQueue(new AllocationFileQueue.Builder("a1")
+                .weight(3).build())
+            .subQueue(new AllocationFileQueue.Builder("a2")
+                .weight(7).build())
+            .build())
+        .addQueue(new AllocationFileQueue.Builder("dedicated")
+            .weight(10)
+            .reservation()
+            .build())
+        .addQueue(new AllocationFileQueue.Builder("reservation")
+            .weight(80)
+            .reservation()
+            .build())
+        .writeToFile(allocationFile);
   }
 
   public static FairScheduler setupFairScheduler(RMContext rmContext,
@@ -165,7 +160,6 @@ public class ReservationSystemTestUtil {
     scheduler.init(conf);
     scheduler.start();
     scheduler.reinitialize(conf, rmContext);
-
 
     Resource resource =
         ReservationSystemTestUtil.calculateClusterResource(numContainers);
@@ -182,10 +176,16 @@ public class ReservationSystemTestUtil {
 
   public static ReservationDefinition createSimpleReservationDefinition(
       long arrival, long deadline, long duration, int parallelism) {
+    return createSimpleReservationDefinition(arrival, deadline, duration,
+        parallelism, null);
+  }
+
+  public static ReservationDefinition createSimpleReservationDefinition(
+      long arrival, long deadline, long duration, int parallelism,
+      String recurrenceExpression) {
     // create a request with a single atomic ask
-    ReservationRequest r =
-        ReservationRequest.newInstance(Resource.newInstance(1024, 1),
-            parallelism, parallelism, duration);
+    ReservationRequest r = ReservationRequest.newInstance(
+        Resource.newInstance(1024, 1), parallelism, parallelism, duration);
     ReservationDefinition rDef = new ReservationDefinitionPBImpl();
     ReservationRequests reqs = new ReservationRequestsPBImpl();
     reqs.setReservationResources(Collections.singletonList(r));
@@ -193,25 +193,31 @@ public class ReservationSystemTestUtil {
     rDef.setReservationRequests(reqs);
     rDef.setArrival(arrival);
     rDef.setDeadline(deadline);
+    if (recurrenceExpression != null) {
+      rDef.setRecurrenceExpression(recurrenceExpression);
+    }
     return rDef;
   }
 
   public static ReservationSubmissionRequest createSimpleReservationRequest(
       ReservationId reservationId, int numContainers, long arrival,
       long deadline, long duration) {
+    return createSimpleReservationRequest(reservationId, numContainers, arrival,
+        deadline, duration, Priority.UNDEFINED);
+  }
+
+  public static ReservationSubmissionRequest createSimpleReservationRequest(
+      ReservationId reservationId, int numContainers, long arrival,
+      long deadline, long duration, Priority priority) {
     // create a request with a single atomic ask
-    ReservationRequest r =
-        ReservationRequest.newInstance(Resource.newInstance(1024, 1),
-            numContainers, 1, duration);
-    ReservationRequests reqs =
-        ReservationRequests.newInstance(Collections.singletonList(r),
-            ReservationRequestInterpreter.R_ALL);
-    ReservationDefinition rDef =
-        ReservationDefinition.newInstance(arrival, deadline, reqs,
-            "testClientRMService#reservation");
-    ReservationSubmissionRequest request =
-        ReservationSubmissionRequest.newInstance(rDef,
-            reservationQ, reservationId);
+    ReservationRequest r = ReservationRequest
+        .newInstance(Resource.newInstance(1024, 1), numContainers, 1, duration);
+    ReservationRequests reqs = ReservationRequests.newInstance(
+        Collections.singletonList(r), ReservationRequestInterpreter.R_ALL);
+    ReservationDefinition rDef = ReservationDefinition.newInstance(arrival,
+        deadline, reqs, "testClientRMService#reservation", "0", priority);
+    ReservationSubmissionRequest request = ReservationSubmissionRequest
+        .newInstance(rDef, reservationQ, reservationId);
     return request;
   }
 
@@ -243,9 +249,9 @@ public class ReservationSystemTestUtil {
     return cs;
   }
 
-  @SuppressWarnings("rawtypes") public static void initializeRMContext(
-      int numContainers, AbstractYarnScheduler scheduler,
-      RMContext mockRMContext) {
+  @SuppressWarnings("rawtypes")
+  public static void initializeRMContext(int numContainers,
+      AbstractYarnScheduler scheduler, RMContext mockRMContext) {
 
     when(mockRMContext.getScheduler()).thenReturn(scheduler);
     Resource r = calculateClusterResource(numContainers);
@@ -253,32 +259,33 @@ public class ReservationSystemTestUtil {
   }
 
   public static RMContext createRMContext(Configuration conf) {
-    RMContext mockRmContext = Mockito.spy(
-        new RMContextImpl(null, null, null, null, null, null,
-            new RMContainerTokenSecretManager(conf),
-            new NMTokenSecretManagerInRM(conf),
-            new ClientToAMTokenSecretManagerInRM(), null));
+    RMContext mockRmContext = Mockito.spy(new RMContextImpl(null, null, null,
+        null, null, null, new RMContainerTokenSecretManager(conf),
+        new NMTokenSecretManagerInRM(conf),
+        new ClientToAMTokenSecretManagerInRM(), null));
 
     RMNodeLabelsManager nlm = mock(RMNodeLabelsManager.class);
-    when(nlm.getQueueResource(any(String.class), anySetOf(String.class),
-            any(Resource.class))).thenAnswer(new Answer<Resource>() {
-      @Override public Resource answer(InvocationOnMock invocation)
-          throws Throwable {
-        Object[] args = invocation.getArguments();
-        return (Resource) args[2];
-      }
-    });
+    when(nlm.getQueueResource(any(String.class), anySet(),
+        any(Resource.class))).thenAnswer(new Answer<Resource>() {
+          @Override
+          public Resource answer(InvocationOnMock invocation) throws Throwable {
+            Object[] args = invocation.getArguments();
+            return (Resource) args[2];
+          }
+        });
 
-    when(nlm.getResourceByLabel(any(String.class), any(Resource.class)))
+    when(nlm.getResourceByLabel(any(), any(Resource.class)))
         .thenAnswer(new Answer<Resource>() {
-          @Override public Resource answer(InvocationOnMock invocation)
-              throws Throwable {
+          @Override
+          public Resource answer(InvocationOnMock invocation) throws Throwable {
             Object[] args = invocation.getArguments();
             return (Resource) args[1];
           }
         });
 
     mockRmContext.setNodeLabelManager(nlm);
+    mockRmContext
+        .setMultiNodeSortingManager(mock(MultiNodeSortingManager.class));
     return mockRmContext;
   }
 
@@ -290,14 +297,13 @@ public class ReservationSystemTestUtil {
 
     // Define top-level queues
     conf.setQueues(CapacitySchedulerConfiguration.ROOT,
-        new String[] { "default", "a", reservationQ });
+        new String[] {"default", "a", RESERVATION_Q_SHORT});
 
     final String A = CapacitySchedulerConfiguration.ROOT + ".a";
     conf.setCapacity(A, 10);
 
-    final String dedicated =
-        CapacitySchedulerConfiguration.ROOT + CapacitySchedulerConfiguration.DOT
-            + reservationQ;
+    final String dedicated = CapacitySchedulerConfiguration.ROOT
+        + CapacitySchedulerConfiguration.DOT + RESERVATION_Q_SHORT;
     conf.setCapacity(dedicated, 80);
     // Set as reservation queue
     conf.setReservable(dedicated, true);
@@ -305,7 +311,7 @@ public class ReservationSystemTestUtil {
     // Define 2nd-level queues
     final String A1 = A + ".a1";
     final String A2 = A + ".a2";
-    conf.setQueues(A, new String[] { "a1", "a2" });
+    conf.setQueues(A, new String[] {"a1", "a2"});
     conf.setCapacity(A1, 30);
     conf.setCapacity(A2, 70);
   }
@@ -314,9 +320,9 @@ public class ReservationSystemTestUtil {
       CapacitySchedulerConfiguration conf) {
     // Define top-level queues
     conf.setQueues(CapacitySchedulerConfiguration.ROOT,
-        new String[] { reservationQ });
+        new String[] {RESERVATION_Q_SHORT});
     final String dedicated = CapacitySchedulerConfiguration.ROOT
-        + CapacitySchedulerConfiguration.DOT + reservationQ;
+        + CapacitySchedulerConfiguration.DOT + RESERVATION_Q_SHORT;
     conf.setCapacity(dedicated, 100);
     // Set as reservation queue
     conf.setReservable(dedicated, true);
@@ -324,7 +330,7 @@ public class ReservationSystemTestUtil {
 
   public static String getFullReservationQueueName() {
     return CapacitySchedulerConfiguration.ROOT
-        + CapacitySchedulerConfiguration.DOT + reservationQ;
+        + CapacitySchedulerConfiguration.DOT + RESERVATION_Q_SHORT;
   }
 
   public static String getReservationQueueName() {
@@ -341,12 +347,12 @@ public class ReservationSystemTestUtil {
 
     // Define top-level queues
     conf.setQueues(CapacitySchedulerConfiguration.ROOT,
-        new String[] { "default", "a", reservationQ, newQ });
+        new String[] {"default", "a", RESERVATION_Q_SHORT, newQ});
 
     final String A = prefix + "a";
     conf.setCapacity(A, 5);
 
-    final String dedicated = prefix + reservationQ;
+    final String dedicated = prefix + RESERVATION_Q_SHORT;
     conf.setCapacity(dedicated, 10);
     // Set as reservation queue
     conf.setReservable(dedicated, true);
@@ -396,17 +402,83 @@ public class ReservationSystemTestUtil {
 
   public static Map<ReservationInterval, Resource> generateAllocation(
       long startTime, long step, int[] alloc) {
+    return generateAllocation(startTime, step, alloc, null);
+  }
+
+  public static Map<ReservationInterval, Resource> generateAllocation(
+      long startTime, long step, int[] alloc, String recurrenceExpression) {
     Map<ReservationInterval, Resource> req = new TreeMap<>();
-    for (int i = 0; i < alloc.length; i++) {
-      req.put(new ReservationInterval(startTime + i * step,
-          startTime + (i + 1) * step), ReservationSystemUtil.toResource(
-          ReservationRequest
-              .newInstance(Resource.newInstance(1024, 1), alloc[i])));
+
+    long period = 0;
+    if (recurrenceExpression != null) {
+      period = Long.parseLong(recurrenceExpression);
+    }
+
+    long rStart;
+    long rEnd;
+    for (int j = 0; j < 86400000; j += period) {
+      for (int i = 0; i < alloc.length; i++) {
+        rStart = (startTime + i * step) + j * period;
+        rEnd = (startTime + (i + 1) * step) + j * period;
+        if (period > 0) {
+          rStart = rStart % period + j * period;
+          rEnd = rEnd % period + j * period;
+          if (rStart > rEnd) {
+            // skip wrap-around entry
+            continue;
+          }
+        }
+
+        req.put(new ReservationInterval(rStart, rEnd),
+            ReservationSystemUtil.toResource(ReservationRequest
+                .newInstance(Resource.newInstance(1024, 1), alloc[i])));
+
+      }
+      // execute only once if non-periodic
+      if (period == 0) {
+        break;
+      }
     }
     return req;
+  }
+
+  public static RLESparseResourceAllocation generateRLESparseResourceAllocation(
+      int[] alloc, long[] timeSteps) {
+    TreeMap<Long, Resource> allocationsMap = new TreeMap<>();
+    for (int i = 0; i < alloc.length; i++) {
+      allocationsMap.put(timeSteps[i],
+          Resource.newInstance(alloc[i], alloc[i]));
+    }
+    RLESparseResourceAllocation rleVector = new RLESparseResourceAllocation(
+        allocationsMap, new DefaultResourceCalculator());
+    return rleVector;
   }
 
   public static Resource calculateClusterResource(int numContainers) {
     return Resource.newInstance(numContainers * 1024, numContainers);
   }
+
+
+  public static Map<ReservationInterval, Resource> toAllocation(
+      RLESparseResourceAllocation rle, long start, long end) {
+    Map<ReservationInterval, Resource> resAlloc = new TreeMap<>();
+
+    for (Map.Entry<Long, Resource> e : rle.getCumulative().entrySet()) {
+      Long nextKey = rle.getCumulative().higherKey(e.getKey());
+      if (nextKey == null) {
+        break;
+      } else {
+        if (e.getKey() >= start && e.getKey() <= end && nextKey >= start
+            && nextKey <= end) {
+          resAlloc.put(new ReservationInterval(e.getKey(), nextKey),
+              e.getValue());
+        }
+      }
+    }
+
+    return resAlloc;
+  }
+
+
+
 }

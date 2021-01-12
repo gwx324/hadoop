@@ -21,23 +21,26 @@ package org.apache.hadoop.io;
 import java.io.*;
 
 
-import org.apache.commons.logging.*;
 import org.apache.hadoop.fs.*;
 import org.apache.hadoop.io.SequenceFile.CompressionType;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.conf.*;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
 
 /** Support for flat files of binary key/value pairs. */
 public class TestArrayFile {
-  private static final Log LOG = LogFactory.getLog(TestArrayFile.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestArrayFile.class);
   
   private static final Path TEST_DIR = new Path(GenericTestUtils.getTempPath(
       TestMapFile.class.getSimpleName()));
@@ -143,15 +146,16 @@ public class TestArrayFile {
       
       for (int i = 0; i < SIZE; i++) {
         nextWritable = (LongWritable)reader.next(nextWritable);
-        assertEquals(nextWritable.get(), i);
+        assertThat(nextWritable.get()).isEqualTo(i);
       }
         
       assertTrue("testArrayFileIteration seek error !!!",
           reader.seek(new LongWritable(6)));
       nextWritable = (LongWritable) reader.next(nextWritable);
-      assertTrue("testArrayFileIteration error !!!", reader.key() == 7);
-      assertTrue("testArrayFileIteration error !!!",
-          nextWritable.equals(new LongWritable(7)));
+      assertThat(reader.key()).withFailMessage(
+          "testArrayFileIteration error !!!").isEqualTo(7);
+      assertThat(nextWritable).withFailMessage(
+          "testArrayFileIteration error !!!").isEqualTo(new LongWritable(7));
       assertFalse("testArrayFileIteration error !!!",
           reader.seek(new LongWritable(SIZE + 5)));
       reader.close();

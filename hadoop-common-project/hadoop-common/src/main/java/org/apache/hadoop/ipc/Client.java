@@ -18,12 +18,10 @@
 
 package org.apache.hadoop.ipc;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.google.protobuf.CodedOutputStream;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.security.AccessControlException;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -31,13 +29,12 @@ import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
-import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.Writable;
+import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.io.retry.RetryPolicy;
 import org.apache.hadoop.io.retry.RetryPolicy.RetryAction;
-import org.apache.hadoop.ipc.ProtobufRpcEngine.RpcRequestMessageWrapper;
 import org.apache.hadoop.ipc.RPC.RpcKind;
 import org.apache.hadoop.ipc.Server.AuthProtocol;
 import org.apache.hadoop.ipc.protobuf.IpcConnectionContextProtos.IpcConnectionContextProto;
@@ -54,17 +51,19 @@ import org.apache.hadoop.security.SaslRpcServer.AuthMethod;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.ProtoUtil;
-import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.concurrent.AsyncGet;
 import org.apache.htrace.core.Span;
 import org.apache.htrace.core.Tracer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.net.SocketFactory;
 import javax.security.sasl.Sasl;
 import java.io.*;
 import java.net.*;
+import java.nio.ByteBuffer;
 import java.security.PrivilegedExceptionAction;
 import java.util.*;
 import java.util.Map.Entry;
@@ -72,6 +71,8 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static org.apache.hadoop.ipc.RpcConstants.CONNECTION_CONTEXT_CALL_ID;
 import static org.apache.hadoop.ipc.RpcConstants.PING_CALL_ID;
@@ -85,8 +86,7 @@ import static org.apache.hadoop.ipc.RpcConstants.PING_CALL_ID;
 @Public
 @InterfaceStability.Evolving
 public class Client implements AutoCloseable {
-  
-  public static final Log LOG = LogFactory.getLog(Client.class);
+  public static final Logger LOG = LoggerFactory.getLogger(Client.class);
 
   /** A counter for generating call IDs. */
   private static final AtomicInteger callIdCounter = new AtomicInteger();
@@ -124,19 +124,22 @@ public class Client implements AutoCloseable {
     EXTERNAL_CALL_HANDLER.set(externalHandler);
   }
 
-  private ConcurrentMap<ConnectionId, Connection> connections =
+  private final ConcurrentMap<ConnectionId, Connection> connections =
       new ConcurrentHashMap<>();
+  private final Object putLock = new Object();
+  private final Object emptyCondition = new Object();
+  private final AtomicBoolean running = new AtomicBoolean(true);
 
   private Class<? extends Writable> valueClass;   // class of call values
-  private AtomicBoolean running = new AtomicBoolean(true); // if client runs
   final private Configuration conf;
 
   private SocketFactory socketFactory;           // how to create sockets
-  private int refCount = 1;
+  private final AtomicInteger refCount = new AtomicInteger(1);
 
   private final int connectionTimeout;
 
   private final boolean fallbackAllowed;
+  private final boolean bindToWildCardAddress;
   private final byte[] clientId;
   private final int maxAsyncCalls;
   private final AtomicInteger asyncCallCounter = new AtomicInteger(0);
@@ -206,7 +209,7 @@ public class Client implements AutoCloseable {
       
       return clientExecutor;
     }
-  };
+  }
   
   /**
    * set the ping interval value in configuration
@@ -214,7 +217,8 @@ public class Client implements AutoCloseable {
    * @param conf Configuration
    * @param pingInterval the ping interval
    */
-  static final void setPingInterval(Configuration conf, int pingInterval) {
+  public static final void setPingInterval(Configuration conf,
+      int pingInterval) {
     conf.setInt(CommonConfigurationKeys.IPC_PING_INTERVAL_KEY, pingInterval);
   }
 
@@ -225,7 +229,7 @@ public class Client implements AutoCloseable {
    * @param conf Configuration
    * @return the ping interval
    */
-  static final int getPingInterval(Configuration conf) {
+  public static final int getPingInterval(Configuration conf) {
     return conf.getInt(CommonConfigurationKeys.IPC_PING_INTERVAL_KEY,
         CommonConfigurationKeys.IPC_PING_INTERVAL_DEFAULT);
   }
@@ -279,29 +283,19 @@ public class Client implements AutoCloseable {
   public static final ExecutorService getClientExecutor() {
     return Client.clientExcecutorFactory.clientExecutor;
   }
+
   /**
    * Increment this client's reference count
-   *
    */
-  synchronized void incCount() {
-    refCount++;
+  void incCount() {
+    refCount.incrementAndGet();
   }
   
   /**
    * Decrement this client's reference count
-   *
    */
-  synchronized void decCount() {
-    refCount--;
-  }
-  
-  /**
-   * Return if this client has no reference
-   * 
-   * @return true if this client has no reference; false otherwise
-   */
-  synchronized boolean isZeroReference() {
-    return refCount==0;
+  int decAndGetCount() {
+    return refCount.decrementAndGet();
   }
 
   /** Check the rpc response header. */
@@ -338,6 +332,7 @@ public class Client implements AutoCloseable {
     final RPC.RpcKind rpcKind;      // Rpc EngineKind
     boolean done;               // true when call is done
     private final Object externalHandler;
+    private AlignmentContext alignmentContext;
 
     private Call(RPC.RpcKind rpcKind, Writable param) {
       this.rpcKind = rpcKind;
@@ -379,6 +374,15 @@ public class Client implements AutoCloseable {
       }
     }
 
+    /**
+     * Set an AlignmentContext for the call to update when call is done.
+     *
+     * @param ac alignment context to update.
+     */
+    public synchronized void setAlignmentContext(AlignmentContext ac) {
+      this.alignmentContext = ac;
+    }
+
     /** Set the exception when there is an error.
      * Notify the caller the call is done.
      * 
@@ -416,8 +420,8 @@ public class Client implements AutoCloseable {
     private SaslRpcClient saslRpcClient;
     
     private Socket socket = null;                 // connected socket
-    private DataInputStream in;
-    private DataOutputStream out;
+    private IpcStreams ipcStreams;
+    private final int maxResponseLength;
     private final int rpcTimeout;
     private int maxIdleTime; //connections will be culled if it was idle for 
     //maxIdleTime msecs
@@ -429,8 +433,8 @@ public class Client implements AutoCloseable {
     private final boolean doPing; //do we need to send ping message
     private final int pingInterval; // how often sends ping to the server
     private final int soTimeout; // used by ipc ping and rpc timeout
-    private ByteArrayOutputStream pingRequest; // ping message
-    
+    private byte[] pingRequest; // ping message
+
     // currently active calls
     private Hashtable<Integer, Call> calls = new Hashtable<Integer, Call>();
     private AtomicLong lastActivity = new AtomicLong();// last I/O activity time
@@ -439,16 +443,17 @@ public class Client implements AutoCloseable {
     
     private final Object sendRpcRequestLock = new Object();
 
-    public Connection(ConnectionId remoteId, int serviceClass) throws IOException {
+    private AtomicReference<Thread> connectingThread = new AtomicReference<>();
+    private final Consumer<Connection> removeMethod;
+
+    Connection(ConnectionId remoteId, int serviceClass,
+        Consumer<Connection> removeMethod) {
       this.remoteId = remoteId;
       this.server = remoteId.getAddress();
-      if (server.isUnresolved()) {
-        throw NetUtils.wrapException(server.getHostName(),
-            server.getPort(),
-            null,
-            0,
-            new UnknownHostException());
-      }
+
+      this.maxResponseLength = remoteId.conf.getInt(
+          CommonConfigurationKeys.IPC_MAXIMUM_RESPONSE_LENGTH,
+          CommonConfigurationKeys.IPC_MAXIMUM_RESPONSE_LENGTH_DEFAULT);
       this.rpcTimeout = remoteId.getRpcTimeout();
       this.maxIdleTime = remoteId.getMaxIdleTime();
       this.connectionRetryPolicy = remoteId.connectionRetryPolicy;
@@ -459,12 +464,18 @@ public class Client implements AutoCloseable {
       this.doPing = remoteId.getDoPing();
       if (doPing) {
         // construct a RPC header with the callId as the ping callId
-        pingRequest = new ByteArrayOutputStream();
+        ResponseBuffer buf = new ResponseBuffer();
         RpcRequestHeaderProto pingHeader = ProtoUtil
             .makeRpcRequestHeader(RpcKind.RPC_PROTOCOL_BUFFER,
                 OperationProto.RPC_FINAL_PACKET, PING_CALL_ID,
                 RpcConstants.INVALID_RETRY_COUNT, clientId);
-        pingHeader.writeDelimitedTo(pingRequest);
+        try {
+          pingHeader.writeDelimitedTo(buf);
+        } catch (IOException e) {
+          throw new IllegalStateException("Failed to write to buf for "
+              + remoteId + " in " + Client.this + " due to " + e, e);
+        }
+        pingRequest = buf.toByteArray();
       }
       this.pingInterval = remoteId.getPingInterval();
       if (rpcTimeout > 0) {
@@ -476,6 +487,8 @@ public class Client implements AutoCloseable {
         this.soTimeout = pingInterval;
       }
       this.serviceClass = serviceClass;
+      this.removeMethod = removeMethod;
+
       if (LOG.isDebugEnabled()) {
         LOG.debug("The ping interval is " + this.pingInterval + " ms.");
       }
@@ -599,15 +612,15 @@ public class Client implements AutoCloseable {
       }
       return false;
     }
-    
-    private synchronized AuthMethod setupSaslConnection(final InputStream in2, 
-        final OutputStream out2) throws IOException {
+
+    private synchronized AuthMethod setupSaslConnection(IpcStreams streams)
+        throws IOException {
       // Do not use Client.conf here! We must use ConnectionId.conf, since the
       // Client object is cached and shared between all RPC clients, even those
       // for separate services.
       saslRpcClient = new SaslRpcClient(remoteId.getTicket(),
           remoteId.getProtocol(), remoteId.getAddress(), remoteId.conf);
-      return saslRpcClient.saslConnect(in2, out2);
+      return saslRpcClient.saslConnect(streams);
     }
 
     /**
@@ -626,12 +639,18 @@ public class Client implements AutoCloseable {
         LOG.warn("Address change detected. Old: " + server.toString() +
                                  " New: " + currentAddr.toString());
         server = currentAddr;
+        UserGroupInformation ticket = remoteId.getTicket();
+        this.setName("IPC Client (" + socketFactory.hashCode()
+            + ") connection to " + server.toString() + " from "
+            + ((ticket == null) ? "an unknown user" : ticket.getUserName()));
         return true;
       }
       return false;
     }
     
-    private synchronized void setupConnection() throws IOException {
+    private synchronized void setupConnection(
+        UserGroupInformation ticket) throws IOException {
+      LOG.debug("Setup connection to " + server.toString());
       short ioFailures = 0;
       short timeoutFailures = 0;
       while (true) {
@@ -659,24 +678,27 @@ public class Client implements AutoCloseable {
            * client, to ensure Server matching address of the client connection
            * to host name in principal passed.
            */
-          UserGroupInformation ticket = remoteId.getTicket();
+          InetSocketAddress bindAddr = null;
           if (ticket != null && ticket.hasKerberosCredentials()) {
             KerberosInfo krbInfo = 
               remoteId.getProtocol().getAnnotation(KerberosInfo.class);
-            if (krbInfo != null && krbInfo.clientPrincipal() != null) {
-              String host = 
-                SecurityUtil.getHostFromPrincipal(remoteId.getTicket().getUserName());
-              
+            if (krbInfo != null) {
+              String principal = ticket.getUserName();
+              String host = SecurityUtil.getHostFromPrincipal(principal);
               // If host name is a valid local address then bind socket to it
               InetAddress localAddr = NetUtils.getLocalInetAddress(host);
               if (localAddr != null) {
                 this.socket.setReuseAddress(true);
+                localAddr = NetUtils.bindToLocalAddress(localAddr,
+                    bindToWildCardAddress);
+                LOG.debug("Binding {} to {}", principal,
+                    (bindToWildCardAddress) ? "0.0.0.0" : localAddr);
                 this.socket.bind(new InetSocketAddress(localAddr, 0));
               }
             }
           }
           
-          NetUtils.connect(this.socket, server, connectionTimeout);
+          NetUtils.connect(this.socket, server, bindAddr, connectionTimeout);
           this.socket.setSoTimeout(soTimeout);
           return;
         } catch (ConnectTimeoutException toe) {
@@ -691,8 +713,16 @@ public class Client implements AutoCloseable {
         } catch (IOException ie) {
           if (updateAddress()) {
             timeoutFailures = ioFailures = 0;
+            try {
+              // HADOOP-17068: when server changed, ignore the exception.
+              handleConnectionFailure(ioFailures++, ie);
+            } catch (IOException ioe) {
+              LOG.warn("Exception when handle ConnectionFailure: "
+                  + ioe.getMessage());
+            }
+          } else {
+            handleConnectionFailure(ioFailures++, ie);
           }
-          handleConnectionFailure(ioFailures++, ie);
         }
       }
     }
@@ -741,8 +771,17 @@ public class Client implements AutoCloseable {
               throw (IOException) new IOException(msg).initCause(ex);
             }
           } else {
-            LOG.warn("Exception encountered while connecting to "
-                + "the server : " + ex);
+            // With RequestHedgingProxyProvider, one rpc call will send multiple
+            // requests to all namenodes. After one request return successfully,
+            // all other requests will be interrupted. It's not a big problem,
+            // and should not print a warning log.
+            if (ex instanceof InterruptedIOException) {
+              LOG.debug("Exception encountered while connecting to the server",
+                  ex);
+            } else {
+              LOG.warn("Exception encountered while connecting to the server ",
+                  ex);
+            }
           }
           if (ex instanceof RemoteException)
             throw (RemoteException) ex;
@@ -760,8 +799,16 @@ public class Client implements AutoCloseable {
         AtomicBoolean fallbackToSimpleAuth) {
       if (socket != null || shouldCloseConnection.get()) {
         return;
-      } 
+      }
+      UserGroupInformation ticket = remoteId.getTicket();
+      if (ticket != null) {
+        final UserGroupInformation realUser = ticket.getRealUser();
+        if (realUser != null) {
+          ticket = realUser;
+        }
+      }
       try {
+        connectingThread.set(Thread.currentThread());
         if (LOG.isDebugEnabled()) {
           LOG.debug("Connecting to "+server);
         }
@@ -772,24 +819,17 @@ public class Client implements AutoCloseable {
         short numRetries = 0;
         Random rand = null;
         while (true) {
-          setupConnection();
-          InputStream inStream = NetUtils.getInputStream(socket);
-          OutputStream outStream = NetUtils.getOutputStream(socket);
-          writeConnectionHeader(outStream);
+          setupConnection(ticket);
+          ipcStreams = new IpcStreams(socket, maxResponseLength);
+          writeConnectionHeader(ipcStreams);
           if (authProtocol == AuthProtocol.SASL) {
-            final InputStream in2 = inStream;
-            final OutputStream out2 = outStream;
-            UserGroupInformation ticket = remoteId.getTicket();
-            if (ticket.getRealUser() != null) {
-              ticket = ticket.getRealUser();
-            }
             try {
               authMethod = ticket
                   .doAs(new PrivilegedExceptionAction<AuthMethod>() {
                     @Override
                     public AuthMethod run()
                         throws IOException, InterruptedException {
-                      return setupSaslConnection(in2, out2);
+                      return setupSaslConnection(ipcStreams);
                     }
                   });
             } catch (IOException ex) {
@@ -808,8 +848,7 @@ public class Client implements AutoCloseable {
             }
             if (authMethod != AuthMethod.SIMPLE) {
               // Sasl connect is successful. Let's set up Sasl i/o streams.
-              inStream = saslRpcClient.getInputStream(inStream);
-              outStream = saslRpcClient.getOutputStream(outStream);
+              ipcStreams.setSaslClient(saslRpcClient);
               // for testing
               remoteId.saslQop =
                   (String)saslRpcClient.getNegotiatedProperty(Sasl.QOP);
@@ -819,7 +858,8 @@ public class Client implements AutoCloseable {
               }
             } else if (UserGroupInformation.isSecurityEnabled()) {
               if (!fallbackAllowed) {
-                throw new IOException("Server asks us to fall back to SIMPLE " +
+                throw new AccessControlException(
+                    "Server asks us to fall back to SIMPLE " +
                     "auth, but this client is configured to only allow secure " +
                     "connections.");
               }
@@ -828,18 +868,11 @@ public class Client implements AutoCloseable {
               }
             }
           }
-        
-          if (doPing) {
-            inStream = new PingInputStream(inStream);
-          }
-          this.in = new DataInputStream(new BufferedInputStream(inStream));
 
-          // SASL may have already buffered the stream
-          if (!(outStream instanceof BufferedOutputStream)) {
-            outStream = new BufferedOutputStream(outStream);
+          if (doPing) {
+            ipcStreams.setInputStream(new PingInputStream(ipcStreams.in));
           }
-          this.out = new DataOutputStream(outStream);
-          
+
           writeConnectionContext(remoteId, authMethod);
 
           // update last activity time
@@ -862,6 +895,8 @@ public class Client implements AutoCloseable {
           markClosed(new IOException("Couldn't set up IO streams: " + t, t));
         }
         close();
+      } finally {
+        connectingThread.set(null);
       }
     }
     
@@ -919,8 +954,10 @@ public class Client implements AutoCloseable {
       }
       if (action.action == RetryAction.RetryDecision.FAIL) {
         if (action.reason != null) {
-          LOG.warn("Failed to connect to server: " + server + ": "
-              + action.reason, ioe);
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Failed to connect to server: " + server + ": "
+                    + action.reason, ioe);
+          }
         }
         throw ioe;
       }
@@ -953,17 +990,28 @@ public class Client implements AutoCloseable {
      * |  AuthProtocol (1 byte)           |      
      * +----------------------------------+
      */
-    private void writeConnectionHeader(OutputStream outStream)
+    private void writeConnectionHeader(IpcStreams streams)
         throws IOException {
-      DataOutputStream out = new DataOutputStream(new BufferedOutputStream(outStream));
-      // Write out the header, version and authentication method
-      out.write(RpcConstants.HEADER.array());
-      out.write(RpcConstants.CURRENT_VERSION);
-      out.write(serviceClass);
-      out.write(authProtocol.callId);
-      out.flush();
+      // Write out the header, version and authentication method.
+      // The output stream is buffered but we must not flush it yet.  The
+      // connection setup protocol requires the client to send multiple
+      // messages before reading a response.
+      //
+      //   insecure: send header+context+call, read
+      //   secure  : send header+negotiate, read, (sasl), context+call, read
+      //
+      // The client must flush only when it's prepared to read.  Otherwise
+      // "broken pipe" exceptions occur if the server closes the connection
+      // before all messages are sent.
+      final DataOutputStream out = streams.out;
+      synchronized (out) {
+        out.write(RpcConstants.HEADER.array());
+        out.write(RpcConstants.CURRENT_VERSION);
+        out.write(serviceClass);
+        out.write(authProtocol.callId);
+      }
     }
-    
+
     /* Write the connection context header for each connection
      * Out is not synchronized because only the first thread does this.
      */
@@ -979,14 +1027,17 @@ public class Client implements AutoCloseable {
           .makeRpcRequestHeader(RpcKind.RPC_PROTOCOL_BUFFER,
               OperationProto.RPC_FINAL_PACKET, CONNECTION_CONTEXT_CALL_ID,
               RpcConstants.INVALID_RETRY_COUNT, clientId);
-      RpcRequestMessageWrapper request =
-          new RpcRequestMessageWrapper(connectionContextHeader, message);
-      
-      // Write out the packet length
-      out.writeInt(request.getLength());
-      request.write(out);
+      // do not flush.  the context and first ipc call request must be sent
+      // together to avoid possibility of broken pipes upon authz failure.
+      // see writeConnectionHeader
+      final ResponseBuffer buf = new ResponseBuffer();
+      connectionContextHeader.writeDelimitedTo(buf);
+      message.writeDelimitedTo(buf);
+      synchronized (ipcStreams.out) {
+        ipcStreams.sendRequest(buf.toByteArray());
+      }
     }
-    
+
     /* wait till someone signals us to start reading RPC response or
      * it is idle too long, it is marked as to be closed, 
      * or the client is marked as not running.
@@ -1029,10 +1080,9 @@ public class Client implements AutoCloseable {
       long curTime = Time.now();
       if ( curTime - lastActivity.get() >= pingInterval) {
         lastActivity.set(curTime);
-        synchronized (out) {
-          out.writeInt(pingRequest.size());
-          pingRequest.writeTo(out);
-          out.flush();
+        synchronized (ipcStreams.out) {
+          ipcStreams.sendRequest(pingRequest);
+          ipcStreams.flush();
         }
       }
     }
@@ -1085,31 +1135,30 @@ public class Client implements AutoCloseable {
       // 2) RpcRequest
       //
       // Items '1' and '2' are prepared here. 
-      final DataOutputBuffer d = new DataOutputBuffer();
       RpcRequestHeaderProto header = ProtoUtil.makeRpcRequestHeader(
           call.rpcKind, OperationProto.RPC_FINAL_PACKET, call.id, call.retry,
-          clientId);
-      header.writeDelimitedTo(d);
-      call.rpcRequest.write(d);
+          clientId, call.alignmentContext);
+
+      final ResponseBuffer buf = new ResponseBuffer();
+      header.writeDelimitedTo(buf);
+      RpcWritable.wrap(call.rpcRequest).writeTo(buf);
 
       synchronized (sendRpcRequestLock) {
         Future<?> senderFuture = sendParamsExecutor.submit(new Runnable() {
           @Override
           public void run() {
             try {
-              synchronized (Connection.this.out) {
+              synchronized (ipcStreams.out) {
                 if (shouldCloseConnection.get()) {
                   return;
                 }
-                
-                if (LOG.isDebugEnabled())
-                  LOG.debug(getName() + " sending #" + call.id);
-         
-                byte[] data = d.getData();
-                int totalLength = d.getLength();
-                out.writeInt(totalLength); // Total Length
-                out.write(data, 0, totalLength);// RpcRequestHeader + RpcRequest
-                out.flush();
+                if (LOG.isDebugEnabled()) {
+                  LOG.debug(getName() + " sending #" + call.id
+                      + " " + call.rpcRequest);
+                }
+                // RpcRequestHeader + RpcRequest
+                ipcStreams.sendRequest(buf.toByteArray());
+                ipcStreams.flush();
               }
             } catch (IOException e) {
               // exception at this point would leave the connection in an
@@ -1119,7 +1168,7 @@ public class Client implements AutoCloseable {
             } finally {
               //the buffer is just an in-memory buffer, but it is still polite to
               // close early
-              IOUtils.closeStream(d);
+              IOUtils.closeStream(buf);
             }
           }
         });
@@ -1150,13 +1199,11 @@ public class Client implements AutoCloseable {
       touch();
       
       try {
-        int totalLen = in.readInt();
-        RpcResponseHeaderProto header = 
-            RpcResponseHeaderProto.parseDelimitedFrom(in);
+        ByteBuffer bb = ipcStreams.readResponse();
+        RpcWritable.Buffer packet = RpcWritable.Buffer.wrap(bb);
+        RpcResponseHeaderProto header =
+            packet.getValue(RpcResponseHeaderProto.getDefaultInstance());
         checkResponse(header);
-
-        int headerLen = header.getSerializedSize();
-        headerLen += CodedOutputStream.computeRawVarint32Size(headerLen);
 
         int callId = header.getCallId();
         if (LOG.isDebugEnabled())
@@ -1164,28 +1211,18 @@ public class Client implements AutoCloseable {
 
         RpcStatusProto status = header.getStatus();
         if (status == RpcStatusProto.SUCCESS) {
-          Writable value = ReflectionUtils.newInstance(valueClass, conf);
-          value.readFields(in);                 // read value
+          Writable value = packet.newInstance(valueClass, conf);
           final Call call = calls.remove(callId);
           call.setRpcResponse(value);
-          
-          // verify that length was correct
-          // only for ProtobufEngine where len can be verified easily
-          if (call.getRpcResponse() instanceof ProtobufRpcEngine.RpcWrapper) {
-            ProtobufRpcEngine.RpcWrapper resWrapper = 
-                (ProtobufRpcEngine.RpcWrapper) call.getRpcResponse();
-            if (totalLen != headerLen + resWrapper.getLength()) { 
-              throw new RpcClientException(
-                  "RPC response length mismatch on rpc success");
-            }
+          if (call.alignmentContext != null) {
+            call.alignmentContext.receiveResponseState(header);
           }
-        } else { // Rpc Request failed
-          // Verify that length was correct
-          if (totalLen != headerLen) {
-            throw new RpcClientException(
-                "RPC response length mismatch on rpc error");
-          }
-          
+        }
+        // verify that packet length was correct
+        if (packet.remaining() > 0) {
+          throw new RpcClientException("RPC response length mismatch");
+        }
+        if (status != RpcStatusProto.SUCCESS) { // Rpc Request failed
           final String exceptionClassName = header.hasExceptionClassName() ?
                 header.getExceptionClassName() : 
                   "ServerDidNotSetExceptionClassName";
@@ -1216,6 +1253,13 @@ public class Client implements AutoCloseable {
         notifyAll();
       }
     }
+
+    private void interruptConnectingThread() {
+      Thread connThread = connectingThread.get();
+      if (connThread != null) {
+        connThread.interrupt();
+      }
+    }
     
     /** Close the connection. */
     private synchronized void close() {
@@ -1227,11 +1271,10 @@ public class Client implements AutoCloseable {
       // We have marked this connection as closed. Other thread could have
       // already known it and replace this closedConnection with a new one.
       // We should only remove this closedConnection.
-      connections.remove(remoteId, this);
+      removeMethod.accept(this);
 
       // close the streams and therefore the socket
-      IOUtils.closeStream(out);
-      IOUtils.closeStream(in);
+      IOUtils.closeStream(ipcStreams);
       disposeSasl();
 
       // clean up all calls
@@ -1245,7 +1288,7 @@ public class Client implements AutoCloseable {
           cleanupCalls();
         }
       } else {
-        // log the info
+        // Log the newest server information if update address.
         if (LOG.isDebugEnabled()) {
           LOG.debug("closing ipc connection to " + server + ": " +
               closeException.getMessage(),closeException);
@@ -1281,6 +1324,10 @@ public class Client implements AutoCloseable {
         CommonConfigurationKeys.IPC_CLIENT_CONNECT_TIMEOUT_DEFAULT);
     this.fallbackAllowed = conf.getBoolean(CommonConfigurationKeys.IPC_CLIENT_FALLBACK_TO_SIMPLE_AUTH_ALLOWED_KEY,
         CommonConfigurationKeys.IPC_CLIENT_FALLBACK_TO_SIMPLE_AUTH_ALLOWED_DEFAULT);
+    this.bindToWildCardAddress = conf
+        .getBoolean(CommonConfigurationKeys.IPC_CLIENT_BIND_WILDCARD_ADDR_KEY,
+            CommonConfigurationKeys.IPC_CLIENT_BIND_WILDCARD_ADDR_DEFAULT);
+
     this.clientId = ClientId.getClientId();
     this.sendParamsExecutor = clientExcecutorFactory.refAndGetInstance();
     this.maxAsyncCalls = conf.getInt(
@@ -1296,7 +1343,13 @@ public class Client implements AutoCloseable {
   public Client(Class<? extends Writable> valueClass, Configuration conf) {
     this(valueClass, conf, NetUtils.getDefaultSocketFactory(conf));
   }
- 
+
+  @Override
+  public String toString() {
+    return getClass().getSimpleName() + "-"
+        + StringUtils.byteToHexString(clientId);
+  }
+
   /** Return the socket factory of this client
    *
    * @return this client's socket factory
@@ -1311,24 +1364,28 @@ public class Client implements AutoCloseable {
     if (LOG.isDebugEnabled()) {
       LOG.debug("Stopping client");
     }
-
-    if (!running.compareAndSet(true, false)) {
-      return;
+    synchronized (putLock) { // synchronized to avoid put after stop
+      if (!running.compareAndSet(true, false)) {
+        return;
+      }
     }
-    
+
     // wake up all connections
     for (Connection conn : connections.values()) {
       conn.interrupt();
+      conn.interruptConnectingThread();
     }
     
     // wait until all connections are closed
-    while (!connections.isEmpty()) {
-      try {
-        Thread.sleep(100);
-      } catch (InterruptedException e) {
+    synchronized (emptyCondition) {
+      // synchronized the loop to guarantee wait must be notified.
+      while (!connections.isEmpty()) {
+        try {
+          emptyCondition.wait();
+        } catch (InterruptedException e) {
+        }
       }
     }
-    
     clientExcecutorFactory.unrefAndCleanup();
   }
 
@@ -1341,7 +1398,7 @@ public class Client implements AutoCloseable {
    * @param remoteId - the target rpc server
    * @param fallbackToSimpleAuth - set to true or false during this method to
    *   indicate if a secure client falls back to simple auth
-   * @returns the rpc response
+   * @return the rpc response
    * Throws exceptions if there are network problems or if the remote code
    * threw an exception.
    */
@@ -1349,7 +1406,15 @@ public class Client implements AutoCloseable {
       ConnectionId remoteId, AtomicBoolean fallbackToSimpleAuth)
       throws IOException {
     return call(rpcKind, rpcRequest, remoteId, RPC.RPC_SERVICE_CLASS_DEFAULT,
-      fallbackToSimpleAuth);
+      fallbackToSimpleAuth, null);
+  }
+
+  public Writable call(RPC.RpcKind rpcKind, Writable rpcRequest,
+      ConnectionId remoteId, AtomicBoolean fallbackToSimpleAuth,
+      AlignmentContext alignmentContext)
+      throws IOException {
+    return call(rpcKind, rpcRequest, remoteId, RPC.RPC_SERVICE_CLASS_DEFAULT,
+        fallbackToSimpleAuth, alignmentContext);
   }
 
   private void checkAsyncCall() throws IOException {
@@ -1366,6 +1431,14 @@ public class Client implements AutoCloseable {
     }
   }
 
+  Writable call(RPC.RpcKind rpcKind, Writable rpcRequest,
+                ConnectionId remoteId, int serviceClass,
+                AtomicBoolean fallbackToSimpleAuth)
+      throws IOException {
+    return call(rpcKind, rpcRequest, remoteId, serviceClass,
+        fallbackToSimpleAuth, null);
+  }
+
   /**
    * Make a call, passing <code>rpcRequest</code>, to the IPC server defined by
    * <code>remoteId</code>, returning the rpc response.
@@ -1376,14 +1449,17 @@ public class Client implements AutoCloseable {
    * @param serviceClass - service class for RPC
    * @param fallbackToSimpleAuth - set to true or false during this method to
    *   indicate if a secure client falls back to simple auth
-   * @returns the rpc response
+   * @param alignmentContext - state alignment context
+   * @return the rpc response
    * Throws exceptions if there are network problems or if the remote code
    * threw an exception.
    */
   Writable call(RPC.RpcKind rpcKind, Writable rpcRequest,
       ConnectionId remoteId, int serviceClass,
-      AtomicBoolean fallbackToSimpleAuth) throws IOException {
+      AtomicBoolean fallbackToSimpleAuth, AlignmentContext alignmentContext)
+      throws IOException {
     final Call call = createCall(rpcKind, rpcRequest);
+    call.setAlignmentContext(alignmentContext);
     final Connection connection = getConnection(remoteId, call, serviceClass,
         fallbackToSimpleAuth);
 
@@ -1393,10 +1469,12 @@ public class Client implements AutoCloseable {
         connection.sendRpcRequest(call);                 // send the rpc request
       } catch (RejectedExecutionException e) {
         throw new IOException("connection has been closed", e);
-      } catch (InterruptedException e) {
+      } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
-        LOG.warn("interrupted waiting to send rpc request to server", e);
-        throw new IOException(e);
+        IOException ioe = new InterruptedIOException(
+            "Interrupted waiting to send RPC request to server");
+        ioe.initCause(ie);
+        throw ioe;
       }
     } catch(Exception e) {
       if (isAsynchronousMode()) {
@@ -1445,7 +1523,7 @@ public class Client implements AutoCloseable {
   /**
    * Check if RPC is in asynchronous mode or not.
    *
-   * @returns true, if RPC is in asynchronous mode, otherwise false for
+   * @return true, if RPC is in asynchronous mode, otherwise false for
    *          synchronous mode.
    */
   @Unstable
@@ -1520,24 +1598,37 @@ public class Client implements AutoCloseable {
   private Connection getConnection(ConnectionId remoteId,
       Call call, int serviceClass, AtomicBoolean fallbackToSimpleAuth)
       throws IOException {
-    if (!running.get()) {
-      // the client is stopped
-      throw new IOException("The client is stopped");
+    final InetSocketAddress address = remoteId.getAddress();
+    if (address.isUnresolved()) {
+      throw NetUtils.wrapException(address.getHostName(),
+          address.getPort(),
+          null,
+          0,
+          new UnknownHostException());
     }
+
+    final Consumer<Connection> removeMethod = c -> {
+      final boolean removed = connections.remove(remoteId, c);
+      if (removed && connections.isEmpty()) {
+        synchronized (emptyCondition) {
+          emptyCondition.notify();
+        }
+      }
+    };
+
     Connection connection;
     /* we could avoid this allocation for each RPC by having a  
      * connectionsId object and with set() method. We need to manage the
      * refs for keys in HashMap properly. For now its ok.
      */
     while (true) {
-      // These lines below can be shorten with computeIfAbsent in Java8
-      connection = connections.get(remoteId);
-      if (connection == null) {
-        connection = new Connection(remoteId, serviceClass);
-        Connection existing = connections.putIfAbsent(remoteId, connection);
-        if (existing != null) {
-          connection = existing;
+      synchronized (putLock) { // synchronized to avoid put after stop
+        if (!running.get()) {
+          throw new IOException("Failed to get connection for " + remoteId
+              + ", " + call + ": " + this + " is already stopped");
         }
+        connection = connections.computeIfAbsent(remoteId,
+            id -> new Connection(id, serviceClass, removeMethod));
       }
 
       if (connection.addCall(call)) {
@@ -1547,7 +1638,7 @@ public class Client implements AutoCloseable {
         // have already known this closedConnection, and replace it with a new
         // connection. So we should call conditional remove to make sure we only
         // remove this closedConnection.
-        connections.remove(remoteId, connection);
+        removeMethod.accept(connection);
       }
     }
 
@@ -1559,7 +1650,8 @@ public class Client implements AutoCloseable {
   
   /**
    * This class holds the address and the user ticket. The client connections
-   * to servers are uniquely identified by <remoteAddress, protocol, ticket>
+   * to servers are uniquely identified by {@literal <}remoteAddress, protocol,
+   * ticket{@literal >}
    */
   @InterfaceAudience.LimitedPrivate({"HDFS", "MapReduce"})
   @InterfaceStability.Evolving
@@ -1759,5 +1851,78 @@ public class Client implements AutoCloseable {
   @Unstable
   public void close() throws Exception {
     stop();
+  }
+
+  /** Manages the input and output streams for an IPC connection.
+   *  Only exposed for use by SaslRpcClient.
+   */
+  @InterfaceAudience.Private
+  public static class IpcStreams implements Closeable, Flushable {
+    private DataInputStream in;
+    public DataOutputStream out;
+    private int maxResponseLength;
+    private boolean firstResponse = true;
+
+    IpcStreams(Socket socket, int maxResponseLength) throws IOException {
+      this.maxResponseLength = maxResponseLength;
+      setInputStream(
+          new BufferedInputStream(NetUtils.getInputStream(socket)));
+      setOutputStream(
+          new BufferedOutputStream(NetUtils.getOutputStream(socket)));
+    }
+
+    void setSaslClient(SaslRpcClient client) throws IOException {
+      // Wrap the input stream in a BufferedInputStream to fill the buffer
+      // before reading its length (HADOOP-14062).
+      setInputStream(new BufferedInputStream(client.getInputStream(in)));
+      setOutputStream(client.getOutputStream(out));
+    }
+
+    private void setInputStream(InputStream is) {
+      this.in = (is instanceof DataInputStream)
+          ? (DataInputStream)is : new DataInputStream(is);
+    }
+
+    private void setOutputStream(OutputStream os) {
+      this.out = (os instanceof DataOutputStream)
+          ? (DataOutputStream)os : new DataOutputStream(os);
+    }
+
+    public ByteBuffer readResponse() throws IOException {
+      int length = in.readInt();
+      if (firstResponse) {
+        firstResponse = false;
+        // pre-rpcv9 exception, almost certainly a version mismatch.
+        if (length == -1) {
+          in.readInt(); // ignore fatal/error status, it's fatal for us.
+          throw new RemoteException(WritableUtils.readString(in),
+                                    WritableUtils.readString(in));
+        }
+      }
+      if (length <= 0) {
+        throw new RpcException("RPC response has invalid length");
+      }
+      if (maxResponseLength > 0 && length > maxResponseLength) {
+        throw new RpcException("RPC response exceeds maximum data length");
+      }
+      ByteBuffer bb = ByteBuffer.allocate(length);
+      in.readFully(bb.array());
+      return bb;
+    }
+
+    public void sendRequest(byte[] buf) throws IOException {
+      out.write(buf);
+    }
+
+    @Override
+    public void flush() throws IOException {
+      out.flush();
+    }
+
+    @Override
+    public void close() {
+      IOUtils.closeStream(out);
+      IOUtils.closeStream(in);
+    }
   }
 }

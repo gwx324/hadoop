@@ -22,18 +22,24 @@ import static org.apache.hadoop.yarn.webapp.WebServicesTestUtils.assertResponseS
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.StringReader;
+import java.security.Principal;
 import java.util.HashMap;
 
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.core.MediaType;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -41,13 +47,15 @@ import org.apache.hadoop.yarn.event.AsyncDispatcher;
 import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
-import org.apache.hadoop.yarn.server.nodemanager.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
+import org.apache.hadoop.yarn.server.nodemanager.NodeManager.NMContext;
 import org.apache.hadoop.yarn.server.nodemanager.ResourceView;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.ApplicationState;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.webapp.WebServer.NMWebApp;
+import org.apache.hadoop.yarn.server.nodemanager.webapp.dao.AppsInfo;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
@@ -96,8 +104,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
       conf.set(YarnConfiguration.NM_LOCAL_DIRS, testRootDir.getAbsolutePath());
       conf.set(YarnConfiguration.NM_LOG_DIRS, testLogDir.getAbsolutePath());
       LocalDirsHandlerService dirsHandler = new LocalDirsHandlerService();
-      NodeHealthCheckerService healthChecker = new NodeHealthCheckerService(
-          NodeManager.getNodeHealthScriptRunner(conf), dirsHandler);
+      NodeHealthCheckerService healthChecker =
+          new NodeHealthCheckerService(dirsHandler);
       healthChecker.init(conf);
       dirsHandler = healthChecker.getDiskHandler();
       aclsManager = new ApplicationACLsManager(conf);
@@ -182,7 +190,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
     WebResource r = resource();
     ClientResponse response = r.path("ws").path("v1").path("node").path("apps")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("apps isn't empty",
         new JSONObject().toString(), json.get("apps").toString());
@@ -190,25 +199,28 @@ public class TestNMWebServicesApps extends JerseyTestBase {
 
   private HashMap<String, String> addAppContainers(Application app) 
       throws IOException {
+    return addAppContainers(app, nmContext);
+  }
+
+  private HashMap<String, String> addAppContainers(Application app,
+      Context context) throws IOException {
     Dispatcher dispatcher = new AsyncDispatcher();
-    ApplicationAttemptId appAttemptId = BuilderUtils.newApplicationAttemptId(
-        app.getAppId(), 1);
+    ApplicationAttemptId appAttemptId = BuilderUtils
+        .newApplicationAttemptId(app.getAppId(), 1);
     Container container1 = new MockContainer(appAttemptId, dispatcher, conf,
         app.getUser(), app.getAppId(), 1);
     Container container2 = new MockContainer(appAttemptId, dispatcher, conf,
         app.getUser(), app.getAppId(), 2);
-    nmContext.getContainers()
-        .put(container1.getContainerId(), container1);
-    nmContext.getContainers()
-        .put(container2.getContainerId(), container2);
+    context.getContainers().put(container1.getContainerId(), container1);
+    context.getContainers().put(container2.getContainerId(), container2);
 
     app.getContainers().put(container1.getContainerId(), container1);
     app.getContainers().put(container2.getContainerId(), container2);
     HashMap<String, String> hash = new HashMap<String, String>();
-    hash.put(container1.getContainerId().toString(), container1
-        .getContainerId().toString());
-    hash.put(container2.getContainerId().toString(), container2
-        .getContainerId().toString());
+    hash.put(container1.getContainerId().toString(),
+        container1.getContainerId().toString());
+    hash.put(container2.getContainerId().toString(),
+        container2.getContainerId().toString());
     return hash;
   }
 
@@ -241,7 +253,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
 
     ClientResponse response = r.path("ws").path("v1").path("node").path(path)
         .accept(media).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     JSONObject info = json.getJSONObject("apps");
     assertEquals("incorrect number of elements", 1, info.length());
@@ -270,7 +283,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("node").path("apps")
         .queryParam("user", "mockUser").accept(MediaType.APPLICATION_JSON)
         .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
 
     JSONObject info = json.getJSONObject("apps");
@@ -293,7 +307,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("node").path("apps")
         .queryParam("user", "george").accept(MediaType.APPLICATION_JSON)
         .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     assertEquals("apps is not empty",
         new JSONObject().toString(), json.get("apps").toString());
@@ -317,7 +332,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
       ClientResponse response = ue.getResponse();
 
       assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-      assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+      assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       JSONObject msg = response.getEntity(JSONObject.class);
       JSONObject exception = msg.getJSONObject("RemoteException");
       assertEquals("incorrect number of elements", 3, exception.length());
@@ -351,7 +367,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
         .queryParam("state", ApplicationState.RUNNING.toString())
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
 
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
 
     JSONObject info = json.getJSONObject("apps");
@@ -375,7 +392,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("node").path("apps")
         .queryParam("state", ApplicationState.INITING.toString())
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
 
     assertEquals("apps is not empty",
@@ -401,7 +419,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
       ClientResponse response = ue.getResponse();
 
       assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-      assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+      assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       JSONObject msg = response.getEntity(JSONObject.class);
       JSONObject exception = msg.getJSONObject("RemoteException");
       assertEquals("incorrect number of elements", 3, exception.length());
@@ -431,7 +450,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
       ClientResponse response = ue.getResponse();
 
       assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-      assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+      assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       JSONObject msg = response.getEntity(JSONObject.class);
       JSONObject exception = msg.getJSONObject("RemoteException");
       assertEquals("incorrect number of elements", 3, exception.length());
@@ -462,7 +482,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
       ClientResponse response = ue.getResponse();
 
       assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-      assertEquals(MediaType.APPLICATION_XML_TYPE, response.getType());
+      assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       String msg = response.getEntity(String.class);
 
       DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
@@ -517,7 +538,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("node").path("apps")
         .path(app.getAppId().toString()).accept(media)
         .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     verifyNodeAppInfo(json.getJSONObject("app"), app, hash);
   }
@@ -535,7 +557,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
         .path(app.getAppId().toString() + "/")
         .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
 
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     verifyNodeAppInfo(json.getJSONObject("app"), app, hash);
   }
@@ -557,7 +580,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
     } catch (UniformInterfaceException ue) {
       ClientResponse response = ue.getResponse();
       assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
-      assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+      assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       JSONObject msg = response.getEntity(JSONObject.class);
       JSONObject exception = msg.getJSONObject("RemoteException");
       assertEquals("incorrect number of elements", 3, exception.length());
@@ -594,7 +618,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
     } catch (UniformInterfaceException ue) {
       ClientResponse response = ue.getResponse();
       assertResponseStatusCode(Status.NOT_FOUND, response.getStatusInfo());
-      assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+      assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       JSONObject msg = response.getEntity(JSONObject.class);
       JSONObject exception = msg.getJSONObject("RemoteException");
       assertEquals("incorrect number of elements", 3, exception.length());
@@ -623,7 +648,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
 
     ClientResponse response = r.path("ws").path("v1").path("node").path("apps")
         .accept(MediaType.APPLICATION_XML).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_XML_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     String xml = response.getEntity(String.class);
     DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
     DocumentBuilder db = dbf.newDocumentBuilder();
@@ -647,7 +673,8 @@ public class TestNMWebServicesApps extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("node").path("apps")
         .path(app.getAppId().toString() + "/")
         .accept(MediaType.APPLICATION_XML).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_XML_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     String xml = response.getEntity(String.class);
     DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
     DocumentBuilder db = dbf.newDocumentBuilder();
@@ -704,4 +731,42 @@ public class TestNMWebServicesApps extends JerseyTestBase {
         user);
   }
 
+  @Test
+  public void testNodeAppsUserFiltering() throws JSONException, Exception {
+    Configuration yarnConf = new Configuration();
+    yarnConf.setBoolean(YarnConfiguration.FILTER_ENTITY_LIST_BY_USER, true);
+    yarnConf.setBoolean(YarnConfiguration.YARN_ACL_ENABLE, true);
+    yarnConf.setStrings(YarnConfiguration.YARN_ADMIN_ACL, "admin");
+    ApplicationACLsManager aclManager = new ApplicationACLsManager(yarnConf);
+
+    NMContext context = new NodeManager.NMContext(null, null, dirsHandler,
+        aclManager, null, false, yarnConf);
+    Application app = new MockApp(1);
+    context.getApplications().put(app.getAppId(), app);
+    addAppContainers(app, context);
+    Application app2 = new MockApp("foo", 1234, 2);
+    context.getApplications().put(app2.getAppId(), app2);
+    addAppContainers(app2, context);
+
+    // User "foo" could only see its own apps/containers.
+    NMWebServices webSvc = new NMWebServices(context, null, nmWebApp,
+        mock(HttpServletResponse.class));
+    HttpServletRequest mockHsr = mockHttpServletRequestByUserName("foo");
+    AppsInfo appsInfo = webSvc.getNodeApps(mockHsr, null, null);
+    assertEquals(1, appsInfo.getApps().size());
+
+    // Admin could see all apps and containers.
+    HttpServletRequest mockHsrAdmin = mockHttpServletRequestByUserName("admin");
+    AppsInfo appsInfo2 = webSvc.getNodeApps(mockHsrAdmin, null, null);
+    assertEquals(2, appsInfo2.getApps().size());
+  }
+
+  private HttpServletRequest mockHttpServletRequestByUserName(String username) {
+    HttpServletRequest mockHsr = mock(HttpServletRequest.class);
+    when(mockHsr.getRemoteUser()).thenReturn(username);
+    Principal principal = mock(Principal.class);
+    when(principal.getName()).thenReturn(username);
+    when(mockHsr.getUserPrincipal()).thenReturn(principal);
+    return mockHsr;
+  }
 }

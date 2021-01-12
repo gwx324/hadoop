@@ -13,9 +13,9 @@
  */
 package org.apache.hadoop.security.authentication.util;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
+import java.security.SecureRandom;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -35,7 +35,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs.Perms;
-import org.apache.zookeeper.client.ZooKeeperSaslClient;
+import org.apache.zookeeper.client.ZKClientConfig;
 import org.apache.zookeeper.data.ACL;
 import org.apache.zookeeper.data.Id;
 import org.apache.zookeeper.data.Stat;
@@ -149,7 +149,7 @@ public class ZKSignerSecretProvider extends RolloverSignerSecretProvider {
 
   public ZKSignerSecretProvider() {
     super();
-    rand = new Random();
+    rand = new SecureRandom();
   }
 
   /**
@@ -258,7 +258,7 @@ public class ZKSignerSecretProvider extends RolloverSignerSecretProvider {
     } catch (KeeperException.BadVersionException bve) {
       LOG.debug("Unable to push to znode; another server already did it");
     } catch (Exception ex) {
-      LOG.error("An unexpected exception occured pushing data to ZooKeeper",
+      LOG.error("An unexpected exception occurred pushing data to ZooKeeper",
               ex);
     }
   }
@@ -342,8 +342,11 @@ public class ZKSignerSecretProvider extends RolloverSignerSecretProvider {
     }
   }
 
-  private byte[] generateRandomSecret() {
-    return Long.toString(rand.nextLong()).getBytes(Charset.forName("UTF-8"));
+  @VisibleForTesting
+  protected byte[] generateRandomSecret() {
+    byte[] secret = new byte[32]; // 32 bytes = 256 bits
+    rand.nextBytes(secret);
+    return secret;
   }
 
   /**
@@ -364,7 +367,7 @@ public class ZKSignerSecretProvider extends RolloverSignerSecretProvider {
       LOG.info("Connecting to ZooKeeper with SASL/Kerberos"
               + "and using 'sasl' ACLs");
       String principal = setJaasConfiguration(config);
-      System.setProperty(ZooKeeperSaslClient.LOGIN_CONTEXT_NAME_KEY,
+      System.setProperty(ZKClientConfig.LOGIN_CONTEXT_NAME_KEY,
               JAAS_LOGIN_ENTRY_NAME);
       System.setProperty("zookeeper.authProvider.1",
               "org.apache.zookeeper.server.auth.SASLAuthenticationProvider");

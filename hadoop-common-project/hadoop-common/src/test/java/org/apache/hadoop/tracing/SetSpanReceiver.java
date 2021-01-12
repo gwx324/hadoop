@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.tracing;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.htrace.core.Span;
 import org.apache.htrace.core.SpanId;
@@ -35,7 +35,7 @@ import org.junit.Assert;
 /**
  * Span receiver that puts all spans into a single set.
  * This is useful for testing.
- * <p/>
+ * <p>
  * We're not using HTrace's POJOReceiver here so as that doesn't
  * push all the metrics to a static place, and would make testing
  * SpanReceiverHost harder.

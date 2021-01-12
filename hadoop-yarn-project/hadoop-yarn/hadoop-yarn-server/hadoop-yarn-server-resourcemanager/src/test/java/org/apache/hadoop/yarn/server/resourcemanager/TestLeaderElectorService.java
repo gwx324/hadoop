@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.apache.curator.CuratorZookeeperClient;
 import org.apache.curator.test.InstanceSpec;
 import org.apache.curator.test.KillSession;
@@ -31,9 +31,7 @@ import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
-import org.apache.log4j.Level;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.event.Level;
 import org.apache.zookeeper.ZooKeeper;
 import org.junit.After;
 import org.junit.Before;
@@ -58,12 +56,10 @@ public class TestLeaderElectorService {
   TestingCluster zkCluster;
   @Before
   public void setUp() throws Exception {
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.INFO);
+    GenericTestUtils.setRootLogLevel(Level.INFO);
     conf = new Configuration();
     conf.setBoolean(YarnConfiguration.RM_HA_ENABLED, true);
     conf.setBoolean(YarnConfiguration.CURATOR_LEADER_ELECTOR, true);
-    conf.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, true);
 
     conf.set(YarnConfiguration.RM_CLUSTER_ID, "cluster1");
     conf.set(YarnConfiguration.RM_HA_IDS, RM1_NODE_ID + "," + RM2_NODE_ID);
@@ -121,7 +117,7 @@ public class TestLeaderElectorService {
       }
     };
     memStore.init(conf);
-    rm1 = new MockRM(conf, memStore);
+    rm1 = new MockRM(conf, memStore, true);
     rm1.init(conf);
     rm1.start();
 
@@ -130,7 +126,14 @@ public class TestLeaderElectorService {
     rm2 = startRM("rm2", HAServiceState.STANDBY);
 
     // submit an app which will trigger state-store failure.
-    rm1.submitApp(200, "app1", "user1", null, "default", false);
+    MockRMAppSubmitter.submit(rm1,
+        MockRMAppSubmissionData.Builder.createWithMemory(200, rm1)
+        .withAppName("app1")
+        .withUser("user1")
+        .withAcls(null)
+        .withQueue("default")
+        .withWaitForAppAcceptedState(false)
+        .build());
     waitFor(rm1, HAServiceState.STANDBY);
 
     // rm2 should become active;
@@ -167,13 +170,13 @@ public class TestLeaderElectorService {
 
     rm1 = startRM("rm1", HAServiceState.ACTIVE);
 
-    LeaderElectorService service = rm1.getRMContext().getLeaderElectorService();
+    CuratorBasedElectorService service = (CuratorBasedElectorService)
+        rm1.getRMContext().getLeaderElectorService();
     CuratorZookeeperClient client =
         service.getCuratorClient().getZookeeperClient();
     // this will expire current curator client session. curator will re-establish
     // the session. RM will first relinquish leadership and re-acquire leadership
-    KillSession
-        .kill(client.getZooKeeper(), client.getCurrentConnectionString());
+    KillSession.kill(client.getZooKeeper());
 
     waitFor(rm1, HAServiceState.ACTIVE);
   }
@@ -187,7 +190,7 @@ public class TestLeaderElectorService {
     Thread launchRM = new Thread() {
       @Override
       public void run() {
-        rm1 = new MockRM(conf) {
+        rm1 = new MockRM(conf, true) {
           @Override
           synchronized void transitionToActive() throws Exception {
             if (throwException.get()) {
@@ -217,9 +220,12 @@ public class TestLeaderElectorService {
     rm1 = startRM("rm1", HAServiceState.ACTIVE);
     rm2 = startRM("rm2", HAServiceState.STANDBY);
 
+    CuratorBasedElectorService service = (CuratorBasedElectorService)
+        rm1.getRMContext().getLeaderElectorService();
+
     ZooKeeper zkClient =
-        rm1.getRMContext().getLeaderElectorService().getCuratorClient()
-            .getZookeeperClient().getZooKeeper();
+        service.getCuratorClient().getZookeeperClient().getZooKeeper();
+
     InstanceSpec connectionInstance = zkCluster.findConnectionInstance(zkClient);
     zkCluster.killServer(connectionInstance);
 
@@ -245,7 +251,7 @@ public class TestLeaderElectorService {
   private MockRM startRM(String rmId, HAServiceState state) throws Exception{
     YarnConfiguration yarnConf = new YarnConfiguration(conf);
     yarnConf.set(YarnConfiguration.RM_HA_ID, rmId);
-    MockRM rm = new MockRM(yarnConf);
+    MockRM rm = new MockRM(yarnConf, true);
     rm.init(yarnConf);
     rm.start();
     waitFor(rm, state);

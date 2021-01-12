@@ -17,8 +17,6 @@
  */
 package org.apache.hadoop.yarn.server.sharedcachemanager.metrics;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.metrics2.MetricsSystem;
@@ -27,6 +25,8 @@ import org.apache.hadoop.metrics2.annotation.Metrics;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.lib.MetricsRegistry;
 import org.apache.hadoop.metrics2.lib.MutableCounterLong;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class is for maintaining  client requests metrics
@@ -37,13 +37,14 @@ import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 @Metrics(about="Client SCM metrics", context="yarn")
 public class ClientSCMMetrics {
 
-  private static final Log LOG = LogFactory.getLog(ClientSCMMetrics.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ClientSCMMetrics.class);
   final MetricsRegistry registry;
   private final static ClientSCMMetrics INSTANCE = create();
 
   private ClientSCMMetrics() {
     registry = new MetricsRegistry("clientRequests");
-    LOG.debug("Initialized " + registry);
+    LOG.debug("Initialized {}", registry);
   }
   
   public static ClientSCMMetrics getInstance() {

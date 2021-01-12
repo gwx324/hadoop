@@ -20,6 +20,7 @@ package org.apache.hadoop.hdfs.server.namenode;
 import static org.apache.hadoop.hdfs.server.common.Util.fileAsURI;
 import static org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil.assertNNHasCheckpoints;
 import static org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil.getNameNodeCurrentDirs;
+import static org.apache.hadoop.hdfs.server.namenode.ImageServlet.RECENT_IMAGE_CHECK_ENABLED;
 import static org.apache.hadoop.test.MetricsAsserts.assertCounterGt;
 import static org.apache.hadoop.test.MetricsAsserts.assertGaugeGt;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
@@ -44,10 +45,9 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
-import com.google.common.io.Files;
 import org.apache.commons.cli.ParseException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -86,21 +86,20 @@ import org.apache.hadoop.test.PathUtils;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.ExitUtil.ExitException;
 import org.apache.hadoop.util.StringUtils;
-import org.apache.log4j.Level;
+import org.slf4j.event.Level;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.ArgumentMatcher;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Supplier;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
-import com.google.common.primitives.Ints;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Ints;
 
 /**
  * This class tests the creation and validation of a checkpoint.
@@ -108,10 +107,10 @@ import com.google.common.primitives.Ints;
 public class TestCheckpoint {
 
   static {
-    GenericTestUtils.setLogLevel(FSImage.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(FSImage.LOG, Level.TRACE);
   }
 
-  static final Log LOG = LogFactory.getLog(TestCheckpoint.class); 
+  static final Logger LOG = LoggerFactory.getLogger(TestCheckpoint.class);
   static final String NN_METRICS = "NameNodeActivity";
   
   static final long seed = 0xDEADBEEFL;
@@ -509,8 +508,8 @@ public class TestCheckpoint {
       Mockito.reset(faultInjector);
       secondary.shutdown(); // secondary namenode crash!
 
-      // start new instance of secondary and verify that 
-      // a new rollEditLog suceedes inspite of the fact that 
+      // start new instance of secondary and verify that
+      // a new rollEditLog succeeds inspite of the fact that
       // edits.new already exists.
       //
       secondary = startSecondaryNameNode(conf);
@@ -622,14 +621,7 @@ public class TestCheckpoint {
   }
 
   private File filePathContaining(final String substring) {
-    return Mockito.argThat(
-        new ArgumentMatcher<File>() {
-          @Override
-          public boolean matches(Object argument) {
-            String path = ((File) argument).getAbsolutePath();
-            return path.contains(substring);
-          }
-        });
+    return Mockito.argThat(arg -> arg.getAbsolutePath().contains(substring));
   }
 
   private void checkTempImages(NNStorage storage) throws IOException {
@@ -872,7 +864,7 @@ public class TestCheckpoint {
       }
       
       LogCapturer logs = GenericTestUtils.LogCapturer.captureLogs(
-          LogFactory.getLog(Storage.class));
+          LoggerFactory.getLogger(Storage.class));
       try {
         // try to lock the storage that's already locked
         savedSd.lock();
@@ -1164,8 +1156,6 @@ public class TestCheckpoint {
       String[] args = new String[]{"-saveNamespace"};
       try {
         admin.run(args);
-      } catch(IOException eIO) {
-        assertTrue(eIO.getLocalizedMessage().contains("Safe mode should be turned ON"));
       } catch(Exception e) {
         throw new IOException(e);
       }
@@ -1994,7 +1984,7 @@ public class TestCheckpoint {
       NNStorage dstImage = Mockito.mock(NNStorage.class);
       Mockito.doReturn(Lists.newArrayList(new File("/wont-be-written")))
         .when(dstImage).getFiles(
-            Mockito.<NameNodeDirType>anyObject(), Mockito.anyString());
+            Mockito.<NameNodeDirType>any(), Mockito.anyString());
 
       File mockImageFile = File.createTempFile("image", "");
       FileOutputStream imageFile = new FileOutputStream(mockImageFile);
@@ -2436,7 +2426,8 @@ public class TestCheckpoint {
   public void testLegacyOivImage() throws Exception {
     MiniDFSCluster cluster = null;
     SecondaryNameNode secondary = null;
-    File tmpDir = Files.createTempDir();
+    File tmpDir = GenericTestUtils.getTestDir("testLegacyOivImage");
+    tmpDir.mkdirs();
     Configuration conf = new HdfsConfiguration();
     conf.set(DFSConfigKeys.DFS_NAMENODE_LEGACY_OIV_IMAGE_DIR_KEY,
         tmpDir.getAbsolutePath());
@@ -2469,6 +2460,111 @@ public class TestCheckpoint {
       cleanup(secondary);
       cleanup(cluster);
       tmpDir.delete();
+    }
+  }
+
+  @Test(timeout = 300000)
+  public void testActiveRejectSmallerTxidDeltaImage() throws Exception {
+    MiniDFSCluster cluster = null;
+    Configuration conf = new HdfsConfiguration();
+    // Set the delta txid threshold to 10
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_TXNS_KEY, 10);
+    // Set the delta time threshold to some arbitrarily large value, so
+    // it does not trigger a checkpoint during this test.
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_PERIOD_KEY, 900000);
+
+    SecondaryNameNode secondary = null;
+
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0)
+          .format(true).build();
+      // enable small delta rejection
+      NameNode active = cluster.getNameNode();
+      active.httpServer.getHttpServer()
+          .setAttribute(RECENT_IMAGE_CHECK_ENABLED, true);
+
+      secondary = startSecondaryNameNode(conf);
+
+      FileSystem fs = cluster.getFileSystem();
+      assertEquals(0, active.getNamesystem().getFSImage()
+          .getMostRecentCheckpointTxId());
+
+      // create 5 dir.
+      for (int i = 0; i < 5; i++) {
+        fs.mkdirs(new Path("dir-" + i));
+      }
+
+      // Checkpoint 1st
+      secondary.doCheckpoint();
+      // at this point, the txid delta is smaller than threshold 10.
+      // active does not accept this image.
+      assertEquals(0, active.getNamesystem().getFSImage()
+          .getMostRecentCheckpointTxId());
+
+      // create another 10 dir.
+      for (int i = 0; i < 10; i++) {
+        fs.mkdirs(new Path("dir2-" + i));
+      }
+
+      // Checkpoint 2nd
+      secondary.doCheckpoint();
+      // here the delta is large enough and active accepts this image.
+      assertEquals(21, active.getNamesystem().getFSImage()
+          .getMostRecentCheckpointTxId());
+    } finally {
+      cleanup(secondary);
+      cleanup(cluster);
+    }
+  }
+
+  /**
+   * Test that even with txid and time delta threshold, by having time
+   * relaxation, SBN can still upload images to ANN.
+   *
+   * @throws Exception
+   */
+  @Test
+  public void testActiveImageWithTimeDeltaRelaxation() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    // Set the delta txid threshold to some arbitrarily large value, so
+    // it does not trigger a checkpoint during this test.
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_TXNS_KEY, 1000000);
+    // Set the delta time threshold to some arbitrarily large value, so
+    // it does not trigger a checkpoint during this test.
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_PERIOD_KEY, 900000);
+    // Set relaxation to 0, means time delta = 0 from previous image is fine,
+    // this will effectively disable reject small delta image
+    ImageServlet.setRecentImageCheckTimePrecision(0);
+
+    SecondaryNameNode secondary = null;
+
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(0).format(true).build()) {
+      // enable small delta rejection
+      NameNode active = cluster.getNameNode();
+      active.httpServer.getHttpServer()
+          .setAttribute(RECENT_IMAGE_CHECK_ENABLED, true);
+
+      secondary = startSecondaryNameNode(conf);
+
+      FileSystem fs = cluster.getFileSystem();
+      assertEquals(0, active.getNamesystem().getFSImage()
+          .getMostRecentCheckpointTxId());
+
+      // create 5 dir.
+      for (int i = 0; i < 5; i++) {
+        fs.mkdirs(new Path("dir-" + i));
+      }
+
+      // Checkpoint 1st
+      secondary.doCheckpoint();
+      // at this point, despite this is a small delta change, w.r.t both
+      // txid and time delta, due to we set relaxation to 0, this image
+      // still gets accepted
+      assertEquals(9, active.getNamesystem().getFSImage()
+          .getMostRecentCheckpointTxId());
+    } finally {
+      cleanup(secondary);
     }
   }
 

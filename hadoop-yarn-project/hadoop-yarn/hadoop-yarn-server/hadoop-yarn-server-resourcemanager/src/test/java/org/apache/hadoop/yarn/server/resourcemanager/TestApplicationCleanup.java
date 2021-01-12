@@ -25,9 +25,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
@@ -40,11 +42,6 @@ import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.event.Dispatcher;
-import org.apache.hadoop.yarn.event.DrainDispatcher;
-import org.apache.hadoop.yarn.event.Event;
-import org.apache.hadoop.yarn.event.EventDispatcher;
-import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NodeHeartbeatResponse;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.MemoryRMStateStore;
@@ -53,26 +50,21 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEvent;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
-import org.apache.log4j.Level;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
 public class TestApplicationCleanup {
 
-  private static final Log LOG = LogFactory
-    .getLog(TestApplicationCleanup.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestApplicationCleanup.class);
   
   private YarnConfiguration conf;
   
   @Before
   public void setup() throws UnknownHostException {
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.DEBUG);
+    GenericTestUtils.setRootLogLevel(Level.DEBUG);
     conf = new YarnConfiguration();
     UserGroupInformation.setConfiguration(conf);
     conf.set(YarnConfiguration.RECOVERY_ENABLED, "true");
@@ -83,14 +75,13 @@ public class TestApplicationCleanup {
   @SuppressWarnings("resource")
   @Test
   public void testAppCleanup() throws Exception {
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.DEBUG);
+    GenericTestUtils.setRootLogLevel(Level.DEBUG);
     MockRM rm = new MockRM();
     rm.start();
 
     MockNM nm1 = rm.registerNode("127.0.0.1:1234", 5000);
 
-    RMApp app = rm.submitApp(2000);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(2000, rm);
 
     //kick the scheduling
     nm1.nodeHeartbeat(true);
@@ -159,35 +150,16 @@ public class TestApplicationCleanup {
     rm.stop();
   }
 
-  @SuppressWarnings("resource")
   @Test
   public void testContainerCleanup() throws Exception {
 
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.DEBUG);
-    final DrainDispatcher dispatcher = new DrainDispatcher();
-    MockRM rm = new MockRM() {
-      @Override
-      protected EventHandler<SchedulerEvent> createSchedulerEventDispatcher() {
-        return new EventDispatcher<SchedulerEvent>(this.scheduler,
-            this.scheduler.getClass().getName()) {
-          @Override
-          public void handle(SchedulerEvent event) {
-            super.handle(event);
-          }
-        };
-      }
-
-      @Override
-      protected Dispatcher createDispatcher() {
-        return dispatcher;
-      }
-    };
+    GenericTestUtils.setRootLogLevel(Level.DEBUG);
+    MockRM rm = new MockRM();
     rm.start();
 
     MockNM nm1 = rm.registerNode("127.0.0.1:1234", 5000);
 
-    RMApp app = rm.submitApp(2000);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(2000, rm);
 
     //kick the scheduling
     nm1.nodeHeartbeat(true);
@@ -200,8 +172,8 @@ public class TestApplicationCleanup {
     int request = 2;
     am.allocate("127.0.0.1" , 1000, request, 
         new ArrayList<ContainerId>());
-    dispatcher.await();
-    
+    rm.drainEvents();
+
     //kick the scheduler
     nm1.nodeHeartbeat(true);
     List<Container> conts = am.allocate(new ArrayList<ResourceRequest>(),
@@ -214,7 +186,7 @@ public class TestApplicationCleanup {
       Thread.sleep(100);
       conts = am.allocate(new ArrayList<ResourceRequest>(),
           new ArrayList<ContainerId>()).getAllocatedContainers();
-      dispatcher.await();
+      rm.drainEvents();
       contReceived += conts.size();
       nm1.nodeHeartbeat(true);
     }
@@ -224,7 +196,7 @@ public class TestApplicationCleanup {
     ArrayList<ContainerId> release = new ArrayList<ContainerId>();
     release.add(conts.get(0).getId());
     am.allocate(new ArrayList<ResourceRequest>(), release);
-    dispatcher.await();
+    rm.drainEvents();
 
     // Send one more heartbeat with a fake running container. This is to
     // simulate the situation that can happen if the NM reports that container
@@ -239,7 +211,7 @@ public class TestApplicationCleanup {
     containerStatuses.put(app.getApplicationId(), containerStatusList);
 
     NodeHeartbeatResponse resp = nm1.nodeHeartbeat(containerStatuses, true);
-    waitForContainerCleanup(dispatcher, nm1, resp);
+    waitForContainerCleanup(rm, nm1, resp);
 
     // Now to test the case when RM already gave cleanup, and NM suddenly
     // realizes that the container is running.
@@ -255,17 +227,17 @@ public class TestApplicationCleanup {
     resp = nm1.nodeHeartbeat(containerStatuses, true);
     // The cleanup list won't be instantaneous as it is given out by scheduler
     // and not RMNodeImpl.
-    waitForContainerCleanup(dispatcher, nm1, resp);
+    waitForContainerCleanup(rm, nm1, resp);
 
     rm.stop();
   }
 
-  protected void waitForContainerCleanup(DrainDispatcher dispatcher, MockNM nm,
+  protected void waitForContainerCleanup(MockRM rm, MockNM nm,
       NodeHeartbeatResponse resp) throws Exception {
     int waitCount = 0, cleanedConts = 0;
     List<ContainerId> contsToClean;
     do {
-      dispatcher.await();
+      rm.drainEvents();
       contsToClean = resp.getContainersToCleanup();
       cleanedConts += contsToClean.size();
       if (cleanedConts >= 1) {
@@ -314,18 +286,17 @@ public class TestApplicationCleanup {
   @Test (timeout = 60000)
   public void testAppCleanupWhenRMRestartedAfterAppFinished() throws Exception {
     conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 1);
-    MemoryRMStateStore memStore = new MemoryRMStateStore();
-    memStore.init(conf);
-
     // start RM
-    MockRM rm1 = new MockRM(conf, memStore);
+    MockRM rm1 = new MockRM(conf);
     rm1.start();
+    MockMemoryRMStateStore memStore =
+        (MockMemoryRMStateStore) rm1.getRMStateStore();
     MockNM nm1 =
         new MockNM("127.0.0.1:1234", 15120, rm1.getResourceTrackerService());
     nm1.registerNode();
 
     // create app and launch the AM
-    RMApp app0 = rm1.submitApp(200);
+    RMApp app0 = MockRMAppSubmitter.submitWithMemory(200, rm1);
     MockAM am0 = launchAM(app0, rm1, nm1);
     nm1.nodeHeartbeat(am0.getApplicationAttemptId(), 1, ContainerState.COMPLETE);
     rm1.waitForState(app0.getApplicationId(), RMAppState.FAILED);
@@ -350,11 +321,9 @@ public class TestApplicationCleanup {
   @Test(timeout = 60000)
   public void testAppCleanupWhenRMRestartedBeforeAppFinished() throws Exception {
     conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 1);
-    MemoryRMStateStore memStore = new MemoryRMStateStore();
-    memStore.init(conf);
 
     // start RM
-    MockRM rm1 = new MockRM(conf, memStore);
+    MockRM rm1 = new MockRM(conf);
     rm1.start();
     MockNM nm1 =
         new MockNM("127.0.0.1:1234", 1024, rm1.getResourceTrackerService());
@@ -364,7 +333,7 @@ public class TestApplicationCleanup {
     nm2.registerNode();
 
     // create app and launch the AM
-    RMApp app0 = rm1.submitApp(200);
+    RMApp app0 = MockRMAppSubmitter.submitWithMemory(200, rm1);
     MockAM am0 = launchAM(app0, rm1, nm1);
 
     // alloc another container on nm2
@@ -380,15 +349,16 @@ public class TestApplicationCleanup {
     }
 
     // start new RM
-    MockRM rm2 = new MockRM(conf, memStore);
+    MockRM rm2 = new MockRM(conf, rm1.getRMStateStore());
     rm2.start();
 
     // nm1/nm2 register to rm2, and do a heartbeat
     nm1.setResourceTrackerService(rm2.getResourceTrackerService());
     nm1.registerNode(Arrays.asList(NMContainerStatus.newInstance(
-      ContainerId.newContainerId(am0.getApplicationAttemptId(), 1),
-      ContainerState.COMPLETE, Resource.newInstance(1024, 1), "", 0,
-      Priority.newInstance(0), 1234)), Arrays.asList(app0.getApplicationId()));
+        ContainerId.newContainerId(am0.getApplicationAttemptId(), 1), 0,
+        ContainerState.COMPLETE, Resource.newInstance(1024, 1), "", 0,
+        Priority.newInstance(0), 1234)),
+        Arrays.asList(app0.getApplicationId()));
     nm2.setResourceTrackerService(rm2.getResourceTrackerService());
     nm2.registerNode(Arrays.asList(app0.getApplicationId()));
 
@@ -405,41 +375,25 @@ public class TestApplicationCleanup {
     rm2.stop();
   }
 
-  @SuppressWarnings("resource")
   @Test (timeout = 60000)
   public void testContainerCleanupWhenRMRestartedAppNotRegistered() throws
       Exception {
     conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 1);
-    MemoryRMStateStore memStore = new MemoryRMStateStore();
-    memStore.init(conf);
-
     // start RM
-    final DrainDispatcher dispatcher = new DrainDispatcher();
-    MockRM rm1 = new MockRM(conf, memStore) {
-      @Override
-      protected Dispatcher createDispatcher() {
-        return dispatcher;
-      }
-    };
+    MockRM rm1 = new MockRM(conf);
     rm1.start();
     MockNM nm1 =
         new MockNM("127.0.0.1:1234", 15120, rm1.getResourceTrackerService());
     nm1.registerNode();
 
     // create app and launch the AM
-    RMApp app0 = rm1.submitApp(200);
+    RMApp app0 = MockRMAppSubmitter.submitWithMemory(200, rm1);
     MockAM am0 = launchAM(app0, rm1, nm1);
     nm1.nodeHeartbeat(am0.getApplicationAttemptId(), 1, ContainerState.RUNNING);
     rm1.waitForState(app0.getApplicationId(), RMAppState.RUNNING);
 
     // start new RM
-    final DrainDispatcher dispatcher2 = new DrainDispatcher();
-    MockRM rm2 = new MockRM(conf, memStore) {
-      @Override
-      protected Dispatcher createDispatcher() {
-        return dispatcher2;
-      }
-    };
+    MockRM rm2 = new MockRM(conf, rm1.getRMStateStore());
     rm2.start();
 
     // nm1 register to rm2, and do a heartbeat
@@ -451,7 +405,7 @@ public class TestApplicationCleanup {
     NodeHeartbeatResponse response = nm1.nodeHeartbeat(am0
         .getApplicationAttemptId(), 2, ContainerState.RUNNING);
 
-    waitForContainerCleanup(dispatcher2, nm1, response);
+    waitForContainerCleanup(rm2, nm1, response);
 
     rm1.stop();
     rm2.stop();
@@ -460,18 +414,16 @@ public class TestApplicationCleanup {
   @Test (timeout = 60000)
   public void testAppCleanupWhenNMReconnects() throws Exception {
     conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 1);
-    MemoryRMStateStore memStore = new MemoryRMStateStore();
-    memStore.init(conf);
 
     // start RM
-    MockRM rm1 = new MockRM(conf, memStore);
+    MockRM rm1 = new MockRM(conf);
     rm1.start();
     MockNM nm1 =
         new MockNM("127.0.0.1:1234", 15120, rm1.getResourceTrackerService());
     nm1.registerNode();
 
     // create app and launch the AM
-    RMApp app0 = rm1.submitApp(200);
+    RMApp app0 = MockRMAppSubmitter.submitWithMemory(200, rm1);
     MockAM am0 = launchAM(app0, rm1, nm1);
     nm1.nodeHeartbeat(am0.getApplicationAttemptId(), 1, ContainerState.COMPLETE);
     rm1.waitForState(app0.getApplicationId(), RMAppState.FAILED);
@@ -500,11 +452,9 @@ public class TestApplicationCleanup {
   @Test(timeout = 60000)
   public void testProcessingNMContainerStatusesOnNMRestart() throws Exception {
     conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 1);
-    MemoryRMStateStore memStore = new MemoryRMStateStore();
-    memStore.init(conf);
 
     // 1. Start the cluster-RM,NM,Submit app with 1024MB,Launch & register AM
-    MockRM rm1 = new MockRM(conf, memStore);
+    MockRM rm1 = new MockRM(conf);
     rm1.start();
     int nmMemory = 8192;
     int amMemory = 1024;
@@ -513,7 +463,7 @@ public class TestApplicationCleanup {
         new MockNM("127.0.0.1:1234", nmMemory, rm1.getResourceTrackerService());
     nm1.registerNode();
 
-    RMApp app0 = rm1.submitApp(amMemory);
+    RMApp app0 = MockRMAppSubmitter.submitWithMemory(amMemory, rm1);
     MockAM am0 = MockRM.launchAndRegisterAM(app0, rm1, nm1);
 
     // 2. AM sends ResourceRequest for 1 container with memory 2048MB.
@@ -598,7 +548,7 @@ public class TestApplicationCleanup {
       int memory) {
     ContainerId containerId = ContainerId.newContainerId(appAttemptId, id);
     NMContainerStatus containerReport =
-        NMContainerStatus.newInstance(containerId, containerState,
+        NMContainerStatus.newInstance(containerId, 0, containerState,
             Resource.newInstance(memory, 1), "recover container", 0,
             Priority.newInstance(0), 0);
     return containerReport;

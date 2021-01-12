@@ -23,8 +23,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.service.AbstractService;
@@ -41,12 +39,14 @@ import org.apache.hadoop.yarn.server.applicationhistoryservice.records.Applicati
 import org.apache.hadoop.yarn.server.applicationhistoryservice.records.ContainerHistoryData;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ApplicationHistoryManagerImpl extends AbstractService implements
     ApplicationHistoryManager {
-  private static final Log LOG = LogFactory
-    .getLog(ApplicationHistoryManagerImpl.class);
+  private static final Logger LOG =
+          LoggerFactory.getLogger(ApplicationHistoryManagerImpl.class);
   private static final String UNAVAILABLE = "N/A";
 
   private ApplicationHistoryStore historyStore;
@@ -104,10 +104,20 @@ public class ApplicationHistoryManagerImpl extends AbstractService implements
         historyStore.getAllApplications();
     HashMap<ApplicationId, ApplicationReport> applicationsReport =
         new HashMap<ApplicationId, ApplicationReport>();
+    int count = 0;
     for (Entry<ApplicationId, ApplicationHistoryData> entry : histData
       .entrySet()) {
+      if (count == appsNum) {
+        break;
+      }
+      long appStartTime = entry.getValue().getStartTime();
+      if (appStartTime < appStartedTimeBegin
+          || appStartTime > appStartedTimeEnd) {
+        continue;
+      }
       applicationsReport.put(entry.getKey(),
         convertToApplicationReport(entry.getValue()));
+      count++;
     }
     return applicationsReport;
   }
@@ -137,9 +147,9 @@ public class ApplicationHistoryManagerImpl extends AbstractService implements
       currentApplicationAttemptId, appHistory.getUser(), appHistory.getQueue(),
       appHistory.getApplicationName(), host, rpcPort, null,
       appHistory.getYarnApplicationState(), appHistory.getDiagnosticsInfo(),
-      trackingUrl, appHistory.getStartTime(), appHistory.getFinishTime(),
-      appHistory.getFinalApplicationStatus(), null, "", 100,
-      appHistory.getApplicationType(), null);
+      trackingUrl, appHistory.getStartTime(), appHistory.getSubmitTime(), 0,
+      appHistory.getFinishTime(), appHistory.getFinalApplicationStatus(),
+      null, "", 100, appHistory.getApplicationType(), null);
   }
 
   private ApplicationAttemptHistoryData getLastAttempt(ApplicationId appId)
@@ -209,13 +219,16 @@ public class ApplicationHistoryManagerImpl extends AbstractService implements
         containerHistory.getContainerId().toString(),
         containerHistory.getContainerId().toString(),
         user);
-    return ContainerReport.newInstance(containerHistory.getContainerId(),
-      containerHistory.getAllocatedResource(),
-      containerHistory.getAssignedNode(), containerHistory.getPriority(),
-      containerHistory.getStartTime(), containerHistory.getFinishTime(),
-      containerHistory.getDiagnosticsInfo(), logUrl,
-      containerHistory.getContainerExitStatus(),
-      containerHistory.getContainerState(), null);
+    ContainerReport container = ContainerReport.newInstance(
+        containerHistory.getContainerId(),
+        containerHistory.getAllocatedResource(),
+        containerHistory.getAssignedNode(), containerHistory.getPriority(),
+        containerHistory.getStartTime(), containerHistory.getFinishTime(),
+        containerHistory.getDiagnosticsInfo(), logUrl,
+        containerHistory.getContainerExitStatus(),
+        containerHistory.getContainerState(), null);
+    container.setExposedPorts(containerHistory.getExposedPorts());
+    return container;
   }
 
   @Override

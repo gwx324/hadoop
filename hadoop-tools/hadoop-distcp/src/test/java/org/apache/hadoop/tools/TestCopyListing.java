@@ -20,12 +20,11 @@ package org.apache.hadoop.tools;
 
 import static org.mockito.Mockito.*;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.mapreduce.lib.output.FileOutputCommitter;
 import org.apache.hadoop.tools.util.TestDistCpUtils;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.security.Credentials;
@@ -39,6 +38,7 @@ import org.junit.Test;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.AfterClass;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
 import java.io.IOException;
@@ -46,11 +46,13 @@ import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.Random;
 
 @RunWith(value = Parameterized.class)
 public class TestCopyListing extends SimpleCopyListing {
-  private static final Log LOG = LogFactory.getLog(TestCopyListing.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestCopyListing.class);
 
   private static final Credentials CREDENTIALS = new Credentials();
 
@@ -77,7 +79,7 @@ public class TestCopyListing extends SimpleCopyListing {
   }
 
   public TestCopyListing(int numListstatusThreads) {
-    super(config, CREDENTIALS, numListstatusThreads);
+    super(config, CREDENTIALS, numListstatusThreads, 0, false);
   }
 
   protected TestCopyListing(Configuration configuration) {
@@ -102,20 +104,19 @@ public class TestCopyListing extends SimpleCopyListing {
       List<Path> srcPaths = new ArrayList<Path>();
       srcPaths.add(new Path("/tmp/in/1"));
       srcPaths.add(new Path("/tmp/in/2"));
-      Path target = new Path("/tmp/out/1");
+      final Path target = new Path("/tmp/out/1");
       TestDistCpUtils.createFile(fs, "/tmp/in/1");
       TestDistCpUtils.createFile(fs, "/tmp/in/2");
       fs.mkdirs(target);
-      DistCpOptions options = new DistCpOptions(srcPaths, target);
-      validatePaths(options);
+      final DistCpOptions options = new DistCpOptions.Builder(srcPaths, target)
+          .build();
+      validatePaths(new DistCpContext(options));
       TestDistCpUtils.delete(fs, "/tmp");
       //No errors
 
-      target = new Path("/tmp/out/1");
       fs.create(target).close();
-      options = new DistCpOptions(srcPaths, target);
       try {
-        validatePaths(options);
+        validatePaths(new DistCpContext(options));
         Assert.fail("Invalid inputs accepted");
       } catch (InvalidInputException ignore) { }
       TestDistCpUtils.delete(fs, "/tmp");
@@ -123,11 +124,9 @@ public class TestCopyListing extends SimpleCopyListing {
       srcPaths.clear();
       srcPaths.add(new Path("/tmp/in/1"));
       fs.mkdirs(new Path("/tmp/in/1"));
-      target = new Path("/tmp/out/1");
       fs.create(target).close();
-      options = new DistCpOptions(srcPaths, target);
       try {
-        validatePaths(options);
+        validatePaths(new DistCpContext(options));
         Assert.fail("Invalid inputs accepted");
       } catch (InvalidInputException ignore) { }
       TestDistCpUtils.delete(fs, "/tmp");
@@ -150,10 +149,13 @@ public class TestCopyListing extends SimpleCopyListing {
       TestDistCpUtils.createFile(fs, "/tmp/in/src2/1.txt");
       Path target = new Path("/tmp/out");
       Path listingFile = new Path("/tmp/list");
-      DistCpOptions options = new DistCpOptions(srcPaths, target);
-      CopyListing listing = CopyListing.getCopyListing(getConf(), CREDENTIALS, options);
+      final DistCpOptions options = new DistCpOptions.Builder(srcPaths, target)
+          .build();
+      final DistCpContext context = new DistCpContext(options);
+      CopyListing listing = CopyListing.getCopyListing(getConf(), CREDENTIALS,
+          context);
       try {
-        listing.buildListing(listingFile, options);
+        listing.buildListing(listingFile, context);
         Assert.fail("Duplicates not detected");
       } catch (DuplicateFileException ignore) {
       }
@@ -195,20 +197,21 @@ public class TestCopyListing extends SimpleCopyListing {
 
       Path listingFile = new Path("/tmp/file");
 
-      DistCpOptions options = new DistCpOptions(srcPaths, target);
-      options.setSyncFolder(true);
+      final DistCpOptions options = new DistCpOptions.Builder(srcPaths, target)
+          .withSyncFolder(true)
+          .build();
       CopyListing listing = new SimpleCopyListing(getConf(), CREDENTIALS);
       try {
-        listing.buildListing(listingFile, options);
+        listing.buildListing(listingFile, new DistCpContext(options));
         Assert.fail("Duplicates not detected");
       } catch (DuplicateFileException ignore) {
       }
-      Assert.assertEquals(listing.getBytesToCopy(), 10);
-      Assert.assertEquals(listing.getNumberOfPaths(), 3);
+      assertThat(listing.getBytesToCopy()).isEqualTo(10);
+      assertThat(listing.getNumberOfPaths()).isEqualTo(3);
       TestDistCpUtils.delete(fs, "/tmp");
 
       try {
-        listing.buildListing(listingFile, options);
+        listing.buildListing(listingFile, new DistCpContext(options));
         Assert.fail("Invalid input not detected");
       } catch (InvalidInputException ignore) {
       }
@@ -220,6 +223,84 @@ public class TestCopyListing extends SimpleCopyListing {
       TestDistCpUtils.delete(fs, "/tmp");
     }
   }
+
+  @Test(timeout=60000)
+  public void testWithRandomFileListing() throws IOException {
+    FileSystem fs = null;
+    try {
+      fs = FileSystem.get(getConf());
+      List<Path> srcPaths = new ArrayList<>();
+      List<Path> srcFiles = new ArrayList<>();
+      Path target = new Path("/tmp/out/1");
+      final int pathCount = 25;
+      for (int i = 0; i < pathCount; i++) {
+        Path p = new Path("/tmp", String.valueOf(i));
+        srcPaths.add(p);
+        fs.mkdirs(p);
+
+        Path fileName = new Path(p, i + ".txt");
+        srcFiles.add(fileName);
+        try (OutputStream out = fs.create(fileName)) {
+          out.write(i);
+        }
+      }
+
+      Path listingFile = new Path("/tmp/file");
+      final DistCpOptions options = new DistCpOptions.Builder(srcPaths, target)
+          .withSyncFolder(true).build();
+
+      // Check without randomizing files
+      getConf().setBoolean(
+          DistCpConstants.CONF_LABEL_SIMPLE_LISTING_RANDOMIZE_FILES, false);
+      SimpleCopyListing listing = new SimpleCopyListing(getConf(), CREDENTIALS);
+      listing.buildListing(listingFile, new DistCpContext(options));
+
+      Assert.assertEquals(listing.getNumberOfPaths(), pathCount);
+      validateFinalListing(listingFile, srcFiles);
+      fs.delete(listingFile, true);
+
+      // Check with randomized file listing
+      getConf().setBoolean(
+          DistCpConstants.CONF_LABEL_SIMPLE_LISTING_RANDOMIZE_FILES, true);
+      listing = new SimpleCopyListing(getConf(), CREDENTIALS);
+
+      // Set the seed for randomness, so that it can be verified later
+      long seed = System.nanoTime();
+      listing.setSeedForRandomListing(seed);
+      listing.buildListing(listingFile, new DistCpContext(options));
+      Assert.assertEquals(listing.getNumberOfPaths(), pathCount);
+
+      // validate randomness
+      Collections.shuffle(srcFiles, new Random(seed));
+      validateFinalListing(listingFile, srcFiles);
+    } finally {
+      TestDistCpUtils.delete(fs, "/tmp");
+    }
+  }
+
+  private void validateFinalListing(Path pathToListFile, List<Path> srcFiles)
+      throws IOException {
+    FileSystem fs = pathToListFile.getFileSystem(config);
+
+    try (SequenceFile.Reader reader = new SequenceFile.Reader(
+        config, SequenceFile.Reader.file(pathToListFile))) {
+      CopyListingFileStatus currentVal = new CopyListingFileStatus();
+
+      Text currentKey = new Text();
+      int idx = 0;
+      while (reader.next(currentKey)) {
+        reader.getCurrentValue(currentVal);
+        Assert.assertEquals("srcFiles.size=" + srcFiles.size()
+                + ", idx=" + idx, fs.makeQualified(srcFiles.get(idx)),
+            currentVal.getPath());
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("val=" + fs.makeQualified(srcFiles.get(idx)));
+        }
+        idx++;
+      }
+    }
+  }
+
 
   @Test(timeout=10000)
   public void testBuildListingForSingleFile() {
@@ -243,11 +324,12 @@ public class TestCopyListing extends SimpleCopyListing {
       List<Path> srcPaths = new ArrayList<Path>();
       srcPaths.add(sourceFile);
 
-      DistCpOptions options = new DistCpOptions(srcPaths, targetFile);
+      DistCpOptions options = new DistCpOptions.Builder(srcPaths, targetFile)
+          .build();
       CopyListing listing = new SimpleCopyListing(getConf(), CREDENTIALS);
 
       final Path listFile = new Path(testRoot, "/tmp/fileList.seq");
-      listing.buildListing(listFile, options);
+      listing.buildListing(listFile, new DistCpContext(options));
 
       reader = new SequenceFile.Reader(getConf(), SequenceFile.Reader.file(listFile));
 
@@ -280,10 +362,11 @@ public class TestCopyListing extends SimpleCopyListing {
     doThrow(expectedEx).when(writer).close();
     
     SimpleCopyListing listing = new SimpleCopyListing(getConf(), CREDENTIALS);
-    DistCpOptions options = new DistCpOptions(srcs, new Path(outFile.toURI()));
+    final DistCpOptions options = new DistCpOptions.Builder(srcs,
+        new Path(outFile.toURI())).build();
     Exception actualEx = null;
     try {
-      listing.doBuildListing(writer, options);
+      listing.doBuildListing(writer, new DistCpContext(options));
     } catch (Exception e) {
       actualEx = e;
     }

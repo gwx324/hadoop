@@ -24,13 +24,17 @@ import java.io.OutputStream;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.fs.statistics.IOStatistics;
+import org.apache.hadoop.fs.statistics.IOStatisticsSource;
+import org.apache.hadoop.fs.statistics.IOStatisticsSupport;
 
 /** Utility that wraps a {@link OutputStream} in a {@link DataOutputStream}.
  */
 @InterfaceAudience.Public
 @InterfaceStability.Stable
 public class FSDataOutputStream extends DataOutputStream
-    implements Syncable, CanSetDropBehind {
+    implements Syncable, CanSetDropBehind, StreamCapabilities,
+      IOStatisticsSource {
   private final OutputStream wrappedStream;
 
   private static class PositionCache extends FilterOutputStream {
@@ -101,6 +105,15 @@ public class FSDataOutputStream extends DataOutputStream
     out.close(); // This invokes PositionCache.close()
   }
 
+  @Override
+  public String toString() {
+    final StringBuilder sb = new StringBuilder(
+        "FSDataOutputStream{");
+    sb.append("wrappedStream=").append(wrappedStream)
+        .append('}');
+    return sb.toString();
+  }
+
   /**
    * Get a reference to the wrapped output stream.
    *
@@ -109,6 +122,14 @@ public class FSDataOutputStream extends DataOutputStream
   @InterfaceAudience.LimitedPrivate({"HDFS"})
   public OutputStream getWrappedStream() {
     return wrappedStream;
+  }
+
+  @Override
+  public boolean hasCapability(String capability) {
+    if (wrappedStream instanceof StreamCapabilities) {
+      return ((StreamCapabilities) wrappedStream).hasCapability(capability);
+    }
+    return false;
   }
 
   @Override  // Syncable
@@ -137,5 +158,16 @@ public class FSDataOutputStream extends DataOutputStream
       throw new UnsupportedOperationException("the wrapped stream does " +
           "not support setting the drop-behind caching setting.");
     }
+  }
+
+  /**
+   * Get the IO Statistics of the nested stream, falling back to
+   * empty statistics if the stream does not implement the interface
+   * {@link IOStatisticsSource}.
+   * @return an IOStatistics instance.
+   */
+  @Override
+  public IOStatistics getIOStatistics() {
+    return IOStatisticsSupport.retrieveIOStatistics(wrappedStream);
   }
 }

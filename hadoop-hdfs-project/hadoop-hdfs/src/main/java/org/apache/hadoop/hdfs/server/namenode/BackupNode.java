@@ -51,8 +51,8 @@ import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.protobuf.BlockingService;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.protobuf.BlockingService;
 
 /**
  * BackupNode.
@@ -469,11 +469,11 @@ public class BackupNode extends NameNode {
      * (not run or not pass any control commands to DataNodes)
      * on BackupNode:
      * {@link LeaseManager.Monitor} protected by SafeMode.
-     * {@link BlockManager.ReplicationMonitor} protected by SafeMode.
+     * {@link BlockManager.RedundancyMonitor} protected by SafeMode.
      * {@link HeartbeatManager.Monitor} protected by SafeMode.
-     * {@link DecommissionManager.Monitor} need to prohibit refreshNodes().
+     * {@link DatanodeAdminManager.Monitor} need to prohibit refreshNodes().
      * {@link PendingReconstructionBlocks.PendingReconstructionMonitor}
-     * harmless, because ReplicationMonitor is muted.
+     * harmless, because RedundancyMonitor is muted.
      */
     @Override
     public void startActiveServices() throws IOException {

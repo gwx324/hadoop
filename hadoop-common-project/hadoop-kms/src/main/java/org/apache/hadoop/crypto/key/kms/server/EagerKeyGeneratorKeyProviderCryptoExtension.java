@@ -28,7 +28,6 @@ import java.util.concurrent.ExecutionException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.crypto.key.KeyProvider;
 import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
 import org.apache.hadoop.crypto.key.kms.ValueQueue;
 import org.apache.hadoop.crypto.key.kms.ValueQueue.SyncGenerationPolicy;
@@ -136,6 +135,18 @@ public class EagerKeyGeneratorKeyProviderCryptoExtension
       return keyProviderCryptoExtension.decryptEncryptedKey(
           encryptedKeyVersion);
     }
+
+    @Override
+    public EncryptedKeyVersion reencryptEncryptedKey(EncryptedKeyVersion ekv)
+        throws IOException, GeneralSecurityException {
+      return keyProviderCryptoExtension.reencryptEncryptedKey(ekv);
+    }
+
+    @Override
+    public void reencryptEncryptedKeys(List<EncryptedKeyVersion> ekvs)
+        throws IOException, GeneralSecurityException {
+      keyProviderCryptoExtension.reencryptEncryptedKeys(ekvs);
+    }
   }
 
   /**
@@ -177,5 +188,11 @@ public class EagerKeyGeneratorKeyProviderCryptoExtension
     KeyVersion keyVersion = super.rollNewVersion(name, material);
     getExtension().drain(name);
     return keyVersion;
+  }
+
+  @Override
+  public void invalidateCache(String name) throws IOException {
+    super.invalidateCache(name);
+    getExtension().drain(name);
   }
 }

@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 
@@ -29,7 +30,7 @@ import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage.State;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.util.FoldedTreeSet;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * A Datanode has one or more storages. A storage in the Datanode is represented
@@ -93,13 +94,11 @@ public class DatanodeStorageInfo {
 
   private long capacity;
   private long dfsUsed;
+  private long nonDfsUsed;
   private volatile long remaining;
   private long blockPoolUsed;
 
   private final FoldedTreeSet<BlockInfo> blocks = new FoldedTreeSet<>();
-
-  // The ID of the last full block report which updated this storage.
-  private long lastBlockReportId = 0;
 
   /** The number of block reports received */
   private int blockReportCount = 0;
@@ -121,10 +120,15 @@ public class DatanodeStorageInfo {
   private boolean blockContentsStale = true;
 
   DatanodeStorageInfo(DatanodeDescriptor dn, DatanodeStorage s) {
+    this(dn, s.getStorageID(), s.getStorageType(), s.getState());
+  }
+
+  DatanodeStorageInfo(DatanodeDescriptor dn, String storageID,
+      StorageType storageType, State state) {
     this.dn = dn;
-    this.storageID = s.getStorageID();
-    this.storageType = s.getStorageType();
-    this.state = s.getState();
+    this.storageID = storageID;
+    this.storageType = storageType;
+    this.state = state;
   }
 
   public int getBlockReportCount() {
@@ -165,20 +169,16 @@ public class DatanodeStorageInfo {
     this.blockPoolUsed = blockPoolUsed;
   }
 
-  long getLastBlockReportId() {
-    return lastBlockReportId;
-  }
-
-  void setLastBlockReportId(long lastBlockReportId) {
-    this.lastBlockReportId = lastBlockReportId;
-  }
-
   State getState() {
     return this.state;
   }
 
   void setState(State state) {
     this.state = state;
+  }
+
+  void setHeartbeatedSinceFailover(boolean value) {
+    heartbeatedSinceFailover = value;
   }
 
   boolean areBlocksOnFailedStorage() {
@@ -200,6 +200,10 @@ public class DatanodeStorageInfo {
 
   long getDfsUsed() {
     return dfsUsed;
+  }
+
+  long getNonDfsUsed() {
+    return nonDfsUsed;
   }
 
   long getRemaining() {
@@ -276,13 +280,18 @@ public class DatanodeStorageInfo {
     return blocks.size();
   }
   
+  /**
+   * @return iterator to an unmodifiable set of blocks
+   * related to this {@link DatanodeStorageInfo}
+   */
   Iterator<BlockInfo> getBlockIterator() {
-    return blocks.iterator();
+    return Collections.unmodifiableSet(blocks).iterator();
   }
 
   void updateState(StorageReport r) {
     capacity = r.getCapacity();
     dfsUsed = r.getDfsUsed();
+    nonDfsUsed = r.getNonDfsUsed();
     remaining = r.getRemaining();
     blockPoolUsed = r.getBlockPoolUsed();
   }
@@ -332,7 +341,7 @@ public class DatanodeStorageInfo {
   StorageReport toStorageReport() {
     return new StorageReport(
         new DatanodeStorage(storageID, state, storageType),
-        false, capacity, dfsUsed, remaining, blockPoolUsed);
+        false, capacity, dfsUsed, remaining, blockPoolUsed, nonDfsUsed);
   }
 
   /**
@@ -393,7 +402,12 @@ public class DatanodeStorageInfo {
     return null;
   }
 
-  static enum AddBlockResult {
+  @VisibleForTesting
+  void setRemainingForTests(int remaining) {
+    this.remaining = remaining;
+  }
+
+  enum AddBlockResult {
     ADDED, REPLACED, ALREADY_EXIST
   }
 }

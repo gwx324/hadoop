@@ -20,10 +20,13 @@ package org.apache.hadoop.yarn.client.cli;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.ConnectException;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumMap;
@@ -37,20 +40,27 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLSocketFactory;
+
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.cache.Cache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.GnuParser;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.lang.time.DateFormatUtils;
-import org.apache.commons.lang.time.DurationFormatUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.time.DateFormatUtils;
+import org.apache.commons.lang3.time.DurationFormatUtils;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.http.HttpConfig.Policy;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
+import org.apache.hadoop.security.authentication.client.KerberosAuthenticator;
+import org.apache.hadoop.security.ssl.SSLFactory;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsRequest;
@@ -60,13 +70,21 @@ import org.apache.hadoop.yarn.api.records.QueueInfo;
 import org.apache.hadoop.yarn.api.records.QueueStatistics;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.api.records.YarnClusterMetrics;
+import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TopCLI extends YarnCLI {
 
-  private static final Log LOG = LogFactory.getLog(TopCLI.class);
+  private static final String CLUSTER_INFO_URL = "/ws/v1/cluster/info";
+
+  private static final Logger LOG = LoggerFactory
+          .getLogger(TopCLI.class);
   private String CLEAR = "\u001b[2J";
   private String CLEAR_LINE = "\u001b[2K";
   private String SET_CURSOR_HOME = "\u001b[H";
@@ -445,6 +463,7 @@ public class TopCLI extends YarnCLI {
       LOG.error("Unable to parse options", e);
       return 1;
     }
+    createAndStartYarnClient();
     setAppsHeader();
 
     Thread keyboardMonitor = new KeyboardMonitor();
@@ -742,23 +761,92 @@ public class TopCLI extends YarnCLI {
 
   long getRMStartTime() {
     try {
-      URL url =
-          new URL("http://"
-              + client.getConfig().get(YarnConfiguration.RM_WEBAPP_ADDRESS)
-              + "/ws/v1/cluster/info");
-      URLConnection conn = url.openConnection();
-      conn.connect();
-      InputStream in = conn.getInputStream();
-      String encoding = conn.getContentEncoding();
-      encoding = encoding == null ? "UTF-8" : encoding;
-      String body = IOUtils.toString(in, encoding);
-      JSONObject obj = new JSONObject(body);
-      JSONObject clusterInfo = obj.getJSONObject("clusterInfo");
+      // connect with url
+      URL url = getClusterUrl();
+      if (null == url) {
+        return -1;
+      }
+      JSONObject clusterInfo = getJSONObject(connect(url));
       return clusterInfo.getLong("startedOn");
     } catch (Exception e) {
       LOG.error("Could not fetch RM start time", e);
     }
     return -1;
+  }
+
+  private JSONObject getJSONObject(URLConnection conn)
+      throws IOException, JSONException {
+    try(InputStream in = conn.getInputStream()) {
+      String encoding = conn.getContentEncoding();
+      encoding = encoding == null ? "UTF-8" : encoding;
+      String body = IOUtils.toString(in, encoding);
+      JSONObject obj = new JSONObject(body);
+      JSONObject clusterInfo = obj.getJSONObject("clusterInfo");
+      return clusterInfo;
+    }
+  }
+
+  private URL getClusterUrl() throws Exception {
+    URL url = null;
+    Configuration conf = getConf();
+    if (HAUtil.isHAEnabled(conf)) {
+      Collection<String> haids = HAUtil.getRMHAIds(conf);
+      for (String rmhid : haids) {
+        try {
+          url = getHAClusterUrl(conf, rmhid);
+          if (isActive(url)) {
+            break;
+          }
+        } catch (ConnectException e) {
+          // ignore and try second one when one of RM is down
+        }
+      }
+    } else {
+      url = new URL(
+          WebAppUtils.getRMWebAppURLWithScheme(conf) + CLUSTER_INFO_URL);
+    }
+    return url;
+  }
+
+  private boolean isActive(URL url) throws Exception {
+    URLConnection connect = connect(url);
+    JSONObject clusterInfo = getJSONObject(connect);
+    return clusterInfo.getString("haState").equals("ACTIVE");
+  }
+
+  @VisibleForTesting
+  public URL getHAClusterUrl(Configuration conf, String rmhid)
+      throws MalformedURLException {
+    return new URL(WebAppUtils.getHttpSchemePrefix(conf)
+        + WebAppUtils.getResolvedRemoteRMWebAppURLWithoutScheme(conf,
+            YarnConfiguration.useHttps(conf) ? Policy.HTTPS_ONLY
+                : Policy.HTTP_ONLY,
+            rmhid)
+        + CLUSTER_INFO_URL);
+  }
+
+  private URLConnection connect(URL url) throws Exception {
+    AuthenticatedURL.Token token = new AuthenticatedURL.Token();
+    AuthenticatedURL authUrl;
+    SSLFactory clientSslFactory;
+    URLConnection connection;
+    // If https is chosen, configures SSL client.
+    if (YarnConfiguration.useHttps(getConf())) {
+      clientSslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, getConf());
+      clientSslFactory.init();
+      SSLSocketFactory sslSocktFact = clientSslFactory.createSSLSocketFactory();
+
+      authUrl =
+          new AuthenticatedURL(new KerberosAuthenticator(), clientSslFactory);
+      connection = authUrl.openConnection(url, token);
+      HttpsURLConnection httpsConn = (HttpsURLConnection) connection;
+      httpsConn.setSSLSocketFactory(sslSocktFact);
+    } else {
+      authUrl = new AuthenticatedURL(new KerberosAuthenticator());
+      connection = authUrl.openConnection(url, token);
+    }
+    connection.connect();
+    return connection;
   }
 
   String getHeader(QueueMetrics queueMetrics, NodesInformation nodes) {
@@ -768,7 +856,10 @@ public class TopCLI extends YarnCLI {
       queue = StringUtils.join(queues, ",");
     }
     long now = Time.now();
-    long uptime = now - rmStartTime;
+    long uptime = 0L;
+    if (rmStartTime != -1) {
+      uptime = now - rmStartTime;
+    }
     long days = TimeUnit.MILLISECONDS.toDays(uptime);
     long hours =
         TimeUnit.MILLISECONDS.toHours(uptime)
@@ -777,45 +868,50 @@ public class TopCLI extends YarnCLI {
         TimeUnit.MILLISECONDS.toMinutes(uptime)
             - TimeUnit.HOURS.toMinutes(TimeUnit.MILLISECONDS.toHours(uptime));
     String uptimeStr = String.format("%dd, %d:%d", days, hours, minutes);
-    String currentTime = DateFormatUtils.ISO_TIME_NO_T_FORMAT.format(now);
+    String currentTime = DateFormatUtils.ISO_8601_EXTENDED_TIME_FORMAT
+        .format(now);
 
-    ret.append(CLEAR_LINE);
-    ret.append(limitLineLength(String.format(
-      "YARN top - %s, up %s, %d active users, queue(s): %s%n", currentTime,
-      uptimeStr, queueMetrics.activeUsers, queue), terminalWidth, true));
+    ret.append(CLEAR_LINE)
+        .append(limitLineLength(String.format(
+            "YARN top - %s, up %s, %d active users, queue(s): %s%n",
+            currentTime, uptimeStr, queueMetrics.activeUsers, queue),
+            terminalWidth, true));
 
-    ret.append(CLEAR_LINE);
-    ret.append(limitLineLength(String.format(
-      "NodeManager(s): %d total, %d active, %d unhealthy, %d decommissioned,"
-          + " %d lost, %d rebooted%n", nodes.totalNodes, nodes.runningNodes,
-      nodes.unhealthyNodes, nodes.decommissionedNodes, nodes.lostNodes,
-      nodes.rebootedNodes), terminalWidth, true));
+    ret.append(CLEAR_LINE)
+        .append(limitLineLength(String.format(
+            "NodeManager(s)"
+                + ": %d total, %d active, %d unhealthy, %d decommissioned,"
+                + " %d lost, %d rebooted%n",
+            nodes.totalNodes, nodes.runningNodes, nodes.unhealthyNodes,
+            nodes.decommissionedNodes, nodes.lostNodes,
+            nodes.rebootedNodes), terminalWidth, true));
 
-    ret.append(CLEAR_LINE);
-    ret.append(limitLineLength(String.format(
-        "Queue(s) Applications: %d running, %d submitted, %d pending,"
-            + " %d completed, %d killed, %d failed%n", queueMetrics.appsRunning,
-        queueMetrics.appsSubmitted, queueMetrics.appsPending,
-        queueMetrics.appsCompleted, queueMetrics.appsKilled,
-        queueMetrics.appsFailed), terminalWidth, true));
+    ret.append(CLEAR_LINE)
+        .append(limitLineLength(String.format(
+            "Queue(s) Applications: %d running, %d submitted, %d pending,"
+                + " %d completed, %d killed, %d failed%n",
+            queueMetrics.appsRunning, queueMetrics.appsSubmitted,
+            queueMetrics.appsPending, queueMetrics.appsCompleted,
+            queueMetrics.appsKilled, queueMetrics.appsFailed), terminalWidth,
+            true));
 
-    ret.append(CLEAR_LINE);
-    ret.append(limitLineLength(String.format("Queue(s) Mem(GB): %d available,"
-        + " %d allocated, %d pending, %d reserved%n",
-      queueMetrics.availableMemoryGB, queueMetrics.allocatedMemoryGB,
-      queueMetrics.pendingMemoryGB, queueMetrics.reservedMemoryGB),
-      terminalWidth, true));
+    ret.append(CLEAR_LINE)
+        .append(limitLineLength(String.format("Queue(s) Mem(GB): %d available,"
+            + " %d allocated, %d pending, %d reserved%n",
+            queueMetrics.availableMemoryGB, queueMetrics.allocatedMemoryGB,
+            queueMetrics.pendingMemoryGB, queueMetrics.reservedMemoryGB),
+            terminalWidth, true));
 
-    ret.append(CLEAR_LINE);
-    ret.append(limitLineLength(String.format("Queue(s) VCores: %d available,"
-        + " %d allocated, %d pending, %d reserved%n",
-      queueMetrics.availableVCores, queueMetrics.allocatedVCores,
-      queueMetrics.pendingVCores, queueMetrics.reservedVCores), terminalWidth,
-      true));
+    ret.append(CLEAR_LINE)
+        .append(limitLineLength(String.format("Queue(s) VCores: %d available,"
+            + " %d allocated, %d pending, %d reserved%n",
+            queueMetrics.availableVCores, queueMetrics.allocatedVCores,
+            queueMetrics.pendingVCores, queueMetrics.reservedVCores),
+            terminalWidth, true));
 
-    ret.append(CLEAR_LINE);
-    ret.append(limitLineLength(String.format(
-        "Queue(s) Containers: %d allocated, %d pending, %d reserved%n",
+    ret.append(CLEAR_LINE)
+        .append(limitLineLength(String.format(
+            "Queue(s) Containers: %d allocated, %d pending, %d reserved%n",
             queueMetrics.allocatedContainers, queueMetrics.pendingContainers,
             queueMetrics.reservedContainers), terminalWidth, true));
     return ret.toString();

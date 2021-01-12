@@ -25,6 +25,7 @@ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.QuotaByStorageTypeExceededException;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
 import org.apache.hadoop.hdfs.util.EnumCounters;
+import org.apache.hadoop.security.AccessControlException;
 
 /**
  * Quota feature for {@link INodeDirectory}. 
@@ -125,7 +126,8 @@ public final class DirectoryWithQuotaFeature implements INode.Feature {
   }
 
   ContentSummaryComputationContext computeContentSummary(final INodeDirectory dir,
-      final ContentSummaryComputationContext summary) {
+      final ContentSummaryComputationContext summary)
+      throws AccessControlException {
     final long original = summary.getCounts().getStoragespace();
     long oldYieldCount = summary.getYieldCount();
     dir.computeDirectoryContentSummary(summary, Snapshot.CURRENT_STATE_ID);
@@ -138,31 +140,12 @@ public final class DirectoryWithQuotaFeature implements INode.Feature {
 
   private void checkStoragespace(final INodeDirectory dir, final long computed) {
     if (-1 != quota.getStorageSpace() && usage.getStorageSpace() != computed) {
-      NameNode.LOG.error("BUG: Inconsistent storagespace for directory "
+      NameNode.LOG.warn("BUG: Inconsistent storagespace for directory "
           + dir.getFullPathName() + ". Cached = " + usage.getStorageSpace()
           + " != Computed = " + computed);
     }
   }
 
-  void addSpaceConsumed(final INodeDirectory dir, final QuotaCounts counts,
-      boolean verify) throws QuotaExceededException {
-    if (dir.isQuotaSet()) {
-      // The following steps are important:
-      // check quotas in this inode and all ancestors before changing counts
-      // so that no change is made if there is any quota violation.
-      // (1) verify quota in this inode
-      if (verify) {
-        verifyQuota(counts);
-      }
-      // (2) verify quota and then add count in ancestors
-      dir.addSpaceConsumed2Parent(counts, verify);
-      // (3) add count in this inode
-      addSpaceConsumed2Cache(counts);
-    } else {
-      dir.addSpaceConsumed2Parent(counts, verify);
-    }
-  }
-  
   /** Update the space/namespace/type usage of the tree
    * 
    * @param delta the change of the namespace/space/type usage

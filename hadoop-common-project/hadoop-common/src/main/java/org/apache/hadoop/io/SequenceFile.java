@@ -24,7 +24,7 @@ import java.util.*;
 import java.rmi.server.UID;
 import java.security.MessageDigest;
 
-import org.apache.commons.logging.*;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.util.Options;
 import org.apache.hadoop.fs.*;
 import org.apache.hadoop.fs.Options.CreateOpts;
@@ -50,6 +50,15 @@ import org.apache.hadoop.util.NativeCodeLoader;
 import org.apache.hadoop.util.MergeSort;
 import org.apache.hadoop.util.PriorityQueue;
 import org.apache.hadoop.util.Time;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_DEFAULT;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_KEY;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_SEQFILE_COMPRESS_BLOCKSIZE_DEFAULT;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_SEQFILE_COMPRESS_BLOCKSIZE_KEY;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_SKIP_CHECKSUM_ERRORS_DEFAULT;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_SKIP_CHECKSUM_ERRORS_KEY;
 
 /** 
  * <code>SequenceFile</code>s are flat files consisting of binary key/value 
@@ -70,7 +79,7 @@ import org.apache.hadoop.util.Time;
  *                                       values.
  *   </li>
  *   <li>
- *   <code>BlockCompressWriter</code> : Block-compressed files, both keys & 
+ *   <code>BlockCompressWriter</code> : Block-compressed files, both keys &amp;
  *                                      values are collected in 'blocks' 
  *                                      separately and compressed. The size of 
  *                                      the 'block' is configurable.
@@ -85,13 +94,13 @@ import org.apache.hadoop.util.Time;
  * <p>The {@link SequenceFile.Reader} acts as the bridge and can read any of the
  * above <code>SequenceFile</code> formats.</p>
  *
- * <h4 id="Formats">SequenceFile Formats</h4>
+ * <h3 id="Formats">SequenceFile Formats</h3>
  * 
  * <p>Essentially there are 3 different formats for <code>SequenceFile</code>s
  * depending on the <code>CompressionType</code> specified. All of them share a
  * <a href="#Header">common header</a> described below.
  * 
- * <h5 id="Header">SequenceFile Header</h5>
+ * <h4 id="Header">SequenceFile Header</h4>
  * <ul>
  *   <li>
  *   version - 3 bytes of magic header <b>SEQ</b>, followed by 1 byte of actual 
@@ -124,7 +133,7 @@ import org.apache.hadoop.util.Time;
  *   </li>
  * </ul>
  * 
- * <h5 id="#UncompressedFormat">Uncompressed SequenceFile Format</h5>
+ * <h5>Uncompressed SequenceFile Format</h5>
  * <ul>
  * <li>
  * <a href="#Header">Header</a>
@@ -139,11 +148,11 @@ import org.apache.hadoop.util.Time;
  *   </ul>
  * </li>
  * <li>
- * A sync-marker every few <code>100</code> bytes or so.
+ * A sync-marker every few <code>100</code> kilobytes or so.
  * </li>
  * </ul>
  *
- * <h5 id="#RecordCompressedFormat">Record-Compressed SequenceFile Format</h5>
+ * <h5>Record-Compressed SequenceFile Format</h5>
  * <ul>
  * <li>
  * <a href="#Header">Header</a>
@@ -158,11 +167,11 @@ import org.apache.hadoop.util.Time;
  *   </ul>
  * </li>
  * <li>
- * A sync-marker every few <code>100</code> bytes or so.
+ * A sync-marker every few <code>100</code> kilobytes or so.
  * </li>
  * </ul>
  * 
- * <h5 id="#BlockCompressedFormat">Block-Compressed SequenceFile Format</h5>
+ * <h5>Block-Compressed SequenceFile Format</h5>
  * <ul>
  * <li>
  * <a href="#Header">Header</a>
@@ -195,7 +204,7 @@ import org.apache.hadoop.util.Time;
 @InterfaceAudience.Public
 @InterfaceStability.Stable
 public class SequenceFile {
-  private static final Log LOG = LogFactory.getLog(SequenceFile.class);
+  private static final Logger LOG = LoggerFactory.getLogger(SequenceFile.class);
 
   private SequenceFile() {}                         // no public ctor
 
@@ -210,8 +219,11 @@ public class SequenceFile {
   private static final int SYNC_HASH_SIZE = 16;   // number of bytes in hash 
   private static final int SYNC_SIZE = 4+SYNC_HASH_SIZE; // escape + hash
 
-  /** The number of bytes between sync points.*/
-  public static final int SYNC_INTERVAL = 100*SYNC_SIZE; 
+  /**
+   * The number of bytes between sync points. 100 KB, default.
+   * Computed as 5 KB * 20 = 100 KB
+   */
+  public static final int SYNC_INTERVAL = 5 * 1024 * SYNC_SIZE; // 5KB*(16+4)
 
   /** 
    * The compression type used to compress key/value pairs in the 
@@ -219,7 +231,7 @@ public class SequenceFile {
    * 
    * @see SequenceFile.Writer
    */
-  public static enum CompressionType {
+  public enum CompressionType {
     /** Do not compress records. */
     NONE, 
     /** Compress values only, each separately. */
@@ -814,8 +826,8 @@ public class SequenceFile {
         this.theMetadata.entrySet().iterator();
       while (iter.hasNext()) {
         Map.Entry<Text, Text> en = iter.next();
-        sb.append("\t").append(en.getKey().toString()).append("\t").append(en.getValue().toString());
-        sb.append("\n");
+        sb.append("\t").append(en.getKey().toString()).append("\t")
+            .append(en.getValue().toString()).append("\n");
       }
       return sb.toString();
     }
@@ -849,6 +861,9 @@ public class SequenceFile {
     // starts and ends by scanning for this value.
     long lastSyncPos;                     // position of last sync
     byte[] sync;                          // 16 random bytes
+    @VisibleForTesting
+    int syncInterval;
+
     {
       try {                                       
         MessageDigest digester = MessageDigest.getInstance("MD5");
@@ -980,7 +995,16 @@ public class SequenceFile {
     private static Option filesystem(FileSystem fs) {
       return new SequenceFile.Writer.FileSystemOption(fs);
     }
-    
+
+    private static class SyncIntervalOption extends Options.IntegerOption
+        implements Option {
+      SyncIntervalOption(int val) {
+        // If a negative sync interval is provided,
+        // fall back to the default sync interval.
+        super(val < 0 ? SYNC_INTERVAL : val);
+      }
+    }
+
     public static Option bufferSize(int value) {
       return new BufferSizeOption(value);
     }
@@ -1025,11 +1049,15 @@ public class SequenceFile {
         CompressionCodec codec) {
       return new CompressionOption(value, codec);
     }
-    
+
+    public static Option syncInterval(int value) {
+      return new SyncIntervalOption(value);
+    }
+
     /**
      * Construct a uncompressed writer from a set of options.
      * @param conf the configuration to use
-     * @param options the options used when creating the writer
+     * @param opts the options used when creating the writer
      * @throws IOException if it fails
      */
     Writer(Configuration conf, 
@@ -1055,6 +1083,8 @@ public class SequenceFile {
         Options.getOption(MetadataOption.class, opts);
       CompressionOption compressionTypeOption =
         Options.getOption(CompressionOption.class, opts);
+      SyncIntervalOption syncIntervalOption =
+          Options.getOption(SyncIntervalOption.class, opts);
       // check consistency of options
       if ((fileOption == null) == (streamOption == null)) {
         throw new IllegalArgumentException("file or stream must be specified");
@@ -1156,7 +1186,12 @@ public class SequenceFile {
                                            "GzipCodec without native-hadoop " +
                                            "code!");
       }
-      init(conf, out, ownStream, keyClass, valueClass, codec, metadata);
+      this.syncInterval = (syncIntervalOption == null) ?
+          SYNC_INTERVAL :
+          syncIntervalOption.getValue();
+      init(
+          conf, out, ownStream, keyClass, valueClass,
+          codec, metadata, syncInterval);
     }
 
     /** Create the named file.
@@ -1169,7 +1204,7 @@ public class SequenceFile {
                   Class keyClass, Class valClass) throws IOException {
       this.compress = CompressionType.NONE;
       init(conf, fs.create(name), true, keyClass, valClass, null, 
-           new Metadata());
+           new Metadata(), SYNC_INTERVAL);
     }
     
     /** Create the named file with write-progress reporter.
@@ -1183,7 +1218,7 @@ public class SequenceFile {
                   Progressable progress, Metadata metadata) throws IOException {
       this.compress = CompressionType.NONE;
       init(conf, fs.create(name, progress), true, keyClass, valClass,
-           null, metadata);
+           null, metadata, SYNC_INTERVAL);
     }
     
     /** Create the named file with write-progress reporter. 
@@ -1199,7 +1234,7 @@ public class SequenceFile {
       this.compress = CompressionType.NONE;
       init(conf,
            fs.create(name, true, bufferSize, replication, blockSize, progress),
-           true, keyClass, valClass, null, metadata);
+           true, keyClass, valClass, null, metadata, SYNC_INTERVAL);
     }
 
     boolean isCompressed() { return compress != CompressionType.NONE; }
@@ -1227,18 +1262,21 @@ public class SequenceFile {
 
     /** Initialize. */
     @SuppressWarnings("unchecked")
-    void init(Configuration conf, FSDataOutputStream out, boolean ownStream,
-              Class keyClass, Class valClass,
-              CompressionCodec codec, Metadata metadata) 
+    void init(Configuration config, FSDataOutputStream outStream,
+              boolean ownStream, Class key, Class val,
+              CompressionCodec compCodec, Metadata meta,
+              int syncIntervalVal)
       throws IOException {
-      this.conf = conf;
-      this.out = out;
+      this.conf = config;
+      this.out = outStream;
       this.ownOutputStream = ownStream;
-      this.keyClass = keyClass;
-      this.valClass = valClass;
-      this.codec = codec;
-      this.metadata = metadata;
-      SerializationFactory serializationFactory = new SerializationFactory(conf);
+      this.keyClass = key;
+      this.valClass = val;
+      this.codec = compCodec;
+      this.metadata = meta;
+      this.syncInterval = syncIntervalVal;
+      SerializationFactory serializationFactory =
+          new SerializationFactory(config);
       this.keySerializer = serializationFactory.getSerializer(keyClass);
       if (this.keySerializer == null) {
         throw new IOException(
@@ -1359,7 +1397,7 @@ public class SequenceFile {
 
     synchronized void checkAndWriteSync() throws IOException {
       if (sync != null &&
-          out.getPos() >= lastSyncPos+SYNC_INTERVAL) { // time to emit sync
+          out.getPos() >= lastSyncPos+this.syncInterval) { // time to emit sync
         sync();
       }
     }
@@ -1513,7 +1551,9 @@ public class SequenceFile {
                         Option... options) throws IOException {
       super(conf, options);
       compressionBlockSize = 
-        conf.getInt("io.seqfile.compress.blocksize", 1000000);
+        conf.getInt(IO_SEQFILE_COMPRESS_BLOCKSIZE_KEY,
+            IO_SEQFILE_COMPRESS_BLOCKSIZE_DEFAULT
+        );
       keySerializer.close();
       keySerializer.open(keyBuffer);
       uncompressedValSerializer.close();
@@ -1637,7 +1677,7 @@ public class SequenceFile {
 
   /** Get the configured buffer size */
   private static int getBufferSize(Configuration conf) {
-    return conf.getInt("io.file.buffer.size", 4096);
+    return conf.getInt(IO_FILE_BUFFER_SIZE_KEY, IO_FILE_BUFFER_SIZE_DEFAULT);
   }
 
   /** Reads key/value pairs from a sequence-format file. */
@@ -1843,7 +1883,7 @@ public class SequenceFile {
     @Deprecated
     public Reader(FileSystem fs, Path file, 
                   Configuration conf) throws IOException {
-      this(conf, file(file.makeQualified(fs)));
+      this(conf, file(fs.makeQualified(file)));
     }
 
     /**
@@ -1884,7 +1924,7 @@ public class SequenceFile {
         succeeded = true;
       } finally {
         if (!succeeded) {
-          IOUtils.cleanup(LOG, this.in);
+          IOUtils.cleanupWithLogger(LOG, this.in);
         }
       }
     }
@@ -1895,8 +1935,8 @@ public class SequenceFile {
      * @param fs The file system used to open the file.
      * @param file The file being read.
      * @param bufferSize The buffer size used to read the file.
-     * @param length The length being read if it is >= 0.  Otherwise,
-     *               the length is not available.
+     * @param length The length being read if it is {@literal >=} 0.
+     *               Otherwise, the length is not available.
      * @return The opened stream.
      * @throws IOException
      */
@@ -2655,7 +2695,8 @@ public class SequenceFile {
 
     private void handleChecksumException(ChecksumException e)
       throws IOException {
-      if (this.conf.getBoolean("io.skip.checksum.errors", false)) {
+      if (this.conf.getBoolean(
+          IO_SKIP_CHECKSUM_ERRORS_KEY, IO_SKIP_CHECKSUM_ERRORS_DEFAULT)) {
         LOG.warn("Bad checksum at "+getPosition()+". Skipping entries.");
         sync(getPosition()+this.conf.getInt("io.bytes.per.checksum", 512));
       } else {
@@ -2776,14 +2817,30 @@ public class SequenceFile {
     }
 
     /** Sort and merge using an arbitrary {@link RawComparator}. */
+    @SuppressWarnings("deprecation")
     public Sorter(FileSystem fs, RawComparator comparator, Class keyClass,
                   Class valClass, Configuration conf, Metadata metadata) {
       this.fs = fs;
       this.comparator = comparator;
       this.keyClass = keyClass;
       this.valClass = valClass;
-      this.memory = conf.getInt("io.sort.mb", 100) * 1024 * 1024;
-      this.factor = conf.getInt("io.sort.factor", 100);
+      // Remember to fall-back on the deprecated MB and Factor keys
+      // until they are removed away permanently.
+      if (conf.get(CommonConfigurationKeys.IO_SORT_MB_KEY) != null) {
+        this.memory = conf.getInt(CommonConfigurationKeys.IO_SORT_MB_KEY,
+          CommonConfigurationKeys.SEQ_IO_SORT_MB_DEFAULT) * 1024 * 1024;
+      } else {
+        this.memory = conf.getInt(CommonConfigurationKeys.SEQ_IO_SORT_MB_KEY,
+          CommonConfigurationKeys.SEQ_IO_SORT_MB_DEFAULT) * 1024 * 1024;
+      }
+      if (conf.get(CommonConfigurationKeys.IO_SORT_FACTOR_KEY) != null) {
+        this.factor = conf.getInt(CommonConfigurationKeys.IO_SORT_FACTOR_KEY,
+            CommonConfigurationKeys.SEQ_IO_SORT_FACTOR_DEFAULT);
+      } else {
+        this.factor = conf.getInt(
+            CommonConfigurationKeys.SEQ_IO_SORT_FACTOR_KEY,
+            CommonConfigurationKeys.SEQ_IO_SORT_FACTOR_DEFAULT);
+      }
       this.conf = conf;
       this.metadata = metadata;
     }

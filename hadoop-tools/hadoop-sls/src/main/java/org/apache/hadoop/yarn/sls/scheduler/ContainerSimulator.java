@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.records.ContainerId;
+import org.apache.hadoop.yarn.api.records.ExecutionType;
 import org.apache.hadoop.yarn.api.records.Resource;
 
 @Private
@@ -37,34 +38,64 @@ public class ContainerSimulator implements Delayed {
   private long endTime;
   // life time (ms)
   private long lifeTime;
+  // time(ms) after which container would be requested by AM
+  private long requestDelay;
   // host name
   private String hostname;
   // priority
   private int priority;
   // type 
   private String type;
+  // execution type
+  private ExecutionType executionType = ExecutionType.GUARANTEED;
+  // allocation id
+  private long allocationId;
 
   /**
-   * invoked when AM schedules containers to allocate
+   * invoked when AM schedules containers to allocate.
    */
   public ContainerSimulator(Resource resource, long lifeTime,
       String hostname, int priority, String type) {
+    this(resource, lifeTime, hostname, priority, type,
+        ExecutionType.GUARANTEED);
+  }
+
+  /**
+   * invoked when AM schedules containers to allocate.
+   */
+  public ContainerSimulator(Resource resource, long lifeTime,
+      String hostname, int priority, String type, ExecutionType executionType) {
+    this(resource, lifeTime, hostname, priority, type,
+        executionType, -1, 0);
+  }
+
+  /**
+   * invoked when AM schedules containers to allocate.
+   */
+  @SuppressWarnings("checkstyle:parameternumber")
+  public ContainerSimulator(Resource resource, long lifeTime,
+      String hostname, int priority, String type, ExecutionType executionType,
+      long allocationId, long requestDelay) {
     this.resource = resource;
     this.lifeTime = lifeTime;
     this.hostname = hostname;
     this.priority = priority;
     this.type = type;
+    this.executionType = executionType;
+    this.requestDelay = requestDelay;
+    this.allocationId = allocationId;
   }
 
   /**
-   * invoke when NM schedules containers to run
+   * invoke when NM schedules containers to run.
    */
   public ContainerSimulator(ContainerId id, Resource resource, long endTime,
-      long lifeTime) {
+      long lifeTime, long allocationId) {
     this.id = id;
     this.resource = resource;
     this.endTime = endTime;
     this.lifeTime = lifeTime;
+    this.allocationId = allocationId;
   }
   
   public Resource getResource() {
@@ -113,5 +144,17 @@ public class ContainerSimulator implements Delayed {
   
   public void setPriority(int p) {
     priority = p;
+  }
+
+  public ExecutionType getExecutionType() {
+    return executionType;
+  }
+
+  public long getAllocationId() {
+    return allocationId;
+  }
+
+  public long getRequestDelay() {
+    return requestDelay;
   }
 }

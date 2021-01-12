@@ -19,7 +19,7 @@ package org.apache.hadoop.hdfs;
 
 import java.util.concurrent.atomic.AtomicLong;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 
@@ -57,4 +57,12 @@ public class DFSClientFaultInjector {
   public void fetchFromDatanodeException() {}
 
   public void readFromDatanodeDelay() {}
+
+  public boolean skipRollingRestartWait() {
+    return false;
+  }
+
+  public void sleepBeforeHedgedGet() {}
+
+  public void delayWhenRenewLeaseTimeout() {}
 }

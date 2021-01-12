@@ -24,13 +24,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
 import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.PipelineAckProto;
 import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.Status;
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 import org.apache.hadoop.hdfs.util.LongBitFormat;
 
 /** Pipeline Acknowledgment **/
@@ -75,7 +75,7 @@ public class PipelineAck {
     }
 
     static Status getStatus(int header) {
-      return Status.valueOf((int) STATUS.BITS.retrieve(header));
+      return Status.forNumber((int) STATUS.BITS.retrieve(header));
     }
 
     static ECN getECN(int header) {

@@ -34,18 +34,18 @@ import java.util.List;
 
 import javax.net.SocketFactory;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
-import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider;
 import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
 import org.apache.hadoop.hdfs.server.namenode.ha.IPFailoverProxyProvider;
+import org.apache.hadoop.hdfs.server.namenode.ha.HAProxyFactory;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.retry.FailoverProxyProvider;
@@ -55,19 +55,18 @@ import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.StringUtils;
-import org.hamcrest.BaseMatcher;
-import org.hamcrest.Description;
 import org.junit.After;
 import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.ArgumentMatcher;
 import org.mockito.Mockito;
 
 import sun.net.spi.nameservice.NameService;
 
 public class TestDFSClientFailover {
   
-  private static final Log LOG = LogFactory.getLog(TestDFSClientFailover.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestDFSClientFailover.class);
   
   private static final Path TEST_FILE = new Path("/tmp/failover-test-file");
   private static final int FILE_LENGTH_TO_VERIFY = 100;
@@ -169,15 +168,15 @@ public class TestDFSClientFailover {
       return spy;
     }
 
-    private class MatchesPort extends BaseMatcher<SocketAddress> {
+    private class MatchesPort implements ArgumentMatcher<SocketAddress> {
       @Override
-      public boolean matches(Object arg0) {
+      public boolean matches(SocketAddress arg0) {
         return ((InetSocketAddress)arg0).getPort() == portToInjectOn;
       }
 
       @Override
-      public void describeTo(Description desc) {
-        desc.appendText("matches port " + portToInjectOn);
+      public String toString() {
+        return "matches port " + portToInjectOn;
       }
     }
   }
@@ -239,7 +238,7 @@ public class TestDFSClientFailover {
       List<NameService> nsList = (List<NameService>) f.get(null);
 
       NameService ns = nsList.get(0);
-      Log log = LogFactory.getLog("NameServiceSpy");
+      Logger log = LoggerFactory.getLogger("NameServiceSpy");
       
       ns = Mockito.mock(NameService.class,
           new GenericTestUtils.DelegateAnswer(log, ns));
@@ -312,7 +311,7 @@ public class TestDFSClientFailover {
     conf.set(DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX + "." + service,
         namenode);
     conf.set(DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY + "." + service + "."
-        + namenode, "localhost:9820");
+        + namenode, "localhost:8020");
 
     // call createProxy implicitly and explicitly
     Path p = new Path("/");
@@ -333,7 +332,7 @@ public class TestDFSClientFailover {
     private Class<T> xface;
     private T proxy;
     public DummyLegacyFailoverProxyProvider(Configuration conf, URI uri,
-        Class<T> xface) {
+        Class<T> xface, HAProxyFactory<T> proxyFactory) {
       try {
         this.proxy = NameNodeProxies.createNonHAProxy(conf,
             DFSUtilClient.getNNAddress(uri), xface,

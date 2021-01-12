@@ -26,8 +26,8 @@ import java.net.URI;
 import java.security.PrivilegedExceptionAction;
 import javax.ws.rs.core.MediaType;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -40,7 +40,7 @@ import org.apache.hadoop.yarn.api.records.timeline.TimelinePutResponse;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import com.sun.jersey.api.client.Client;
 import com.sun.jersey.api.client.ClientResponse;
 import com.sun.jersey.api.client.WebResource;
@@ -52,8 +52,8 @@ import com.sun.jersey.api.client.WebResource;
 @Unstable
 public abstract class TimelineWriter implements Flushable {
 
-  private static final Log LOG = LogFactory
-      .getLog(TimelineWriter.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TimelineWriter.class);
 
   private UserGroupInformation authUgi;
   private Client client;
@@ -133,11 +133,8 @@ public abstract class TimelineWriter implements Flushable {
       LOG.error(msg);
       if (resp != null) {
         msg += " HTTP error code: " + resp.getStatus();
-        if (LOG.isDebugEnabled()) {
-          String output = resp.getEntity(String.class);
-          LOG.debug("HTTP error code: " + resp.getStatus()
-              + " Server response : \n" + output);
-        }
+        LOG.debug("HTTP error code: {} Server response : \n{}",
+            resp.getStatus(), resp.getEntity(String.class));
       }
       throw new YarnException(msg);
     }
@@ -149,19 +146,19 @@ public abstract class TimelineWriter implements Flushable {
   public ClientResponse doPostingObject(Object object, String path) {
     WebResource webResource = client.resource(resURI);
     if (path == null) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("POST to " + resURI);
-      }
-      return webResource.accept(MediaType.APPLICATION_JSON)
+      LOG.debug("POST to {}", resURI);
+      ClientResponse r = webResource.accept(MediaType.APPLICATION_JSON)
           .type(MediaType.APPLICATION_JSON)
           .post(ClientResponse.class, object);
+      r.bufferEntity();
+      return r;
     } else if (path.equals("domain")) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("PUT to " + resURI +"/" + path);
-      }
-      return webResource.path(path).accept(MediaType.APPLICATION_JSON)
+      LOG.debug("PUT to {}/{}", resURI, path);
+      ClientResponse r = webResource.path(path).accept(MediaType.APPLICATION_JSON)
           .type(MediaType.APPLICATION_JSON)
           .put(ClientResponse.class, object);
+      r.bufferEntity();
+      return r;
     } else {
       throw new YarnRuntimeException("Unknown resource type");
     }

@@ -44,7 +44,7 @@
      --> 
      <Match>
        <Class name="org.apache.hadoop.ipc.Client$Connection" />
-       <Field name="out" />
+       <Field name="ipcStreams" />
        <Bug pattern="IS2_INCONSISTENT_SYNC" />
      </Match>
     <!--
@@ -284,6 +284,10 @@
       <Class name="~org\.apache\.hadoop\.ipc\.protobuf\.ProtobufRpcEngineProtos.*"/>
     </Match>
     <Match>
+        <!-- protobuf generated code -->
+        <Class name="~org\.apache\.hadoop\.ipc\.protobuf\.ProtobufRpcEngine2Protos.*"/>
+    </Match>
+    <Match>
       <!-- protobuf generated code -->
       <Class name="~org\.apache\.hadoop\.ipc\.protobuf\.ProtocolInfoProtos.*"/>
     </Match>
@@ -323,6 +327,10 @@
       <!-- protobuf generated code -->
       <Class name="~org\.apache\.hadoop\.tracing\.TraceAdminPB.*"/>
     </Match>
+    <Match>
+      <!-- protobuf generated code -->
+      <Class name="~org\.apache\.hadoop\.fs\.FSProto.*"/>
+    </Match>
 
     <!--
        Manually checked, misses child thread manually syncing on parent's intrinsic lock.
@@ -341,13 +349,7 @@
        <Method name="removeRenewAction" />
        <Bug pattern="BC_UNCONFIRMED_CAST" />
      </Match>
-     
-     <!-- Inconsistent synchronization flagged by findbugs is not valid. -->
-     <Match>
-       <Class name="org.apache.hadoop.ipc.Client$Connection" />
-       <Field name="in" />
-       <Bug pattern="IS2_INCONSISTENT_SYNC" />
-     </Match>
+
      <!-- 
        The switch condition for INITIATE is expected to fallthru to RESPONSE
        to process initial sasl response token included in the INITIATE
@@ -411,4 +413,61 @@
     <Bug pattern="NP_NULL_PARAM_DEREF"/>
   </Match>
 
+  <!-- Parameter is checked with Strings.isNullOrEmpty before accessing -->
+  <Match>
+    <Class name="org.apache.hadoop.conf.Configuration"/>
+    <Method name="asXmlDocument"/>
+    <Bug pattern="NP_PARAMETER_MUST_BE_NONNULL_BUT_MARKED_AS_NULLABLE"/>
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.ipc.ExternalCall"/>
+    <Filed name="done"/>
+    <Bug pattern="JLM_JSR166_UTILCONCURRENT_MONITORENTER"/>
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.metrics2.impl.MetricsConfig"/>
+    <Method name="toString"/>
+    <Bug pattern="DM_DEFAULT_ENCODING"/>
+  </Match>
+
+  <!-- We need to make the methods public because PBHelperClient calls them. -->
+  <Match>
+    <Class name="org.apache.hadoop.crypto.CipherSuite"/>
+    <Method name="setUnknownValue"/>
+    <Bug pattern="ME_ENUM_FIELD_SETTER"/>
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.crypto.CryptoProtocolVersion"/>
+    <Method name="setUnknownValue"/>
+    <Bug pattern="ME_ENUM_FIELD_SETTER"/>
+  </Match>
+
+  <!-- We need to make the method public for testing. -->
+  <Match>
+    <Class name="org.apache.hadoop.metrics2.lib.DefaultMetricsSystem"/>
+    <Method name="setMiniClusterMode"/>
+    <Bug pattern="ME_ENUM_FIELD_SETTER"/>
+  </Match>
+
+  <!-- Experimental interface. Ignore. -->
+  <Match>
+    <Class name="org.apache.hadoop.metrics2.lib.DefaultMetricsFactory"/>
+    <Method name="setInstance"/>
+    <Bug pattern="ME_ENUM_FIELD_SETTER"/>
+  </Match>
+
+  <!-- findbugs is complaining that a stream isn't closed. It will be. -->
+  <Match>
+    <Class name="org.apache.hadoop.util.JsonSerialization"/>
+    <Method name="save"/>
+    <Bug pattern="OBL_UNSATISFIED_OBLIGATION"/>
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.ipc.ProtobufHelper" />
+    <Method name="getFixedByteString" />
+    <Bug pattern="AT_OPERATION_SEQUENCE_ON_CONCURRENT_ABSTRACTION" />
+  </Match>
 </FindBugsFilter>

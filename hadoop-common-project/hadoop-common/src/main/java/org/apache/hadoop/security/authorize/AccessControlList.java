@@ -24,6 +24,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -97,10 +98,10 @@ public class AccessControlList implements Writable {
   }
 
   /**
-   * Build ACL from the given two Strings.
-   * The Strings contain comma separated values.
+   * Build ACL from the given array of strings.
+   * The strings contain comma separated values.
    *
-   * @param aclString build ACL from array of Strings
+   * @param userGroupStrings build ACL from array of Strings
    */
   private void buildACL(String[] userGroupStrings) {
     users = new HashSet<String>();
@@ -231,8 +232,9 @@ public class AccessControlList implements Writable {
     if (allAllowed || users.contains(ugi.getShortUserName())) {
       return true;
     } else if (!groups.isEmpty()) {
-      for (String group : ugi.getGroups()) {
-        if (groups.contains(group)) {
+      Set<String> ugiGroups = ugi.getGroupsSet();
+      for (String group : groups) {
+        if (ugiGroups.contains(group)) {
           return true;
         }
       }
@@ -295,9 +297,9 @@ public class AccessControlList implements Writable {
       sb.append('*');
     }
     else {
-      sb.append(getUsersString());
-      sb.append(" ");
-      sb.append(getGroupsString());
+      sb.append(getUsersString())
+          .append(" ")
+          .append(getGroupsString());
     }
     return sb.toString();
   }

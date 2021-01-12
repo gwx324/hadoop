@@ -24,28 +24,26 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.SortedSet;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.StorageInfo;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLog;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
-
-import com.google.common.base.Preconditions;
-import com.google.common.collect.ComparisonChain;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableListMultimap;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Multimaps;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 
 /**
  * Manages a collection of Journals. None of the methods are synchronized, it is
@@ -55,30 +53,20 @@ import com.google.common.collect.Sets;
 @InterfaceAudience.Private
 public class JournalSet implements JournalManager {
 
-  static final Log LOG = LogFactory.getLog(FSEditLog.class);
+  static final Logger LOG = LoggerFactory.getLogger(FSEditLog.class);
 
+  // we want local logs to be ordered earlier in the collection, and true
+  // is considered larger than false, so reverse the comparator
   private static final Comparator<EditLogInputStream>
-    LOCAL_LOG_PREFERENCE_COMPARATOR = new Comparator<EditLogInputStream>() {
-    @Override
-    public int compare(EditLogInputStream elis1, EditLogInputStream elis2) {
-      // we want local logs to be ordered earlier in the collection, and true
-      // is considered larger than false, so we want to invert the booleans here
-      return ComparisonChain.start().compare(!elis1.isLocalLog(),
-          !elis2.isLocalLog()).result();
-    }
-  };
-  
-  static final public Comparator<EditLogInputStream>
-    EDIT_LOG_INPUT_STREAM_COMPARATOR = new Comparator<EditLogInputStream>() {
-      @Override
-      public int compare(EditLogInputStream a, EditLogInputStream b) {
-        return ComparisonChain.start().
-          compare(a.getFirstTxId(), b.getFirstTxId()).
-          compare(b.getLastTxId(), a.getLastTxId()).
-          result();
-      }
-    };
-  
+      LOCAL_LOG_PREFERENCE_COMPARATOR = Comparator
+      .comparing(EditLogInputStream::isLocalLog)
+      .reversed();
+
+  public static final Comparator<EditLogInputStream>
+      EDIT_LOG_INPUT_STREAM_COMPARATOR = Comparator
+      .comparing(EditLogInputStream::getFirstTxId)
+      .thenComparing(EditLogInputStream::getLastTxId);
+
   /**
    * Container for a JournalManager paired with its currently
    * active stream.
@@ -87,7 +75,7 @@ public class JournalSet implements JournalManager {
    * stream, then the stream will be aborted and set to null.
    */
   static class JournalAndStream implements CheckableNameNodeResource {
-    private final JournalManager journal;
+    private JournalManager journal;
     private boolean disabled = false;
     private EditLogOutputStream stream;
     private final boolean required;
@@ -157,7 +145,12 @@ public class JournalSet implements JournalManager {
     void setCurrentStreamForTests(EditLogOutputStream stream) {
       this.stream = stream;
     }
-    
+
+    @VisibleForTesting
+    void setJournalForTests(JournalManager jm) {
+      this.journal = jm;
+    }
+
     JournalManager getManager() {
       return journal;
     }
@@ -199,7 +192,7 @@ public class JournalSet implements JournalManager {
   }
   
   @Override
-  public void format(NamespaceInfo nsInfo) throws IOException {
+  public void format(NamespaceInfo nsInfo, boolean force) throws IOException {
     // The operation is done by FSEditLog itself
     throw new UnsupportedOperationException();
   }
@@ -398,7 +391,7 @@ public class JournalSet implements JournalManager {
         if (jas.isRequired()) {
           final String msg = "Error: " + status + " failed for required journal ("
             + jas + ")";
-          LOG.fatal(msg, t);
+          LOG.error(msg, t);
           // If we fail on *any* of the required journals, then we must not
           // continue on any of the other journals. Abort them to ensure that
           // retry behavior doesn't allow them to keep going in any way.
@@ -639,7 +632,7 @@ public class JournalSet implements JournalManager {
    */
   public synchronized RemoteEditLogManifest getEditLogManifest(long fromTxId) {
     // Collect RemoteEditLogs available from each FileJournalManager
-    List<RemoteEditLog> allLogs = Lists.newArrayList();
+    List<RemoteEditLog> allLogs = new ArrayList<>();
     for (JournalAndStream j : journals) {
       if (j.getManager() instanceof FileJournalManager) {
         FileJournalManager fjm = (FileJournalManager)j.getManager();
@@ -650,15 +643,17 @@ public class JournalSet implements JournalManager {
         }
       }
     }
-    
     // Group logs by their starting txid
-    ImmutableListMultimap<Long, RemoteEditLog> logsByStartTxId =
-      Multimaps.index(allLogs, RemoteEditLog.GET_START_TXID);
+    final Map<Long, List<RemoteEditLog>> logsByStartTxId = new HashMap<>();
+    allLogs.forEach(input -> {
+      long key = RemoteEditLog.GET_START_TXID.apply(input);
+      logsByStartTxId.computeIfAbsent(key, k-> new ArrayList<>()).add(input);
+    });
     long curStartTxId = fromTxId;
-
-    List<RemoteEditLog> logs = Lists.newArrayList();
+    List<RemoteEditLog> logs = new ArrayList<>();
     while (true) {
-      ImmutableList<RemoteEditLog> logGroup = logsByStartTxId.get(curStartTxId);
+      List<RemoteEditLog> logGroup =
+          logsByStartTxId.getOrDefault(curStartTxId, Collections.emptyList());
       if (logGroup.isEmpty()) {
         // we have a gap in logs - for example because we recovered some old
         // storage directory with ancient logs. Clear out any logs we've
@@ -702,8 +697,8 @@ public class JournalSet implements JournalManager {
     StringBuilder buf = new StringBuilder();
     for (JournalAndStream jas : journals) {
       if (jas.isActive()) {
-        buf.append(jas.getCurrentStream().getTotalSyncTime());
-        buf.append(" ");
+        buf.append(jas.getCurrentStream().getTotalSyncTime())
+            .append(" ");
       }
     }
     return buf.toString();

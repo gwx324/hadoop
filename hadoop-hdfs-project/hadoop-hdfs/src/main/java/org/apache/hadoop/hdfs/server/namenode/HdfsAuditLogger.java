@@ -43,9 +43,9 @@ public abstract class HdfsAuditLogger implements AuditLogger {
 
   /**
    * Same as
-   * {@link #logAuditEvent(boolean, String, InetAddress, String, String, String, FileStatus)}
-   * with additional parameters related to logging delegation token tracking
-   * IDs.
+   * {@link #logAuditEvent(boolean, String, InetAddress, String, String, String,
+   * FileStatus)} with additional parameters related to logging delegation token
+   * tracking IDs.
    * 
    * @param succeeded Whether authorization succeeded.
    * @param userName Name of the user executing the request.
@@ -55,6 +55,7 @@ public abstract class HdfsAuditLogger implements AuditLogger {
    * @param dst Path of affected destination file (if any).
    * @param stat File information for operations that change the file's metadata
    *          (permissions, owner, times, etc).
+   * @param callerContext Context information of the caller
    * @param ugi UserGroupInformation of the current user, or null if not logging
    *          token tracking information
    * @param dtSecretManager The token secret manager, or null if not logging
@@ -63,5 +64,16 @@ public abstract class HdfsAuditLogger implements AuditLogger {
   public abstract void logAuditEvent(boolean succeeded, String userName,
       InetAddress addr, String cmd, String src, String dst,
       FileStatus stat, CallerContext callerContext, UserGroupInformation ugi,
+      DelegationTokenSecretManager dtSecretManager);
+
+  /**
+   * Same as
+   * {@link #logAuditEvent(boolean, String, InetAddress, String, String,
+   * String, FileStatus, CallerContext, UserGroupInformation,
+   * DelegationTokenSecretManager)} without {@link CallerContext} information.
+   */
+  public abstract void logAuditEvent(boolean succeeded, String userName,
+      InetAddress addr, String cmd, String src, String dst,
+      FileStatus stat, UserGroupInformation ugi,
       DelegationTokenSecretManager dtSecretManager);
 }

@@ -17,17 +17,16 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
-import com.google.common.annotations.VisibleForTesting;
-import java.io.File;
-import java.io.FilenameFilter;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -36,24 +35,25 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.collections.CollectionUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.util.AutoCloseableLock;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
-import org.apache.hadoop.hdfs.protocol.Block;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
-import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi.ScanInfo;
 import org.apache.hadoop.util.Daemon;
 import org.apache.hadoop.util.StopWatch;
-import org.apache.hadoop.util.Time;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ArrayListMultimap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ListMultimap;
 
 /**
  * Periodically scans the data directories for block and block metadata files.
@@ -61,53 +61,54 @@ import org.apache.hadoop.util.Time;
  */
 @InterfaceAudience.Private
 public class DirectoryScanner implements Runnable {
-  private static final Log LOG = LogFactory.getLog(DirectoryScanner.class);
-  private static final int MILLIS_PER_SECOND = 1000;
-  private static final String START_MESSAGE =
-      "Periodic Directory Tree Verification scan"
-      + " starting at %dms with interval of %dms";
-  private static final String START_MESSAGE_WITH_THROTTLE = START_MESSAGE
-      + " and throttle limit of %dms/s";
+  private static final Logger LOG =
+      LoggerFactory.getLogger(DirectoryScanner.class);
 
+  private static final int DEFAULT_MAP_SIZE = 32768;
+  private static final int RECONCILE_BLOCKS_BATCH_SIZE = 1000;
   private final FsDatasetSpi<?> dataset;
   private final ExecutorService reportCompileThreadPool;
   private final ScheduledExecutorService masterThread;
   private final long scanPeriodMsecs;
-  private final int throttleLimitMsPerSec;
-  private volatile boolean shouldRun = false;
+  private final long throttleLimitMsPerSec;
+  private final AtomicBoolean shouldRun = new AtomicBoolean();
+
   private boolean retainDiffs = false;
-  private final DataNode datanode;
 
   /**
    * Total combined wall clock time (in milliseconds) spent by the report
-   * compiler threads executing.  Used for testing purposes.
+   * compiler threads executing. Used for testing purposes.
    */
   @VisibleForTesting
   final AtomicLong timeRunningMs = new AtomicLong(0L);
+
   /**
    * Total combined wall clock time (in milliseconds) spent by the report
-   * compiler threads blocked by the throttle.  Used for testing purposes.
+   * compiler threads blocked by the throttle. Used for testing purposes.
    */
   @VisibleForTesting
   final AtomicLong timeWaitingMs = new AtomicLong(0L);
+
   /**
    * The complete list of block differences indexed by block pool ID.
    */
   @VisibleForTesting
-  final ScanInfoPerBlockPool diffs = new ScanInfoPerBlockPool();
+  final BlockPoolReport diffs = new BlockPoolReport();
+
   /**
-   * Statistics about the block differences in each blockpool, indexed by
-   * block pool ID.
+   * Statistics about the block differences in each blockpool, indexed by block
+   * pool ID.
    */
   @VisibleForTesting
-  final Map<String, Stats> stats = new HashMap<String, Stats>();
-  
+  final Map<String, Stats> stats;
+
   /**
-   * Allow retaining diffs for unit test and analysis. Defaults to false (off)
+   * Allow retaining diffs for unit test and analysis. Defaults to false (off).
+   *
    * @param b whether to retain diffs
    */
   @VisibleForTesting
-  void setRetainDiffs(boolean b) {
+  public void setRetainDiffs(boolean b) {
     retainDiffs = b;
   }
 
@@ -123,358 +124,216 @@ public class DirectoryScanner implements Runnable {
     long missingMemoryBlocks = 0;
     long mismatchBlocks = 0;
     long duplicateBlocks = 0;
-    
+
     /**
      * Create a new Stats object for the given blockpool ID.
+     *
      * @param bpid blockpool ID
      */
     public Stats(String bpid) {
       this.bpid = bpid;
     }
-    
+
     @Override
     public String toString() {
-      return "BlockPool " + bpid
-      + " Total blocks: " + totalBlocks + ", missing metadata files:"
-      + missingMetaFile + ", missing block files:" + missingBlockFile
-      + ", missing blocks in memory:" + missingMemoryBlocks
-      + ", mismatched blocks:" + mismatchBlocks;
+      return "BlockPool " + bpid + " Total blocks: " + totalBlocks
+          + ", missing metadata files: " + missingMetaFile
+          + ", missing block files: " + missingBlockFile
+          + ", missing blocks in memory: " + missingMemoryBlocks
+          + ", mismatched blocks: " + mismatchBlocks;
     }
   }
 
   /**
    * Helper class for compiling block info reports from report compiler threads.
+   * Contains a volume, a set of block pool IDs, and a collection of ScanInfo
+   * objects. If a block pool exists but has no ScanInfo objects associated with
+   * it, there will be no mapping for that particular block pool.
    */
-  static class ScanInfoPerBlockPool extends 
-                     HashMap<String, LinkedList<ScanInfo>> {
-    
+  @VisibleForTesting
+  public static class ScanInfoVolumeReport {
+
+    @SuppressWarnings("unused")
     private static final long serialVersionUID = 1L;
+
+    private final FsVolumeSpi volume;
+
+    private final BlockPoolReport blockPoolReport;
 
     /**
      * Create a new info list.
+     *
+     * @param volume
      */
-    ScanInfoPerBlockPool() {super();}
+    ScanInfoVolumeReport(final FsVolumeSpi volume) {
+      this.volume = volume;
+      this.blockPoolReport = new BlockPoolReport();
+    }
 
     /**
      * Create a new info list initialized to the given expected size.
-     * See {@link java.util.HashMap#HashMap(int)}.
      *
      * @param sz initial expected size
      */
-    ScanInfoPerBlockPool(int sz) {super(sz);}
-    
-    /**
-     * Merges {@code that} ScanInfoPerBlockPool into this one
-     *
-     * @param the ScanInfoPerBlockPool to merge
-     */
-    public void addAll(ScanInfoPerBlockPool that) {
-      if (that == null) return;
-      
-      for (Entry<String, LinkedList<ScanInfo>> entry : that.entrySet()) {
-        String bpid = entry.getKey();
-        LinkedList<ScanInfo> list = entry.getValue();
-        
-        if (this.containsKey(bpid)) {
-          //merge that per-bpid linked list with this one
-          this.get(bpid).addAll(list);
-        } else {
-          //add that new bpid and its linked list to this
-          this.put(bpid, list);
-        }
-      }
+    ScanInfoVolumeReport(final FsVolumeSpi volume,
+        final Collection<String> blockPools) {
+      this.volume = volume;
+      this.blockPoolReport = new BlockPoolReport(blockPools);
     }
-    
-    /**
-     * Convert all the LinkedList values in this ScanInfoPerBlockPool map
-     * into sorted arrays, and return a new map of these arrays per blockpool
-     *
-     * @return a map of ScanInfo arrays per blockpool
-     */
-    public Map<String, ScanInfo[]> toSortedArrays() {
-      Map<String, ScanInfo[]> result = 
-        new HashMap<String, ScanInfo[]>(this.size());
-      
-      for (Entry<String, LinkedList<ScanInfo>> entry : this.entrySet()) {
-        String bpid = entry.getKey();
-        LinkedList<ScanInfo> list = entry.getValue();
-        
-        // convert list to array
-        ScanInfo[] record = list.toArray(new ScanInfo[list.size()]);
-        // Sort array based on blockId
-        Arrays.sort(record);
-        result.put(bpid, record);            
-      }
-      return result;
+
+    public void addAll(final String bpid,
+        final Collection<ScanInfo> scanInfos) {
+      this.blockPoolReport.addAll(bpid, scanInfos);
+    }
+
+    public Set<String> getBlockPoolIds() {
+      return this.blockPoolReport.getBlockPoolIds();
+    }
+
+    public List<ScanInfo> getScanInfo(final String bpid) {
+      return this.blockPoolReport.getScanInfo(bpid);
+    }
+
+    public FsVolumeSpi getVolume() {
+      return volume;
+    }
+
+    @Override
+    public String toString() {
+      return "ScanInfoVolumeReport [volume=" + volume + ", blockPoolReport="
+          + blockPoolReport + "]";
     }
   }
 
   /**
-   * Tracks the files and other information related to a block on the disk
-   * Missing file is indicated by setting the corresponding member
-   * to null.
-   * 
-   * Because millions of these structures may be created, we try to save
-   * memory here.  So instead of storing full paths, we store path suffixes.
-   * The block file, if it exists, will have a path like this:
-   * <volume_base_path>/<block_path>
-   * So we don't need to store the volume path, since we already know what the
-   * volume is.
-   * 
-   * The metadata file, if it exists, will have a path like this:
-   * <volume_base_path>/<block_path>_<genstamp>.meta
-   * So if we have a block file, there isn't any need to store the block path
-   * again.
-   * 
-   * The accessor functions take care of these manipulations.
+   * Helper class for compiling block info reports per block pool.
    */
-  static class ScanInfo implements Comparable<ScanInfo> {
-    private final long blockId;
-    
-    /**
-     * The block file path, relative to the volume's base directory.
-     * If there was no block file found, this may be null. If 'vol'
-     * is null, then this is the full path of the block file.
-     */
-    private final String blockSuffix;
-    
-    /**
-     * The suffix of the meta file path relative to the block file.
-     * If blockSuffix is null, then this will be the entire path relative
-     * to the volume base directory, or an absolute path if vol is also
-     * null.
-     */
-    private final String metaSuffix;
+  @VisibleForTesting
+  public static class BlockPoolReport {
 
-    private final FsVolumeSpi volume;
+    @SuppressWarnings("unused")
+    private static final long serialVersionUID = 1L;
+
+    private final Set<String> blockPools;
+
+    private final ListMultimap<String, ScanInfo> map;
 
     /**
-     * Get the file's length in async block scan
-     */
-    private final long blockFileLength;
-
-    private final static Pattern CONDENSED_PATH_REGEX =
-        Pattern.compile("(?<!^)(\\\\|/){2,}");
-    
-    private final static String QUOTED_FILE_SEPARATOR = 
-        Matcher.quoteReplacement(File.separator);
-    
-    /**
-     * Get the most condensed version of the path.
+     * Create a block pool report.
      *
-     * For example, the condensed version of /foo//bar is /foo/bar
-     * Unlike {@link File#getCanonicalPath()}, this will never perform I/O
-     * on the filesystem.
-     *
-     * @param path the path to condense
-     * @return the condensed path
+     * @param volume
      */
-    private static String getCondensedPath(String path) {
-      return CONDENSED_PATH_REGEX.matcher(path).
-          replaceAll(QUOTED_FILE_SEPARATOR);
+    BlockPoolReport() {
+      this.blockPools = new HashSet<>(2);
+      this.map = ArrayListMultimap.create(2, DEFAULT_MAP_SIZE);
     }
 
     /**
-     * Get a path suffix.
+     * Create a new block pool report initialized to the given expected size.
      *
-     * @param f            The file to get the suffix for.
-     * @param prefix       The prefix we're stripping off.
-     *
-     * @return             A suffix such that prefix + suffix = path to f
+     * @param blockPools initial list of known block pools
      */
-    private static String getSuffix(File f, String prefix) {
-      String fullPath = getCondensedPath(f.getAbsolutePath());
-      if (fullPath.startsWith(prefix)) {
-        return fullPath.substring(prefix.length());
-      }
-      throw new RuntimeException(prefix + " is not a prefix of " + fullPath);
+    BlockPoolReport(final Collection<String> blockPools) {
+      this.blockPools = new HashSet<>(blockPools);
+      this.map = ArrayListMultimap.create(blockPools.size(), DEFAULT_MAP_SIZE);
+
     }
 
-    /**
-     * Create a ScanInfo object for a block. This constructor will examine
-     * the block data and meta-data files.
-     *
-     * @param blockId the block ID
-     * @param blockFile the path to the block data file
-     * @param metaFile the path to the block meta-data file
-     * @param vol the volume that contains the block
-     */
-    ScanInfo(long blockId, File blockFile, File metaFile, FsVolumeSpi vol) {
-      this.blockId = blockId;
-      String condensedVolPath = vol == null ? null :
-        getCondensedPath(vol.getBasePath());
-      this.blockSuffix = blockFile == null ? null :
-        getSuffix(blockFile, condensedVolPath);
-      this.blockFileLength = (blockFile != null) ? blockFile.length() : 0; 
-      if (metaFile == null) {
-        this.metaSuffix = null;
-      } else if (blockFile == null) {
-        this.metaSuffix = getSuffix(metaFile, condensedVolPath);
-      } else {
-        this.metaSuffix = getSuffix(metaFile,
-            condensedVolPath + blockSuffix);
-      }
-      this.volume = vol;
+    public void addAll(final String bpid,
+        final Collection<ScanInfo> scanInfos) {
+      this.blockPools.add(bpid);
+      this.map.putAll(bpid, scanInfos);
     }
 
-    /**
-     * Returns the block data file.
-     *
-     * @return the block data file
-     */
-    File getBlockFile() {
-      return (blockSuffix == null) ? null :
-        new File(volume.getBasePath(), blockSuffix);
-    }
-
-    /**
-     * Return the length of the data block. The length returned is the length
-     * cached when this object was created.
-     *
-     * @return the length of the data block
-     */
-    long getBlockFileLength() {
-      return blockFileLength;
-    }
-
-    /**
-     * Returns the block meta data file or null if there isn't one.
-     *
-     * @return the block meta data file
-     */
-    File getMetaFile() {
-      if (metaSuffix == null) {
-        return null;
-      } else if (blockSuffix == null) {
-        return new File(volume.getBasePath(), metaSuffix);
-      } else {
-        return new File(volume.getBasePath(), blockSuffix + metaSuffix);
+    public void sortBlocks() {
+      for (final String bpid : this.map.keySet()) {
+        final List<ScanInfo> list = this.map.get(bpid);
+        // Sort array based on blockId
+        Collections.sort(list);
       }
     }
 
-    /**
-     * Returns the block ID.
-     *
-     * @return the block ID
-     */
-    long getBlockId() {
-      return blockId;
+    public Set<String> getBlockPoolIds() {
+      return Collections.unmodifiableSet(this.blockPools);
     }
 
-    /**
-     * Returns the volume that contains the block that this object describes.
-     *
-     * @return the volume
-     */
-    FsVolumeSpi getVolume() {
-      return volume;
+    public List<ScanInfo> getScanInfo(final String bpid) {
+      return this.map.get(bpid);
     }
 
-    @Override // Comparable
-    public int compareTo(ScanInfo b) {
-      if (blockId < b.blockId) {
-        return -1;
-      } else if (blockId == b.blockId) {
-        return 0;
-      } else {
-        return 1;
-      }
+    public Collection<Map.Entry<String, ScanInfo>> getEntries() {
+      return Collections.unmodifiableCollection(this.map.entries());
     }
 
-    @Override // Object
-    public boolean equals(Object o) {
-      if (this == o) {
-        return true;
-      }
-      if (!(o instanceof ScanInfo)) {
-        return false;
-      }
-      return blockId == ((ScanInfo) o).blockId;
+    public void clear() {
+      this.map.clear();
+      this.blockPools.clear();
     }
 
-    @Override // Object
-    public int hashCode() {
-      return (int)(blockId^(blockId>>>32));
-    }
-
-    public long getGenStamp() {
-      return metaSuffix != null ? Block.getGenerationStamp(
-          getMetaFile().getName()) : 
-            HdfsConstants.GRANDFATHER_GENERATION_STAMP;
+    @Override
+    public String toString() {
+      return "BlockPoolReport [blockPools=" + blockPools + ", map=" + map + "]";
     }
   }
 
   /**
    * Create a new directory scanner, but don't cycle it running yet.
    *
-   * @param datanode the parent datanode
    * @param dataset the dataset to scan
    * @param conf the Configuration object
    */
-  DirectoryScanner(DataNode datanode, FsDatasetSpi<?> dataset, Configuration conf) {
-    this.datanode = datanode;
+  public DirectoryScanner(FsDatasetSpi<?> dataset, Configuration conf) {
     this.dataset = dataset;
-    int interval = conf.getInt(DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_INTERVAL_KEY,
-        DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_INTERVAL_DEFAULT);
-    scanPeriodMsecs = interval * MILLIS_PER_SECOND; //msec
+    this.stats = new HashMap<>(DEFAULT_MAP_SIZE);
+    int interval = (int) conf.getTimeDuration(
+        DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_INTERVAL_KEY,
+        DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_INTERVAL_DEFAULT,
+        TimeUnit.SECONDS);
 
-    int throttle =
-        conf.getInt(
+    scanPeriodMsecs = TimeUnit.SECONDS.toMillis(interval);
+
+    int throttle = conf.getInt(
+        DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_KEY,
+        DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_DEFAULT);
+
+    if (throttle >= TimeUnit.SECONDS.toMillis(1)) {
+      LOG.warn(
+          "{} set to value above 1000 ms/sec. Assuming default value of {}",
           DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_KEY,
           DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_DEFAULT);
-
-    if ((throttle > MILLIS_PER_SECOND) || (throttle <= 0)) {
-      if (throttle > MILLIS_PER_SECOND) {
-        LOG.error(
-            DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_KEY
-            + " set to value above 1000 ms/sec. Assuming default value of " +
-            DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_DEFAULT);
-      } else {
-        LOG.error(
-            DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_KEY
-            + " set to value below 1 ms/sec. Assuming default value of " +
-            DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_DEFAULT);
-      }
-
-      throttleLimitMsPerSec =
+      throttle =
           DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_DEFAULT;
-    } else {
-      throttleLimitMsPerSec = throttle;
     }
 
-    int threads = 
-        conf.getInt(DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THREADS_KEY,
-                    DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THREADS_DEFAULT);
+    throttleLimitMsPerSec = throttle;
 
-    reportCompileThreadPool = Executors.newFixedThreadPool(threads, 
-        new Daemon.DaemonFactory());
-    masterThread = new ScheduledThreadPoolExecutor(1,
-        new Daemon.DaemonFactory());
+    int threads =
+        conf.getInt(DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THREADS_KEY,
+            DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THREADS_DEFAULT);
+
+    reportCompileThreadPool =
+        Executors.newFixedThreadPool(threads, new Daemon.DaemonFactory());
+
+    masterThread =
+        new ScheduledThreadPoolExecutor(1, new Daemon.DaemonFactory());
   }
 
   /**
-   * Start the scanner.  The scanner will run every
+   * Start the scanner. The scanner will run every
    * {@link DFSConfigKeys#DFS_DATANODE_DIRECTORYSCAN_INTERVAL_KEY} seconds.
    */
   void start() {
-    shouldRun = true;
-    long offset = ThreadLocalRandom.current().nextInt(
-        (int) (scanPeriodMsecs/MILLIS_PER_SECOND)) * MILLIS_PER_SECOND; //msec
-    long firstScanTime = Time.now() + offset;
-    String logMsg;
+    shouldRun.set(true);
+    long firstScanTime = ThreadLocalRandom.current().nextLong(scanPeriodMsecs);
 
-    if (throttleLimitMsPerSec < MILLIS_PER_SECOND) {
-      logMsg = String.format(START_MESSAGE_WITH_THROTTLE, firstScanTime,
-          scanPeriodMsecs, throttleLimitMsPerSec);
-    } else {
-      logMsg = String.format(START_MESSAGE, firstScanTime, scanPeriodMsecs);
-    }
+    LOG.info(
+        "Periodic Directory Tree Verification scan starting in {}ms with interval of {}ms and throttle limit of {}ms/s",
+        firstScanTime, scanPeriodMsecs, throttleLimitMsPerSec);
 
-    LOG.info(logMsg);
-    masterThread.scheduleAtFixedRate(this, offset, scanPeriodMsecs, 
-                                     TimeUnit.MILLISECONDS);
+    masterThread.scheduleAtFixedRate(this, firstScanTime, scanPeriodMsecs,
+        TimeUnit.MILLISECONDS);
   }
-  
+
   /**
    * Return whether the scanner has been started.
    *
@@ -482,309 +341,303 @@ public class DirectoryScanner implements Runnable {
    */
   @VisibleForTesting
   boolean getRunStatus() {
-    return shouldRun;
+    return shouldRun.get();
   }
 
   /**
    * Clear the current cache of diffs and statistics.
    */
   private void clear() {
-    diffs.clear();
+    synchronized (diffs) {
+      diffs.clear();
+    }
     stats.clear();
   }
 
   /**
-   * Main program loop for DirectoryScanner.  Runs {@link reconcile()}
-   * and handles any exceptions.
+   * Main program loop for DirectoryScanner. Runs {@link reconcile()} and
+   * handles any exceptions.
    */
   @Override
   public void run() {
+    if (!shouldRun.get()) {
+      // shutdown has been activated
+      LOG.warn(
+          "This cycle terminating immediately because 'shouldRun' has been deactivated");
+      return;
+    }
     try {
-      if (!shouldRun) {
-        //shutdown has been activated
-        LOG.warn("this cycle terminating immediately because 'shouldRun' has been deactivated");
-        return;
-      }
-
-      //We're are okay to run - do it
-      reconcile();      
-      
+      reconcile();
     } catch (Exception e) {
-      //Log and continue - allows Executor to run again next cycle
-      LOG.error("Exception during DirectoryScanner execution - will continue next cycle", e);
+      // Log and continue - allows Executor to run again next cycle
+      LOG.error(
+          "Exception during DirectoryScanner execution - will continue next cycle",
+          e);
     } catch (Error er) {
-      //Non-recoverable error - re-throw after logging the problem
-      LOG.error("System Error during DirectoryScanner execution - permanently terminating periodic scanner", er);
+      // Non-recoverable error - re-throw after logging the problem
+      LOG.error(
+          "System Error during DirectoryScanner execution - permanently terminating periodic scanner",
+          er);
       throw er;
     }
   }
-  
+
   /**
-   * Stops the directory scanner.  This method will wait for 1 minute for the
+   * Stops the directory scanner. This method will wait for 1 minute for the
    * main thread to exit and an additional 1 minute for the report compilation
-   * threads to exit.  If a thread does not exit in that time period, it is
-   * left running, and an error is logged.
+   * threads to exit. If a thread does not exit in that time period, it is left
+   * running, and an error is logged.
    */
   void shutdown() {
-    if (!shouldRun) {
-      LOG.warn("DirectoryScanner: shutdown has been called, but periodic scanner not started");
-    } else {
-      LOG.warn("DirectoryScanner: shutdown has been called");      
+    LOG.info("Shutdown has been called");
+    if (!shouldRun.getAndSet(false)) {
+      LOG.warn("Shutdown has been called, but periodic scanner not started");
     }
-    shouldRun = false;
-    if (masterThread != null) masterThread.shutdown();
-
+    if (masterThread != null) {
+      masterThread.shutdown();
+    }
     if (reportCompileThreadPool != null) {
       reportCompileThreadPool.shutdownNow();
     }
-
     if (masterThread != null) {
       try {
         masterThread.awaitTermination(1, TimeUnit.MINUTES);
       } catch (InterruptedException e) {
-        LOG.error("interrupted while waiting for masterThread to " +
-          "terminate", e);
+        LOG.error(
+            "interrupted while waiting for masterThread to " + "terminate", e);
       }
     }
     if (reportCompileThreadPool != null) {
       try {
         reportCompileThreadPool.awaitTermination(1, TimeUnit.MINUTES);
       } catch (InterruptedException e) {
-        LOG.error("interrupted while waiting for reportCompileThreadPool to " +
-          "terminate", e);
+        LOG.error("interrupted while waiting for reportCompileThreadPool to "
+            + "terminate", e);
       }
     }
-    if (!retainDiffs) clear();
+    if (!retainDiffs) {
+      clear();
+    }
   }
 
   /**
    * Reconcile differences between disk and in-memory blocks
    */
   @VisibleForTesting
-  void reconcile() throws IOException {
+  public void reconcile() throws IOException {
+    LOG.debug("reconcile start DirectoryScanning");
     scan();
-    for (Entry<String, LinkedList<ScanInfo>> entry : diffs.entrySet()) {
-      String bpid = entry.getKey();
-      LinkedList<ScanInfo> diff = entry.getValue();
-      
-      for (ScanInfo info : diff) {
-        dataset.checkAndUpdate(bpid, info.getBlockId(), info.getBlockFile(),
-            info.getMetaFile(), info.getVolume());
+
+    // HDFS-14476: run checkAndUpadte with batch to avoid holding the lock too
+    // long
+    int loopCount = 0;
+    synchronized (diffs) {
+      for (final Map.Entry<String, ScanInfo> entry : diffs.getEntries()) {
+        dataset.checkAndUpdate(entry.getKey(), entry.getValue());
+
+        if (loopCount % RECONCILE_BLOCKS_BATCH_SIZE == 0) {
+          try {
+            Thread.sleep(2000);
+          } catch (InterruptedException e) {
+            // do nothing
+          }
+        }
+        loopCount++;
       }
     }
-    if (!retainDiffs) clear();
+
+    if (!retainDiffs) {
+      clear();
+    }
   }
 
   /**
-   * Scan for the differences between disk and in-memory blocks
-   * Scan only the "finalized blocks" lists of both disk and memory.
+   * Scan for the differences between disk and in-memory blocks Scan only the
+   * "finalized blocks" lists of both disk and memory.
    */
   private void scan() {
-    clear();
-    Map<String, ScanInfo[]> diskReport = getDiskReport();
+    BlockPoolReport blockPoolReport = new BlockPoolReport();
 
-    // Hold FSDataset lock to prevent further changes to the block map
-    try(AutoCloseableLock lock = dataset.acquireDatasetLock()) {
-      for (Entry<String, ScanInfo[]> entry : diskReport.entrySet()) {
-        String bpid = entry.getKey();
-        ScanInfo[] blockpoolReport = entry.getValue();
-        
-        Stats statsRecord = new Stats(bpid);
-        stats.put(bpid, statsRecord);
-        LinkedList<ScanInfo> diffRecord = new LinkedList<ScanInfo>();
-        diffs.put(bpid, diffRecord);
-        
-        statsRecord.totalBlocks = blockpoolReport.length;
-        List<FinalizedReplica> bl = dataset.getFinalizedBlocks(bpid);
-        FinalizedReplica[] memReport = bl.toArray(new FinalizedReplica[bl.size()]);
-        Arrays.sort(memReport); // Sort based on blockId
-  
-        int d = 0; // index for blockpoolReport
-        int m = 0; // index for memReprot
-        while (m < memReport.length && d < blockpoolReport.length) {
-          FinalizedReplica memBlock = memReport[m];
-          ScanInfo info = blockpoolReport[d];
-          if (info.getBlockId() < memBlock.getBlockId()) {
-            if (!dataset.isDeletingBlock(bpid, info.getBlockId())) {
-              // Block is missing in memory
-              statsRecord.missingMemoryBlocks++;
-              addDifference(diffRecord, statsRecord, info);
-            }
-            d++;
-            continue;
-          }
-          if (info.getBlockId() > memBlock.getBlockId()) {
-            // Block is missing on the disk
-            addDifference(diffRecord, statsRecord,
-                          memBlock.getBlockId(), info.getVolume());
-            m++;
-            continue;
-          }
-          // Block file and/or metadata file exists on the disk
-          // Block exists in memory
-          if (info.getBlockFile() == null) {
-            // Block metadata file exits and block file is missing
-            addDifference(diffRecord, statsRecord, info);
-          } else if (info.getGenStamp() != memBlock.getGenerationStamp()
-              || info.getBlockFileLength() != memBlock.getNumBytes()) {
-            // Block metadata file is missing or has wrong generation stamp,
-            // or block file length is different than expected
-            statsRecord.mismatchBlocks++;
-            addDifference(diffRecord, statsRecord, info);
-          } else if (info.getBlockFile().compareTo(memBlock.getBlockFile()) != 0) {
-            // volumeMap record and on-disk files don't match.
-            statsRecord.duplicateBlocks++;
+    clear();
+
+    Collection<ScanInfoVolumeReport> volumeReports = getVolumeReports();
+    for (ScanInfoVolumeReport volumeReport : volumeReports) {
+      for (String blockPoolId : volumeReport.getBlockPoolIds()) {
+        List<ScanInfo> scanInfos = volumeReport.getScanInfo(blockPoolId);
+        blockPoolReport.addAll(blockPoolId, scanInfos);
+      }
+    }
+
+    // Pre-sort the reports outside of the lock
+    blockPoolReport.sortBlocks();
+
+    for (final String bpid : blockPoolReport.getBlockPoolIds()) {
+      List<ScanInfo> blockpoolReport = blockPoolReport.getScanInfo(bpid);
+
+      Stats statsRecord = new Stats(bpid);
+      stats.put(bpid, statsRecord);
+      Collection<ScanInfo> diffRecord = new ArrayList<>();
+
+      statsRecord.totalBlocks = blockpoolReport.size();
+      final List<ReplicaInfo> bl;
+      bl = dataset.getSortedFinalizedBlocks(bpid);
+
+      int d = 0; // index for blockpoolReport
+      int m = 0; // index for memReprot
+      while (m < bl.size() && d < blockpoolReport.size()) {
+        ReplicaInfo memBlock = bl.get(m);
+        ScanInfo info = blockpoolReport.get(d);
+        if (info.getBlockId() < memBlock.getBlockId()) {
+          if (!dataset.isDeletingBlock(bpid, info.getBlockId())) {
+            // Block is missing in memory
+            statsRecord.missingMemoryBlocks++;
             addDifference(diffRecord, statsRecord, info);
           }
           d++;
+          continue;
+        }
+        if (info.getBlockId() > memBlock.getBlockId()) {
+          // Block is missing on the disk
+          addDifference(diffRecord, statsRecord, memBlock.getBlockId(),
+              info.getVolume());
+          m++;
+          continue;
+        }
+        // Block file and/or metadata file exists on the disk
+        // Block exists in memory
+        if (info.getVolume().getStorageType() != StorageType.PROVIDED
+            && info.getBlockFile() == null) {
+          // Block metadata file exits and block file is missing
+          addDifference(diffRecord, statsRecord, info);
+        } else if (info.getGenStamp() != memBlock.getGenerationStamp()
+            || info.getBlockLength() != memBlock.getNumBytes()) {
+          // Block metadata file is missing or has wrong generation stamp,
+          // or block file length is different than expected
+          statsRecord.mismatchBlocks++;
+          addDifference(diffRecord, statsRecord, info);
+        } else if (memBlock.compareWith(info) != 0) {
+          // volumeMap record and on-disk files do not match.
+          statsRecord.duplicateBlocks++;
+          addDifference(diffRecord, statsRecord, info);
+        }
+        d++;
 
-          if (d < blockpoolReport.length) {
-            // There may be multiple on-disk records for the same block, don't increment
-            // the memory record pointer if so.
-            ScanInfo nextInfo = blockpoolReport[Math.min(d, blockpoolReport.length - 1)];
-            if (nextInfo.getBlockId() != info.blockId) {
-              ++m;
-            }
-          } else {
+        if (d < blockpoolReport.size()) {
+          // There may be multiple on-disk records for the same block, do not
+          // increment the memory record pointer if so.
+          ScanInfo nextInfo = blockpoolReport.get(d);
+          if (nextInfo.getBlockId() != info.getBlockId()) {
             ++m;
           }
+        } else {
+          ++m;
         }
-        while (m < memReport.length) {
-          FinalizedReplica current = memReport[m++];
-          addDifference(diffRecord, statsRecord,
-                        current.getBlockId(), current.getVolume());
+      }
+      while (m < bl.size()) {
+        ReplicaInfo current = bl.get(m++);
+        addDifference(diffRecord, statsRecord, current.getBlockId(),
+            current.getVolume());
+      }
+      while (d < blockpoolReport.size()) {
+        if (!dataset.isDeletingBlock(bpid,
+            blockpoolReport.get(d).getBlockId())) {
+          statsRecord.missingMemoryBlocks++;
+          addDifference(diffRecord, statsRecord, blockpoolReport.get(d));
         }
-        while (d < blockpoolReport.length) {
-          if (!dataset.isDeletingBlock(bpid, blockpoolReport[d].getBlockId())) {
-            statsRecord.missingMemoryBlocks++;
-            addDifference(diffRecord, statsRecord, blockpoolReport[d]);
-          }
-          d++;
-        }
-        LOG.info(statsRecord.toString());
-      } //end for
-    } //end synchronized
+        d++;
+      }
+      synchronized (diffs) {
+        diffs.addAll(bpid, diffRecord);
+      }
+      LOG.info("Scan Results: {}", statsRecord);
+    }
   }
 
   /**
    * Add the ScanInfo object to the list of differences and adjust the stats
-   * accordingly.  This method is called when a block is found on the disk,
-   * but the in-memory block is missing or does not match the block on the disk.
+   * accordingly. This method is called when a block is found on the disk, but
+   * the in-memory block is missing or does not match the block on the disk.
    *
-   * @param diffRecord the list to which to add the info
+   * @param diffRecord the collection to which to add the info
    * @param statsRecord the stats to update
    * @param info the differing info
    */
-  private void addDifference(LinkedList<ScanInfo> diffRecord, 
-                             Stats statsRecord, ScanInfo info) {
+  private void addDifference(Collection<ScanInfo> diffRecord, Stats statsRecord,
+      ScanInfo info) {
     statsRecord.missingMetaFile += info.getMetaFile() == null ? 1 : 0;
     statsRecord.missingBlockFile += info.getBlockFile() == null ? 1 : 0;
     diffRecord.add(info);
   }
 
   /**
-   * Add a new ScanInfo object to the list of differences and adjust the stats
-   * accordingly.  This method is called when a block is not found on the disk.
+   * Add a new ScanInfo object to the collection of differences and adjust the
+   * stats accordingly. This method is called when a block is not found on the
+   * disk.
    *
-   * @param diffRecord the list to which to add the info
+   * @param diffRecord the collection to which to add the info
    * @param statsRecord the stats to update
    * @param blockId the id of the missing block
    * @param vol the volume that contains the missing block
    */
-  private void addDifference(LinkedList<ScanInfo> diffRecord,
-                             Stats statsRecord, long blockId,
-                             FsVolumeSpi vol) {
+  private void addDifference(Collection<ScanInfo> diffRecord, Stats statsRecord,
+      long blockId, FsVolumeSpi vol) {
     statsRecord.missingBlockFile++;
     statsRecord.missingMetaFile++;
     diffRecord.add(new ScanInfo(blockId, null, null, vol));
   }
 
   /**
-   * Get the lists of blocks on the disks in the dataset, sorted by blockId.
-   * The returned map contains one entry per blockpool, keyed by the blockpool
-   * ID.
-   *
-   * @return a map of sorted arrays of block information
+   * Get the lists of blocks on the disks in the data set.
    */
-  private Map<String, ScanInfo[]> getDiskReport() {
-    ScanInfoPerBlockPool list = new ScanInfoPerBlockPool();
-    ScanInfoPerBlockPool[] dirReports = null;
+  @VisibleForTesting
+  public Collection<ScanInfoVolumeReport> getVolumeReports() {
+    List<ScanInfoVolumeReport> volReports = new ArrayList<>();
+    List<Future<ScanInfoVolumeReport>> compilersInProgress = new ArrayList<>();
+
     // First get list of data directories
     try (FsDatasetSpi.FsVolumeReferences volumes =
         dataset.getFsVolumeReferences()) {
 
-      // Use an array since the threads may return out of order and
-      // compilersInProgress#keySet may return out of order as well.
-      dirReports = new ScanInfoPerBlockPool[volumes.size()];
-
-      Map<Integer, Future<ScanInfoPerBlockPool>> compilersInProgress =
-          new HashMap<Integer, Future<ScanInfoPerBlockPool>>();
-
-      for (int i = 0; i < volumes.size(); i++) {
-        ReportCompiler reportCompiler =
-            new ReportCompiler(datanode, volumes.get(i));
-        Future<ScanInfoPerBlockPool> result =
-            reportCompileThreadPool.submit(reportCompiler);
-        compilersInProgress.put(i, result);
+      for (final FsVolumeSpi volume : volumes) {
+        // Disable scanning PROVIDED volumes to keep overhead low
+        if (volume.getStorageType() != StorageType.PROVIDED) {
+          ReportCompiler reportCompiler = new ReportCompiler(volume);
+          Future<ScanInfoVolumeReport> result =
+              reportCompileThreadPool.submit(reportCompiler);
+          compilersInProgress.add(result);
+        }
       }
 
-      for (Entry<Integer, Future<ScanInfoPerBlockPool>> report :
-          compilersInProgress.entrySet()) {
-        Integer index = report.getKey();
+      for (Future<ScanInfoVolumeReport> future : compilersInProgress) {
         try {
-          dirReports[index] = report.getValue().get();
-
-          // If our compiler threads were interrupted, give up on this run
-          if (dirReports[index] == null) {
-            dirReports = null;
+          final ScanInfoVolumeReport result = future.get();
+          if (!CollectionUtils.addIgnoreNull(volReports, result)) {
+            // This compiler thread were interrupted, give up on this run
+            volReports.clear();
             break;
           }
         } catch (Exception ex) {
-          FsVolumeSpi fsVolumeSpi = volumes.get(index);
-          LOG.error("Error compiling report for the volume, StorageId: "
-              + fsVolumeSpi.getStorageID(), ex);
-          // Continue scanning the other volumes
+          LOG.warn("Error compiling report. Continuing.", ex);
         }
       }
     } catch (IOException e) {
       LOG.error("Unexpected IOException by closing FsVolumeReference", e);
     }
-    if (dirReports != null) {
-      // Compile consolidated report for all the volumes
-      for (ScanInfoPerBlockPool report : dirReports) {
-        if(report != null){
-          list.addAll(report);
-        }
-      }
-    }
-    return list.toSortedArrays();
-  }
 
-  /**
-   * Helper method to determine if a file name is consistent with a block.
-   * meta-data file
-   *
-   * @param blockId the block ID
-   * @param metaFile the file to check
-   * @return whether the file name is a block meta-data file name
-   */
-  private static boolean isBlockMetaFile(String blockId, String metaFile) {
-    return metaFile.startsWith(blockId)
-        && metaFile.endsWith(Block.METADATA_EXTENSION);
+    return volReports;
   }
 
   /**
    * The ReportCompiler class encapsulates the process of searching a datanode's
-   * disks for block information.  It operates by performing a DFS of the
-   * volume to discover block information.
+   * disks for block information. It operates by performing a DFS of the volume
+   * to discover block information.
    *
    * When the ReportCompiler discovers block information, it create a new
-   * ScanInfo object for it and adds that object to its report list.  The report
+   * ScanInfo object for it and adds that object to its report list. The report
    * list is returned by the {@link #call()} method.
    */
-  private class ReportCompiler implements Callable<ScanInfoPerBlockPool> {
+  public class ReportCompiler implements Callable<ScanInfoVolumeReport> {
     private final FsVolumeSpi volume;
-    private final DataNode datanode;
     // Variable for tracking time spent running for throttling purposes
     private final StopWatch throttleTimer = new StopWatch();
     // Variable for tracking time spent running and waiting for testing
@@ -792,13 +645,11 @@ public class DirectoryScanner implements Runnable {
     private final StopWatch perfTimer = new StopWatch();
 
     /**
-     * Create a report compiler for the given volume on the given datanode.
+     * Create a report compiler for the given volume.
      *
-     * @param datanode the target datanode
      * @param volume the target volume
      */
-    public ReportCompiler(DataNode datanode, FsVolumeSpi volume) {
-      this.datanode = datanode;
+    public ReportCompiler(FsVolumeSpi volume) {
       this.volume = volume;
     }
 
@@ -806,142 +657,61 @@ public class DirectoryScanner implements Runnable {
      * Run this report compiler thread.
      *
      * @return the block info report list
-     * @throws IOException if the block pool isn't found
+     * @throws IOException if the block pool is not found
      */
     @Override
-    public ScanInfoPerBlockPool call() throws IOException {
+    public ScanInfoVolumeReport call() throws IOException {
       String[] bpList = volume.getBlockPoolList();
-      ScanInfoPerBlockPool result = new ScanInfoPerBlockPool(bpList.length);
+      ScanInfoVolumeReport result =
+          new ScanInfoVolumeReport(volume, Arrays.asList(bpList));
+      perfTimer.start();
+      throttleTimer.start();
       for (String bpid : bpList) {
-        LinkedList<ScanInfo> report = new LinkedList<>();
-        File bpFinalizedDir = volume.getFinalizedDir(bpid);
+        List<ScanInfo> report = new ArrayList<>(DEFAULT_MAP_SIZE);
 
-        perfTimer.start();
-        throttleTimer.start();
+        perfTimer.reset().start();
+        throttleTimer.reset().start();
 
         try {
-          result.put(bpid,
-              compileReport(volume, bpFinalizedDir, bpFinalizedDir, report));
+          // ScanInfos are added directly to 'report' list
+          volume.compileReport(bpid, report, this);
+          result.addAll(bpid, report);
         } catch (InterruptedException ex) {
           // Exit quickly and flag the scanner to do the same
           result = null;
           break;
         }
       }
+      LOG.trace("Scanner volume report: {}", result);
       return result;
     }
 
     /**
-     * Compile a list of {@link ScanInfo} for the blocks in the directory
-     * given by {@code dir}.
-     *
-     * @param vol the volume that contains the directory to scan
-     * @param bpFinalizedDir the root directory of the directory to scan
-     * @param dir the directory to scan
-     * @param report the list onto which blocks reports are placed
-     */
-    private LinkedList<ScanInfo> compileReport(FsVolumeSpi vol,
-        File bpFinalizedDir, File dir, LinkedList<ScanInfo> report)
-        throws InterruptedException {
-
-      throttle();
-
-      List <String> fileNames;
-      try {
-        fileNames = IOUtils.listDirectory(dir, BlockDirFilter.INSTANCE);
-      } catch (IOException ioe) {
-        LOG.warn("Exception occured while compiling report: ", ioe);
-        // Initiate a check on disk failure.
-        datanode.checkDiskErrorAsync();
-        // Ignore this directory and proceed.
-        return report;
-      }
-      Collections.sort(fileNames);
-
-      /*
-       * Assumption: In the sorted list of files block file appears immediately
-       * before block metadata file. This is true for the current naming
-       * convention for block file blk_<blockid> and meta file
-       * blk_<blockid>_<genstamp>.meta
-       */
-      for (int i = 0; i < fileNames.size(); i++) {
-        // Make sure this thread can make a timely exit. With a low throttle
-        // rate, completing a run can take a looooong time.
-        if (Thread.interrupted()) {
-          throw new InterruptedException();
-        }
-
-        File file = new File(dir, fileNames.get(i));
-        if (file.isDirectory()) {
-          compileReport(vol, bpFinalizedDir, file, report);
-          continue;
-        }
-        if (!Block.isBlockFilename(file)) {
-          if (isBlockMetaFile(Block.BLOCK_FILE_PREFIX, file.getName())) {
-            long blockId = Block.getBlockId(file.getName());
-            verifyFileLocation(file.getParentFile(), bpFinalizedDir,
-                blockId);
-            report.add(new ScanInfo(blockId, null, file, vol));
-          }
-          continue;
-        }
-        File blockFile = file;
-        long blockId = Block.filename2id(file.getName());
-        File metaFile = null;
-
-        // Skip all the files that start with block name until
-        // getting to the metafile for the block
-        while (i + 1 < fileNames.size()) {
-          File blkMetaFile = new File(dir, fileNames.get(i + 1));
-          if (!(blkMetaFile.isFile()
-              && blkMetaFile.getName().startsWith(blockFile.getName()))) {
-            break;
-          }
-          i++;
-          if (isBlockMetaFile(blockFile.getName(), blkMetaFile.getName())) {
-            metaFile = blkMetaFile;
-            break;
-          }
-        }
-        verifyFileLocation(blockFile, bpFinalizedDir, blockId);
-        report.add(new ScanInfo(blockId, blockFile, metaFile, vol));
-      }
-      return report;
-    }
-
-    /**
-     * Verify whether the actual directory location of block file has the
-     * expected directory path computed using its block ID.
-     */
-    private void verifyFileLocation(File actualBlockFile,
-        File bpFinalizedDir, long blockId) {
-      File expectedBlockDir =
-          DatanodeUtil.idToBlockDir(bpFinalizedDir, blockId);
-      File actualBlockDir = actualBlockFile.getParentFile();
-      if (actualBlockDir.compareTo(expectedBlockDir) != 0) {
-        LOG.warn("Block: " + blockId +
-            " found in invalid directory.  Expected directory: " +
-            expectedBlockDir + ".  Actual directory: " + actualBlockDir);
-      }
-    }
-
-    /**
-     * Called by the thread before each potential disk scan so that a pause
-     * can be optionally inserted to limit the number of scans per second.
-     * The limit is controlled by
+     * Called by the thread before each potential disk scan so that a pause can
+     * be optionally inserted to limit the number of scans per second. The limit
+     * is controlled by
      * {@link DFSConfigKeys#DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_KEY}.
      */
-    private void throttle() throws InterruptedException {
+    public void throttle() throws InterruptedException {
       accumulateTimeRunning();
 
-      if ((throttleLimitMsPerSec < 1000) &&
-          (throttleTimer.now(TimeUnit.MILLISECONDS) > throttleLimitMsPerSec)) {
-
-        Thread.sleep(MILLIS_PER_SECOND - throttleLimitMsPerSec);
-        throttleTimer.reset().start();
+      if (throttleLimitMsPerSec > 0L) {
+        final long runningTime = throttleTimer.now(TimeUnit.MILLISECONDS);
+        if (runningTime >= throttleLimitMsPerSec) {
+          final long sleepTime;
+          if (runningTime >= 1000L) {
+            LOG.warn("Unable to throttle within the second. Blocking for 1s.");
+            sleepTime = 1000L;
+          } else {
+            // Sleep for the expected time plus any time processing ran over
+            final long overTime = runningTime - throttleLimitMsPerSec;
+            sleepTime = (1000L - throttleLimitMsPerSec) + overTime;
+          }
+          Thread.sleep(sleepTime);
+          throttleTimer.reset().start();
+        }
+        accumulateTimeWaiting();
       }
-
-      accumulateTimeWaiting();
     }
 
     /**
@@ -958,17 +728,6 @@ public class DirectoryScanner implements Runnable {
     private void accumulateTimeWaiting() {
       timeWaitingMs.getAndAdd(perfTimer.now(TimeUnit.MILLISECONDS));
       perfTimer.reset().start();
-    }
-  }
-
-  private enum BlockDirFilter implements FilenameFilter {
-    INSTANCE;
-
-    @Override
-    public boolean accept(File dir, String name) {
-      return name.startsWith(DataStorage.BLOCK_SUBDIR_PREFIX)
-          || name.startsWith(DataStorage.STORAGE_DIR_FINALIZED)
-          || name.startsWith(Block.BLOCK_FILE_PREFIX);
     }
   }
 }

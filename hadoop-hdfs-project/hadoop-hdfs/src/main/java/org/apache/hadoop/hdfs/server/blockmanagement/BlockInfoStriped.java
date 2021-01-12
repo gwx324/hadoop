@@ -17,8 +17,11 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
@@ -113,6 +116,12 @@ public class BlockInfoStriped extends BlockInfo {
 
   @Override
   boolean addStorage(DatanodeStorageInfo storage, Block reportedBlock) {
+    Preconditions.checkArgument(BlockIdManager.isStripedBlockID(
+        reportedBlock.getBlockId()), "reportedBlock is not striped");
+    Preconditions.checkArgument(BlockIdManager.convertToStripedID(
+        reportedBlock.getBlockId()) == this.getBlockId(),
+        "reported blk_%s does not belong to the group of stored blk_%s",
+        reportedBlock.getBlockId(), this.getBlockId());
     int blockIndex = BlockIdManager.getBlockIndex(reportedBlock);
     int index = blockIndex;
     DatanodeStorageInfo old = getStorageInfo(index);
@@ -146,7 +155,8 @@ public class BlockInfoStriped extends BlockInfo {
     return -1;
   }
 
-  byte getStorageBlockIndex(DatanodeStorageInfo storage) {
+  @VisibleForTesting
+  public byte getStorageBlockIndex(DatanodeStorageInfo storage) {
     int i = this.findStorageInfo(storage);
     return i == -1 ? -1 : indices[i];
   }
@@ -209,6 +219,11 @@ public class BlockInfoStriped extends BlockInfo {
   }
 
   @Override
+  public BlockType getBlockType() {
+    return BlockType.STRIPED;
+  }
+
+  @Override
   public int numNodes() {
     assert this.storages != null : "BlockInfo is not initialized";
     int num = 0;
@@ -231,13 +246,40 @@ public class BlockInfoStriped extends BlockInfo {
     return true;
   }
 
-  static class StorageAndBlockIndex {
-    final DatanodeStorageInfo storage;
-    final byte blockIndex;
+  /**
+   * Striped blocks on Provided Storage is not supported. All blocks on
+   * Provided storage are assumed to be "contiguous".
+   */
+  @Override
+  boolean isProvided() {
+    return false;
+  }
+
+  /**
+   * This class contains datanode storage information and block index in the
+   * block group.
+   */
+  public static class StorageAndBlockIndex {
+    private final DatanodeStorageInfo storage;
+    private final byte blockIndex;
 
     StorageAndBlockIndex(DatanodeStorageInfo storage, byte blockIndex) {
       this.storage = storage;
       this.blockIndex = blockIndex;
+    }
+
+    /**
+     * @return storage in the datanode.
+     */
+    public DatanodeStorageInfo getStorage() {
+      return storage;
+    }
+
+    /**
+     * @return block index in the block group.
+     */
+    public byte getBlockIndex() {
+      return blockIndex;
     }
   }
 

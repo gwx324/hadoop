@@ -29,7 +29,6 @@ import org.apache.hadoop.yarn.api.records.QueueInfo;
 import org.apache.hadoop.yarn.api.records.ReservationDefinition;
 import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.event.DrainDispatcher;
 import org.apache.hadoop.yarn.proto.YarnProtos.ReservationAllocationStateProto;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.Plan;
@@ -186,9 +185,7 @@ public class TestReservationSystemWithRMHA extends RMHATestBase {
       rm.registerNode("127.0.0.1:1", memory, vCores);
       int attempts = 10;
       do {
-        DrainDispatcher dispatcher =
-            (DrainDispatcher) rm1.getRMContext().getDispatcher();
-        dispatcher.await();
+        rm1.drainEvents();
         rm.getRMContext().getReservationSystem()
             .synchronizePlan(ReservationSystemTestUtil.reservationQ, false);
         if (rm.getRMContext().getReservationSystem()
@@ -197,7 +194,7 @@ public class TestReservationSystemWithRMHA extends RMHATestBase {
           break;
         }
         LOG.info("Waiting for node capacity to be added to plan");
-        Thread.sleep(100);
+        Thread.sleep(1000);
       } while (attempts-- > 0);
       if (attempts <= 0) {
         Assert.fail("Exhausted attempts in checking if node capacity was "

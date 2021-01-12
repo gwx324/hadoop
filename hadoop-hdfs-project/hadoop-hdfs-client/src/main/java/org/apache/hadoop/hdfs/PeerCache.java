@@ -23,9 +23,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.LinkedListMultimap;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.LinkedListMultimap;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -188,7 +188,7 @@ public class PeerCache {
     if (peer.isClosed()) return;
     if (capacity <= 0) {
       // Cache disabled.
-      IOUtilsClient.cleanup(LOG, peer);
+      IOUtilsClient.cleanupWithLogger(LOG, peer);
       return;
     }
     putInternal(dnId, peer);
@@ -221,7 +221,7 @@ public class PeerCache {
           Time.monotonicNow() - entry.getValue().getTime() < expiryPeriod) {
         break;
       }
-      IOUtilsClient.cleanup(LOG, entry.getValue().getPeer());
+      IOUtilsClient.cleanupWithLogger(LOG, entry.getValue().getPeer());
       iter.remove();
     }
   }
@@ -239,7 +239,7 @@ public class PeerCache {
         "capacity: " + capacity);
     }
     Entry<Key, Value> entry = iter.next();
-    IOUtilsClient.cleanup(LOG, entry.getValue().getPeer());
+    IOUtilsClient.cleanupWithLogger(LOG, entry.getValue().getPeer());
     iter.remove();
   }
 
@@ -267,7 +267,7 @@ public class PeerCache {
   @VisibleForTesting
   synchronized void clear() {
     for (Value value : multimap.values()) {
-      IOUtilsClient.cleanup(LOG, value.getPeer());
+      IOUtilsClient.cleanupWithLogger(LOG, value.getPeer());
     }
     multimap.clear();
   }

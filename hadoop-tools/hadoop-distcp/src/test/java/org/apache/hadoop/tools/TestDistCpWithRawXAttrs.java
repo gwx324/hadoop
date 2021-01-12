@@ -21,18 +21,26 @@ package org.apache.hadoop.tools;
 import java.util.Map;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.tools.ECAdmin;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.tools.util.DistCpTestUtils;
 
+import org.apache.hadoop.util.ToolRunner;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Tests distcp in combination with HDFS raw.* XAttrs.
@@ -82,14 +90,7 @@ public class TestDistCpWithRawXAttrs {
     final String relDst = "/./.reserved/../.reserved/raw/../raw/dest/../dest";
     doTestPreserveRawXAttrs(relSrc, relDst, "-px", true, true,
         DistCpConstants.SUCCESS);
-    doTestPreserveRawXAttrs(rootedSrcName, rootedDestName, "-px",
-        false, true, DistCpConstants.SUCCESS);
-    doTestPreserveRawXAttrs(rootedSrcName, rawDestName, "-px",
-        false, true, DistCpConstants.INVALID_ARGUMENT);
-    doTestPreserveRawXAttrs(rawSrcName, rootedDestName, "-px",
-        false, true, DistCpConstants.INVALID_ARGUMENT);
-    doTestPreserveRawXAttrs(rawSrcName, rawDestName, "-px",
-        true, true, DistCpConstants.SUCCESS);
+    doTestStandardPreserveRawXAttrs("-px", true);
     final Path savedWd = fs.getWorkingDirectory();
     try {
       fs.setWorkingDirectory(new Path("/.reserved/raw"));
@@ -103,27 +104,18 @@ public class TestDistCpWithRawXAttrs {
   /* Test that XAttrs are not preserved and raw.* are when appropriate. */
   @Test
   public void testPreserveRawXAttrs2() throws Exception {
-    doTestPreserveRawXAttrs(rootedSrcName, rootedDestName, "-p",
-        false, false, DistCpConstants.SUCCESS);
-    doTestPreserveRawXAttrs(rootedSrcName, rawDestName, "-p",
-        false, false, DistCpConstants.INVALID_ARGUMENT);
-    doTestPreserveRawXAttrs(rawSrcName, rootedDestName, "-p",
-        false, false, DistCpConstants.INVALID_ARGUMENT);
-    doTestPreserveRawXAttrs(rawSrcName, rawDestName, "-p",
-        true, false, DistCpConstants.SUCCESS);
+    doTestStandardPreserveRawXAttrs("-p", false);
   }
 
   /* Test that XAttrs are not preserved and raw.* are when appropriate. */
   @Test
   public void testPreserveRawXAttrs3() throws Exception {
-    doTestPreserveRawXAttrs(rootedSrcName, rootedDestName, null,
-        false, false, DistCpConstants.SUCCESS);
-    doTestPreserveRawXAttrs(rootedSrcName, rawDestName, null,
-        false, false, DistCpConstants.INVALID_ARGUMENT);
-    doTestPreserveRawXAttrs(rawSrcName, rootedDestName, null,
-        false, false, DistCpConstants.INVALID_ARGUMENT);
-    doTestPreserveRawXAttrs(rawSrcName, rawDestName, null,
-        true, false, DistCpConstants.SUCCESS);
+    doTestStandardPreserveRawXAttrs(null, false);
+  }
+
+  @Test
+  public void testPreserveRawXAttrs4() throws Exception {
+    doTestStandardPreserveRawXAttrs("-update -delete", false);
   }
 
   private static Path[] pathnames = { new Path("dir1"),
@@ -143,6 +135,19 @@ public class TestDistCpWithRawXAttrs {
       fs.setXAttr(new Path(rawRootName + "/src", p), rawName1, rawValue1);
       fs.setXAttr(new Path(rawRootName + "/src", p), userName1, userValue1);
     }
+  }
+
+  private void doTestStandardPreserveRawXAttrs(String options,
+      boolean expectUser)
+      throws Exception {
+    doTestPreserveRawXAttrs(rootedSrcName, rootedDestName, options,
+        false, expectUser, DistCpConstants.SUCCESS);
+    doTestPreserveRawXAttrs(rootedSrcName, rawDestName, options,
+        false, expectUser, DistCpConstants.INVALID_ARGUMENT);
+    doTestPreserveRawXAttrs(rawSrcName, rootedDestName, options,
+        false, expectUser, DistCpConstants.INVALID_ARGUMENT);
+    doTestPreserveRawXAttrs(rawSrcName, rawDestName, options,
+        true, expectUser, DistCpConstants.SUCCESS);
   }
 
   private void doTestPreserveRawXAttrs(String src, String dest,
@@ -166,5 +171,50 @@ public class TestDistCpWithRawXAttrs {
         DistCpTestUtils.assertXAttrs(new Path(dest, p), fs, xAttrs);
       }
     }
+  }
+
+  @Test
+  public void testPreserveEC() throws Exception {
+    final String src = "/src";
+    final String dest = "/dest";
+
+    final Path destDir1 = new Path("/dest/dir1");
+    final Path destSubDir1 = new Path(destDir1, "subdir1");
+
+    String[] args = {"-setPolicy", "-path", dir1.toString(),
+        "-policy", "XOR-2-1-1024k"};
+
+    fs.delete(new Path("/dest"), true);
+    fs.mkdirs(subDir1);
+    fs.create(file1).close();
+    DistributedFileSystem dfs = (DistributedFileSystem) fs;
+    dfs.enableErasureCodingPolicy("XOR-2-1-1024k");
+    int res = ToolRunner.run(conf, new ECAdmin(conf), args);
+    assertEquals("Unable to set EC policy on " + subDir1.toString(), res, 0);
+
+    // preserve all attributes
+    DistCpTestUtils.assertRunDistCp(DistCpConstants.SUCCESS, src, dest,
+        "-pe", conf);
+
+    FileStatus srcStatus = fs.getFileStatus(new Path(src));
+    FileStatus srcDir1Status = fs.getFileStatus(dir1);
+    FileStatus srcSubDir1Status = fs.getFileStatus(subDir1);
+
+    FileStatus destStatus = fs.getFileStatus(new Path(dest));
+    FileStatus destDir1Status = fs.getFileStatus(destDir1);
+    FileStatus destSubDir1Status = fs.getFileStatus(destSubDir1);
+
+    assertFalse("/src is erasure coded!",
+        srcStatus.isErasureCoded());
+    assertFalse("/dest is erasure coded!",
+        destStatus.isErasureCoded());
+    assertTrue("/src/dir1 is not erasure coded!",
+        srcDir1Status.isErasureCoded());
+    assertTrue("/dest/dir1 is not erasure coded!",
+        destDir1Status.isErasureCoded());
+    assertTrue("/src/dir1/subdir1 is not erasure coded!",
+        srcSubDir1Status.isErasureCoded());
+    assertTrue("/dest/dir1/subdir1 is not erasure coded!",
+        destSubDir1Status.isErasureCoded());
   }
 }

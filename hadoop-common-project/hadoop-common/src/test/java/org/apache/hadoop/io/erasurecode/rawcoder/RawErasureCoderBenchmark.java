@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * <p/>
+ * <p>
  * http://www.apache.org/licenses/LICENSE-2.0
- * <p/>
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,11 +17,12 @@
  */
 package org.apache.hadoop.io.erasurecode.rawcoder;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 import org.apache.hadoop.io.erasurecode.ErasureCoderOptions;
 import org.apache.hadoop.util.StopWatch;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
@@ -60,7 +61,7 @@ public final class RawErasureCoderBenchmark {
   private static final List<RawErasureCoderFactory> CODER_MAKERS =
       Collections.unmodifiableList(
           Arrays.asList(new DummyRawErasureCoderFactory(),
-              new RSRawErasureCoderFactoryLegacy(),
+              new RSLegacyRawErasureCoderFactory(),
               new RSRawErasureCoderFactory(),
               new NativeRSRawErasureCoderFactory()));
 
@@ -229,10 +230,16 @@ public final class RawErasureCoderBenchmark {
       throw e;
     } finally {
       executor.shutdown();
+      if (encoder != null) {
+        encoder.release();
+      }
+      if (decoder != null) {
+        decoder.release();
+      }
     }
   }
 
-  private static RawErasureEncoder getRawEncoder(int index) {
+  private static RawErasureEncoder getRawEncoder(int index) throws IOException {
     RawErasureEncoder encoder =
         CODER_MAKERS.get(index).createEncoder(BenchData.OPTIONS);
     final boolean isDirect = encoder.preferDirectBuffer();
@@ -242,7 +249,7 @@ public final class RawErasureCoderBenchmark {
     return encoder;
   }
 
-  private static RawErasureDecoder getRawDecoder(int index) {
+  private static RawErasureDecoder getRawDecoder(int index) throws IOException {
     RawErasureDecoder decoder =
         CODER_MAKERS.get(index).createDecoder(BenchData.OPTIONS);
     final boolean isDirect = decoder.preferDirectBuffer();
@@ -341,11 +348,11 @@ public final class RawErasureCoderBenchmark {
       System.arraycopy(inputs, 0, decodeInputs, 0, NUM_DATA_UNITS);
     }
 
-    public void encode(RawErasureEncoder encoder) {
+    public void encode(RawErasureEncoder encoder) throws IOException {
       encoder.encode(inputs, outputs);
     }
 
-    public void decode(RawErasureDecoder decoder) {
+    public void decode(RawErasureDecoder decoder) throws IOException {
       decoder.decode(decodeInputs, ERASED_INDEXES, outputs);
     }
   }

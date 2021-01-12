@@ -18,11 +18,16 @@
 
 package org.apache.hadoop.hdfs.server.diskbalancer.command;
 
-import com.google.common.base.Preconditions;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Option;
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.lang.text.StrBuilder;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.text.TextStringBuilder;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -33,22 +38,28 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
+import org.apache.hadoop.hdfs.server.diskbalancer.DiskBalancerConstants;
+import org.apache.hadoop.hdfs.server.diskbalancer.DiskBalancerException;
 import org.apache.hadoop.hdfs.server.diskbalancer.connectors.ClusterConnector;
 import org.apache.hadoop.hdfs.server.diskbalancer.connectors.ConnectorFactory;
 import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerCluster;
 import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerDataNode;
-import org.apache.hadoop.hdfs.tools.DiskBalancer;
+import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerVolume;
+import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerVolumeSet;
+import org.apache.hadoop.hdfs.tools.DiskBalancerCLI;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.util.HostsFileReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.Closeable;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URL;
-import java.nio.charset.Charset;
-import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.Collections;
@@ -64,13 +75,16 @@ import java.util.TreeSet;
 /**
  * Common interface for command handling.
  */
-public abstract class Command extends Configured {
+public abstract class Command extends Configured implements Closeable {
+  private static final ObjectReader READER =
+      new ObjectMapper().readerFor(HashMap.class);
   static final Logger LOG = LoggerFactory.getLogger(Command.class);
   private Map<String, String> validArgs = new HashMap<>();
   private URI clusterURI;
   private FileSystem fs = null;
   private DiskBalancerCluster cluster = null;
   private int topNodes;
+  private PrintStream ps;
 
   private static final Path DEFAULT_LOG_DIR = new Path("/system/diskbalancer");
 
@@ -80,9 +94,41 @@ public abstract class Command extends Configured {
    * Constructs a command.
    */
   public Command(Configuration conf) {
+    this(conf, System.out);
+  }
+
+  /**
+   * Constructs a command.
+   */
+  public Command(Configuration conf, final PrintStream ps) {
     super(conf);
     // These arguments are valid for all commands.
     topNodes = 0;
+    this.ps = ps;
+  }
+
+  /**
+   * Cleans any resources held by this command.
+   * <p>
+   * The main goal is to delete id file created in
+   * {@link org.apache.hadoop.hdfs.server.balancer
+   * .NameNodeConnector#checkAndMarkRunning}
+   * , otherwise, it's not allowed to run multiple commands in a row.
+   * </p>
+   */
+  @Override
+  public void close() throws IOException {
+    if (fs != null) {
+      fs.close();
+    }
+  }
+
+  /**
+   * Gets printing stream.
+   * @return print stream
+   */
+  PrintStream getPrintStream() {
+    return ps;
   }
 
   /**
@@ -214,7 +260,7 @@ public abstract class Command extends Configured {
    * @return Set of node names
    * @throws IOException
    */
-  private Set<String> getNodeList(String listArg) throws IOException {
+  protected Set<String> getNodeList(String listArg) throws IOException {
     URL listURL;
     String nodeData;
     Set<String> resultSet = new TreeSet<>();
@@ -222,17 +268,78 @@ public abstract class Command extends Configured {
     if ((listArg == null) || listArg.isEmpty()) {
       return resultSet;
     }
+
     if (listArg.startsWith("file://")) {
       listURL = new URL(listArg);
-      byte[] data = Files.readAllBytes(Paths.get(listURL.getPath()));
-      nodeData = new String(data, Charset.forName("UTF-8"));
+      try {
+        HostsFileReader.readFileToSet("include",
+            Paths.get(listURL.getPath()).toString(), resultSet);
+      } catch (NoSuchFileException e) {
+        String warnMsg = String
+            .format("The input host file path '%s' is not a valid path. "
+                + "Please make sure the host file exists.", listArg);
+        throw new DiskBalancerException(warnMsg,
+            DiskBalancerException.Result.INVALID_HOST_FILE_PATH);
+      }
     } else {
       nodeData = listArg;
+      String[] nodes = nodeData.split(",");
+
+      if (nodes.length == 0) {
+        String warnMsg = "The number of input nodes is 0. "
+            + "Please input the valid nodes.";
+        throw new DiskBalancerException(warnMsg,
+            DiskBalancerException.Result.INVALID_NODE);
+      }
+
+      Collections.addAll(resultSet, nodes);
     }
 
-    String[] nodes = nodeData.split(",");
-    Collections.addAll(resultSet, nodes);
     return resultSet;
+  }
+
+  /**
+   * Returns a DiskBalancer Node list from the Cluster or null if not found.
+   *
+   * @param listArg String File URL or a comma separated list of node names.
+   * @return List of DiskBalancer Node
+   * @throws IOException
+   */
+  protected List<DiskBalancerDataNode> getNodes(String listArg)
+      throws IOException {
+    Set<String> nodeNames = null;
+    List<DiskBalancerDataNode> nodeList = Lists.newArrayList();
+    List<String> invalidNodeList = Lists.newArrayList();
+
+    if ((listArg == null) || listArg.isEmpty()) {
+      return nodeList;
+    }
+    nodeNames = getNodeList(listArg);
+
+    DiskBalancerDataNode node = null;
+    if (!nodeNames.isEmpty()) {
+      for (String name : nodeNames) {
+        node = getNode(name);
+
+        if (node != null) {
+          nodeList.add(node);
+        } else {
+          invalidNodeList.add(name);
+        }
+      }
+    }
+
+    if (!invalidNodeList.isEmpty()) {
+      String invalidNodes = StringUtils.join(invalidNodeList.toArray(), ",");
+      String warnMsg = String.format(
+          "The node(s) '%s' not found. "
+          + "Please make sure that '%s' exists in the cluster.",
+          invalidNodes, invalidNodes);
+      throw new DiskBalancerException(warnMsg,
+          DiskBalancerException.Result.INVALID_NODE);
+    }
+
+    return nodeList;
   }
 
   /**
@@ -368,7 +475,8 @@ public abstract class Command extends Configured {
    *
    * @return Cluster.
    */
-  protected DiskBalancerCluster getCluster() {
+  @VisibleForTesting
+  DiskBalancerCluster getCluster() {
     return cluster;
   }
 
@@ -377,13 +485,13 @@ public abstract class Command extends Configured {
    * @return default top number of nodes.
    */
   protected int getDefaultTop() {
-    return DiskBalancer.DEFAULT_TOP;
+    return DiskBalancerCLI.DEFAULT_TOP;
   }
 
   /**
    * Put output line to log and string buffer.
    * */
-  protected void recordOutput(final StrBuilder result,
+  protected void recordOutput(final TextStringBuilder result,
       final String outputLine) {
     LOG.info(outputLine);
     result.appendln(outputLine);
@@ -393,10 +501,11 @@ public abstract class Command extends Configured {
    * Parse top number of nodes to be processed.
    * @return top number of nodes to be processed.
    */
-  protected int parseTopNodes(final CommandLine cmd, final StrBuilder result) {
+  protected int parseTopNodes(final CommandLine cmd, final TextStringBuilder result)
+      throws IllegalArgumentException {
     String outputLine = "";
     int nodes = 0;
-    final String topVal = cmd.getOptionValue(DiskBalancer.TOP);
+    final String topVal = cmd.getOptionValue(DiskBalancerCLI.TOP);
     if (StringUtils.isBlank(topVal)) {
       outputLine = String.format(
           "No top limit specified, using default top value %d.",
@@ -415,9 +524,43 @@ public abstract class Command extends Configured {
         result.appendln(outputLine);
         nodes = getDefaultTop();
       }
+      if (nodes <= 0) {
+        throw new IllegalArgumentException(
+            "Top limit input should be a positive numeric value");
+      }
     }
 
     return Math.min(nodes, cluster.getNodes().size());
+  }
+
+  /**
+   * Reads the Physical path of the disks we are balancing. This is needed to
+   * make the disk balancer human friendly and not used in balancing.
+   *
+   * @param node - Disk Balancer Node.
+   */
+  protected void populatePathNames(
+      DiskBalancerDataNode node) throws IOException {
+    // if the cluster is a local file system, there is no need to
+    // invoke rpc call to dataNode.
+    if (getClusterURI().getScheme().startsWith("file")) {
+      return;
+    }
+    String dnAddress = node.getDataNodeIP() + ":" + node.getDataNodePort();
+    ClientDatanodeProtocol dnClient = getDataNodeProxy(dnAddress);
+    String volumeNameJson = dnClient.getDiskBalancerSetting(
+        DiskBalancerConstants.DISKBALANCER_VOLUME_NAME);
+
+    @SuppressWarnings("unchecked")
+    Map<String, String> volumeMap =
+        READER.readValue(volumeNameJson);
+    for (DiskBalancerVolumeSet set : node.getVolumeSets().values()) {
+      for (DiskBalancerVolume vol : set.getVolumes()) {
+        if (volumeMap.containsKey(vol.getUuid())) {
+          vol.setPath(volumeMap.get(vol.getUuid()));
+        }
+      }
+    }
   }
 
   /**
@@ -433,5 +576,13 @@ public abstract class Command extends Configured {
    * */
   public int getTopNodes() {
     return topNodes;
+  }
+
+  /**
+   * Set DiskBalancer cluster
+   */
+  @VisibleForTesting
+  public void setCluster(DiskBalancerCluster newCluster) {
+    this.cluster = newCluster;
   }
 }

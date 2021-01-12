@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.yarn.webapp;
 
-import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.common.base.Preconditions.checkState;
+import static org.apache.hadoop.thirdparty.com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.hadoop.thirdparty.com.google.common.base.Preconditions.checkState;
 import static org.apache.hadoop.yarn.util.StringHelper.djoin;
 import static org.apache.hadoop.yarn.util.StringHelper.join;
 import static org.apache.hadoop.yarn.util.StringHelper.pjoin;
@@ -31,14 +31,14 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.CharMatcher;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.base.CharMatcher;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 /**
  * Manages path info to controller#action routing.
@@ -74,17 +74,32 @@ class Router {
 
   final TreeMap<String, Dest> routes = Maps.newTreeMap(); // path->dest
 
+  synchronized Dest add(WebApp.HTTP httpMethod, String path,
+                        Class<? extends Controller> cls,
+                        String action, List<String> names){
+    return addWithOptionalDefaultView(
+        httpMethod, path, cls, action, names, true);
+  }
+
+  synchronized Dest addWithoutDefaultView(WebApp.HTTP httpMethod,
+      String path, Class<? extends Controller> cls, String action,
+      List<String> names){
+    return addWithOptionalDefaultView(httpMethod, path, cls, action,
+        names, false);
+  }
   /**
    * Add a route to the router.
    * e.g., add(GET, "/foo/show", FooController.class, "show", [name...]);
    * The name list is from /foo/show/:name/...
    */
-  synchronized Dest add(WebApp.HTTP httpMethod, String path,
-                        Class<? extends Controller> cls,
-                        String action, List<String> names) {
+  synchronized Dest addWithOptionalDefaultView(WebApp.HTTP httpMethod,
+      String path, Class<? extends Controller> cls,
+      String action, List<String> names, boolean defaultViewNeeded) {
     LOG.debug("adding {}({})->{}#{}", new Object[]{path, names, cls, action});
     Dest dest = addController(httpMethod, path, cls, action, names);
-    addDefaultView(dest);
+    if (defaultViewNeeded) {
+      addDefaultView(dest);
+    }
     return dest;
   }
 

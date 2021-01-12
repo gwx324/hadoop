@@ -18,12 +18,15 @@
 
 package org.apache.hadoop.mapreduce.v2.app;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.concurrent.atomic.AtomicReference;
 
+import java.util.function.Supplier;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.TaskCompletionEvent;
 import org.apache.hadoop.mapreduce.Counters;
@@ -45,6 +48,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.JobTaskAttemptFetchFailureEv
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptEventType;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptStatusUpdateEvent;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.junit.Assert;
 import org.junit.Test;
@@ -79,8 +83,19 @@ public class TestFetchFailure {
     
     // wait for map success
     app.waitForState(mapTask, TaskState.SUCCEEDED);
-    
-    TaskAttemptCompletionEvent[] events = 
+
+    final int checkIntervalMillis = 10;
+    final int waitForMillis = 800;
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        TaskAttemptCompletionEvent[] events = job
+            .getTaskAttemptCompletionEvents(0, 100);
+        return events.length >= 1;
+      }
+    }, checkIntervalMillis, waitForMillis);
+
+    TaskAttemptCompletionEvent[] events =
       job.getTaskAttemptCompletionEvents(0, 100);
     Assert.assertEquals("Num completion events not correct",
         1, events.length);
@@ -342,8 +357,8 @@ public class TestFetchFailure {
     Assert.assertEquals("Map TaskAttempt state not correct",
         TaskAttemptState.FAILED, mapAttempt1.getState());
 
-    Assert.assertEquals(mapAttempt1.getDiagnostics().get(0),
-            "Too many fetch failures. Failing the attempt. "
+    assertThat(mapAttempt1.getDiagnostics().get(0))
+        .isEqualTo("Too many fetch failures. Failing the attempt. "
             + "Last failure reported by "
             + reduceAttempt3.getID().toString() + " from host host3");
 
@@ -429,7 +444,7 @@ public class TestFetchFailure {
     status.stateString = "OK";
     status.taskState = attempt.getState();
     TaskAttemptStatusUpdateEvent event = new TaskAttemptStatusUpdateEvent(attempt.getID(),
-        status);
+        new AtomicReference<>(status));
     app.getContext().getEventHandler().handle(event);
   }
 

@@ -30,8 +30,6 @@ import java.text.SimpleDateFormat;
 import java.util.Collection;
 import java.util.Date;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -39,6 +37,10 @@ import org.apache.hadoop.fs.Options.Rename;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.util.Time;
+
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Provides a <i>trash</i> feature.  Files are moved to a user's trash
  * directory, a subdirectory of their home directory named ".Trash".  Files are
@@ -52,8 +54,8 @@ import org.apache.hadoop.util.Time;
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
 public class TrashPolicyDefault extends TrashPolicy {
-  private static final Log LOG =
-    LogFactory.getLog(TrashPolicyDefault.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TrashPolicyDefault.class);
 
   private static final Path CURRENT = new Path("Current");
 
@@ -75,7 +77,11 @@ public class TrashPolicyDefault extends TrashPolicy {
     initialize(conf, fs);
   }
 
+  /**
+   * @deprecated Use {@link #initialize(Configuration, FileSystem)} instead.
+   */
   @Override
+  @Deprecated
   public void initialize(Configuration conf, FileSystem fs, Path home) {
     this.fs = fs;
     this.deletionInterval = (long)(conf.getFloat(
@@ -95,6 +101,12 @@ public class TrashPolicyDefault extends TrashPolicy {
     this.emptierInterval = (long)(conf.getFloat(
         FS_TRASH_CHECKPOINT_INTERVAL_KEY, FS_TRASH_CHECKPOINT_INTERVAL_DEFAULT)
         * MSECS_PER_MINUTE);
+    if (deletionInterval < 0) {
+      LOG.warn("Invalid value {} for deletion interval,"
+          + " deletion interaval can not be negative."
+          + "Changing to default value 0", deletionInterval);
+      this.deletionInterval = 0;
+    }
   }
 
   private Path makeTrashRelativePath(Path basePath, Path rmFilePath) {
@@ -103,9 +115,10 @@ public class TrashPolicyDefault extends TrashPolicy {
 
   @Override
   public boolean isEnabled() {
-    return deletionInterval != 0;
+    return deletionInterval > 0;
   }
 
+  @SuppressWarnings("deprecation")
   @Override
   public boolean moveToTrash(Path path) throws IOException {
     if (!isEnabled())
@@ -114,9 +127,8 @@ public class TrashPolicyDefault extends TrashPolicy {
     if (!path.isAbsolute())                       // make path absolute
       path = new Path(fs.getWorkingDirectory(), path);
 
-    if (!fs.exists(path))                         // check that path exists
-      throw new FileNotFoundException(path.toString());
-
+    // check that path exists
+    fs.getFileStatus(path);
     String qpath = fs.makeQualified(path).toString();
 
     Path trashRoot = fs.getTrashRoot(path);
@@ -142,6 +154,20 @@ public class TrashPolicyDefault extends TrashPolicy {
           LOG.warn("Can't create(mkdir) trash directory: " + baseTrashPath);
           return false;
         }
+      } catch (FileAlreadyExistsException e) {
+        // find the path which is not a directory, and modify baseTrashPath
+        // & trashPath, then mkdirs
+        Path existsFilePath = baseTrashPath;
+        while (!fs.exists(existsFilePath)) {
+          existsFilePath = existsFilePath.getParent();
+        }
+        baseTrashPath = new Path(baseTrashPath.toString().replace(
+            existsFilePath.toString(), existsFilePath.toString() + Time.now())
+        );
+        trashPath = new Path(baseTrashPath, trashPath.getName());
+        // retry, ignore current failure
+        --i;
+        continue;
       } catch (IOException e) {
         LOG.warn("Can't create trash directory: " + baseTrashPath, e);
         cause = e;
@@ -156,10 +182,11 @@ public class TrashPolicyDefault extends TrashPolicy {
           trashPath = new Path(orig + Time.now());
         }
         
-        if (fs.rename(path, trashPath)) {           // move to current trash
-          LOG.info("Moved: '" + path + "' to trash at: " + trashPath);
-          return true;
-        }
+        // move to current trash
+        fs.rename(path, trashPath,
+            Rename.TO_TRASH);
+        LOG.info("Moved: '" + path + "' to trash at: " + trashPath);
+        return true;
       } catch (IOException e) {
         cause = e;
       }
@@ -186,11 +213,20 @@ public class TrashPolicyDefault extends TrashPolicy {
 
   @Override
   public void deleteCheckpoint() throws IOException {
+    deleteCheckpoint(false);
+  }
+
+  @Override
+  public void deleteCheckpointsImmediately() throws IOException {
+    deleteCheckpoint(true);
+  }
+
+  private void deleteCheckpoint(boolean deleteImmediately) throws IOException {
     Collection<FileStatus> trashRoots = fs.getTrashRoots(false);
     for (FileStatus trashRoot : trashRoots) {
       LOG.info("TrashPolicyDefault#deleteCheckpoint for trashRoot: " +
           trashRoot.getPath());
-      deleteCheckpoint(trashRoot.getPath());
+      deleteCheckpoint(trashRoot.getPath(), deleteImmediately);
     }
   }
 
@@ -209,7 +245,7 @@ public class TrashPolicyDefault extends TrashPolicy {
     return new Emptier(getConf(), emptierInterval);
   }
 
-  private class Emptier implements Runnable {
+  protected class Emptier implements Runnable {
 
     private Configuration conf;
     private long emptierInterval;
@@ -217,7 +253,7 @@ public class TrashPolicyDefault extends TrashPolicy {
     Emptier(Configuration conf, long emptierInterval) throws IOException {
       this.conf = conf;
       this.emptierInterval = emptierInterval;
-      if (emptierInterval > deletionInterval || emptierInterval == 0) {
+      if (emptierInterval > deletionInterval || emptierInterval <= 0) {
         LOG.info("The configured checkpoint interval is " +
                  (emptierInterval / MSECS_PER_MINUTE) + " minutes." +
                  " Using an interval of " +
@@ -228,16 +264,16 @@ public class TrashPolicyDefault extends TrashPolicy {
       LOG.info("Namenode trash configuration: Deletion interval = "
           + (deletionInterval / MSECS_PER_MINUTE)
           + " minutes, Emptier interval = "
-          + (emptierInterval / MSECS_PER_MINUTE) + " minutes.");
+          + (this.emptierInterval / MSECS_PER_MINUTE) + " minutes.");
     }
 
     @Override
     public void run() {
       if (emptierInterval == 0)
         return;                                   // trash disabled
-      long now = Time.now();
-      long end;
+      long now, end;
       while (true) {
+        now = Time.now();
         end = ceiling(now, emptierInterval);
         try {                                     // sleep for interval
           Thread.sleep(end - now);
@@ -256,7 +292,7 @@ public class TrashPolicyDefault extends TrashPolicy {
                 continue;
               try {
                 TrashPolicyDefault trash = new TrashPolicyDefault(fs, conf);
-                trash.deleteCheckpoint(trashRoot.getPath());
+                trash.deleteCheckpoint(trashRoot.getPath(), false);
                 trash.createCheckpoint(trashRoot.getPath(), new Date(now));
               } catch (IOException e) {
                 LOG.warn("Trash caught: "+e+". Skipping " +
@@ -280,6 +316,11 @@ public class TrashPolicyDefault extends TrashPolicy {
     }
     private long floor(long time, long interval) {
       return (time / interval) * interval;
+    }
+
+    @VisibleForTesting
+    protected long getEmptierInterval() {
+      return this.emptierInterval/MSECS_PER_MINUTE;
     }
   }
 
@@ -309,7 +350,8 @@ public class TrashPolicyDefault extends TrashPolicy {
     }
   }
 
-  private void deleteCheckpoint(Path trashRoot) throws IOException {
+  private void deleteCheckpoint(Path trashRoot, boolean deleteImmediately)
+      throws IOException {
     LOG.info("TrashPolicyDefault#deleteCheckpoint for trashRoot: " + trashRoot);
 
     FileStatus[] dirs = null;
@@ -336,7 +378,7 @@ public class TrashPolicyDefault extends TrashPolicy {
         continue;
       }
 
-      if ((now - deletionInterval) > time) {
+      if (((now - deletionInterval) > time) || deleteImmediately) {
         if (fs.delete(path, true)) {
           LOG.info("Deleted trash checkpoint: "+dir);
         } else {

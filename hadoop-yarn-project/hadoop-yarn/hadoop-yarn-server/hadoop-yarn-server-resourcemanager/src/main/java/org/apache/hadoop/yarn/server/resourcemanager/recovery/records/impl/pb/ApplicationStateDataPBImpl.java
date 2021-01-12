@@ -18,18 +18,26 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb;
 
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
 import org.apache.hadoop.ipc.CallerContext;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+import org.apache.hadoop.yarn.api.records.ApplicationTimeoutType;
 import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationSubmissionContextPBImpl;
+import org.apache.hadoop.yarn.api.records.impl.pb.ProtoUtils;
+import org.apache.hadoop.yarn.proto.YarnProtos.ApplicationTimeoutMapProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProtoOrBuilder;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.RMAppStateProto;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 
-import com.google.protobuf.ByteString;
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 
 public class ApplicationStateDataPBImpl extends ApplicationStateData {
   ApplicationStateDataProto proto = 
@@ -38,6 +46,7 @@ public class ApplicationStateDataPBImpl extends ApplicationStateData {
   boolean viaProto = false;
   
   private ApplicationSubmissionContext applicationSubmissionContext = null;
+  private Map<ApplicationTimeoutType, Long> applicationTimeouts = null;
   
   public ApplicationStateDataPBImpl() {
     builder = ApplicationStateDataProto.newBuilder();
@@ -62,6 +71,10 @@ public class ApplicationStateDataPBImpl extends ApplicationStateData {
       builder.setApplicationSubmissionContext(
           ((ApplicationSubmissionContextPBImpl)applicationSubmissionContext)
           .getProto());
+    }
+
+    if (this.applicationTimeouts != null) {
+      addApplicationTimeouts();
     }
   }
 
@@ -105,6 +118,19 @@ public class ApplicationStateDataPBImpl extends ApplicationStateData {
   public void setStartTime(long startTime) {
     maybeInitBuilder();
     builder.setStartTime(startTime);
+  }
+
+
+  @Override
+  public long getLaunchTime() {
+    ApplicationStateDataProtoOrBuilder p = viaProto ? proto : builder;
+    return p.getLaunchTime();
+  }
+
+  @Override
+  public void setLaunchTime(long launchTime) {
+    maybeInitBuilder();
+    builder.setLaunchTime(launchTime);
   }
 
   @Override
@@ -233,14 +259,17 @@ public class ApplicationStateDataPBImpl extends ApplicationStateData {
 
       RpcHeaderProtos.RPCCallerContextProto.Builder b = RpcHeaderProtos.RPCCallerContextProto
           .newBuilder();
-      if (callerContext.getContext() != null) {
+      if (callerContext.isContextValid()) {
         b.setContext(callerContext.getContext());
       }
       if (callerContext.getSignature() != null) {
         b.setSignature(ByteString.copyFrom(callerContext.getSignature()));
       }
 
-      builder.setCallerContext(b);
+      if(callerContext.isContextValid()
+          || callerContext.getSignature() != null) {
+        builder.setCallerContext(b);
+      }
     }
   }
 
@@ -255,5 +284,78 @@ public class ApplicationStateDataPBImpl extends ApplicationStateData {
   }
   public static RMAppState convertFromProtoFormat(RMAppStateProto e) {
     return RMAppState.valueOf(e.name().replace(RM_APP_PREFIX, ""));
+  }
+
+  @Override
+  public Map<ApplicationTimeoutType, Long> getApplicationTimeouts() {
+    initApplicationTimeout();
+    return this.applicationTimeouts;
+  }
+
+  private void initApplicationTimeout() {
+    if (this.applicationTimeouts != null) {
+      return;
+    }
+    ApplicationStateDataProtoOrBuilder p = viaProto ? proto : builder;
+    List<ApplicationTimeoutMapProto> lists = p.getApplicationTimeoutsList();
+    this.applicationTimeouts =
+        new HashMap<ApplicationTimeoutType, Long>(lists.size());
+    for (ApplicationTimeoutMapProto timeoutProto : lists) {
+      this.applicationTimeouts.put(
+          ProtoUtils
+              .convertFromProtoFormat(timeoutProto.getApplicationTimeoutType()),
+          timeoutProto.getTimeout());
+    }
+  }
+
+  @Override
+  public void setApplicationTimeouts(
+      Map<ApplicationTimeoutType, Long> appTimeouts) {
+    if (appTimeouts == null) {
+      return;
+    }
+    initApplicationTimeout();
+    this.applicationTimeouts.clear();
+    this.applicationTimeouts.putAll(appTimeouts);
+  }
+
+  private void addApplicationTimeouts() {
+    maybeInitBuilder();
+    builder.clearApplicationTimeouts();
+    if (applicationTimeouts == null) {
+      return;
+    }
+    Iterable<? extends ApplicationTimeoutMapProto> values =
+        new Iterable<ApplicationTimeoutMapProto>() {
+
+          @Override
+          public Iterator<ApplicationTimeoutMapProto> iterator() {
+            return new Iterator<ApplicationTimeoutMapProto>() {
+              private Iterator<ApplicationTimeoutType> iterator =
+                  applicationTimeouts.keySet().iterator();
+
+              @Override
+              public boolean hasNext() {
+                return iterator.hasNext();
+              }
+
+              @Override
+              public ApplicationTimeoutMapProto next() {
+                ApplicationTimeoutType key = iterator.next();
+                return ApplicationTimeoutMapProto.newBuilder()
+                    .setTimeout(applicationTimeouts.get(key))
+                    .setApplicationTimeoutType(
+                        ProtoUtils.convertToProtoFormat(key))
+                    .build();
+              }
+
+              @Override
+              public void remove() {
+                throw new UnsupportedOperationException();
+              }
+            };
+          }
+        };
+    this.builder.addAllApplicationTimeouts(values);
   }
 }

@@ -23,15 +23,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedList;
 
-import org.apache.commons.lang.WordUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.shell.Command;
 import org.apache.hadoop.fs.shell.CommandFactory;
 import org.apache.hadoop.fs.shell.FsCommand;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.tools.TableListing;
 import org.apache.hadoop.tracing.TraceUtils;
 import org.apache.hadoop.util.StringUtils;
@@ -39,12 +37,14 @@ import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.htrace.core.TraceScope;
 import org.apache.htrace.core.Tracer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Provide command line access to a FileSystem. */
 @InterfaceAudience.Private
 public class FsShell extends Configured implements Tool {
   
-  static final Log LOG = LogFactory.getLog(FsShell.class);
+  static final Logger LOG = LoggerFactory.getLogger(FsShell.class);
 
   private static final int MAX_LINE_WIDTH = 80;
 
@@ -97,8 +97,9 @@ public class FsShell extends Configured implements Tool {
     return this.help;
   }
   
-  protected void init() throws IOException {
+  protected void init() {
     getConf().setQuietMode(true);
+    UserGroupInformation.setConfiguration(getConf());
     if (commandFactory == null) {
       commandFactory = new CommandFactory(getConf());
       commandFactory.addObject(new Help(), "-help");
@@ -273,7 +274,7 @@ public class FsShell extends Configured implements Tool {
         listing = null;
       }
 
-      for (String descLine : WordUtils.wrap(
+      for (String descLine : StringUtils.wrap(
           line, MAX_LINE_WIDTH, "\n", true).split("\n")) {
         out.println(prefix + descLine);
       }
@@ -297,7 +298,7 @@ public class FsShell extends Configured implements Tool {
    * run
    */
   @Override
-  public int run(String argv[]) throws Exception {
+  public int run(String[] argv) {
     // initialize FsShell
     init();
     Tracer tracer = new Tracer.Builder("FsShell").
@@ -328,7 +329,12 @@ public class FsShell extends Configured implements Tool {
           scope.close();
         }
       } catch (IllegalArgumentException e) {
-        displayError(cmd, e.getLocalizedMessage());
+        if (e.getMessage() == null) {
+          displayError(cmd, "Null exception message");
+          e.printStackTrace(System.err);
+        } else {
+          displayError(cmd, e.getLocalizedMessage());
+        }
         printUsage(System.err);
         if (instance != null) {
           printInstanceUsage(System.err, instance);

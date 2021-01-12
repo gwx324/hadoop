@@ -18,6 +18,9 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.resourcetracker;
 
+import static org.apache.hadoop.yarn.server.resourcemanager.MockNM.createMockNodeStatus;
+
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import org.apache.hadoop.conf.Configuration;
@@ -28,7 +31,6 @@ import org.apache.hadoop.yarn.conf.ConfigurationProvider;
 import org.apache.hadoop.yarn.conf.ConfigurationProviderFactory;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.Dispatcher;
-import org.apache.hadoop.yarn.event.DrainDispatcher;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.event.InlineDispatcher;
 import org.apache.hadoop.yarn.factories.RecordFactory;
@@ -36,6 +38,7 @@ import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RegisterNodeManagerRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RegisterNodeManagerResponse;
 import org.apache.hadoop.yarn.server.api.records.NodeAction;
+import org.apache.hadoop.yarn.server.api.records.NodeStatus;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
 import org.apache.hadoop.yarn.server.resourcemanager.ParameterizedSchedulerTestBase;
@@ -70,6 +73,10 @@ public class TestNMReconnect extends ParameterizedSchedulerTestBase {
   private List<RMNodeEvent> rmNodeEvents = new ArrayList<RMNodeEvent>();
   private Dispatcher dispatcher;
   private RMContextImpl context;
+
+  public TestNMReconnect(SchedulerType type) throws IOException {
+    super(type);
+  }
 
   private class TestRMNodeEventDispatcher implements
       EventHandler<RMNodeEvent> {
@@ -174,9 +181,13 @@ public class TestNMReconnect extends ParameterizedSchedulerTestBase {
     RegisterNodeManagerRequest request1 = recordFactory
         .newRecordInstance(RegisterNodeManagerRequest.class);
     NodeId nodeId1 = NodeId.newInstance(hostname1, 0);
+
+    NodeStatus mockNodeStatus = createMockNodeStatus();
+
     request1.setNodeId(nodeId1);
     request1.setHttpPort(0);
     request1.setResource(capability);
+    request1.setNodeStatus(mockNodeStatus);
     resourceTrackerService.registerNodeManager(request1);
     Assert.assertNotNull(context.getRMNodes().get(nodeId1));
     // verify Scheduler and RMContext use same RMNode reference.
@@ -210,8 +221,6 @@ public class TestNMReconnect extends ParameterizedSchedulerTestBase {
     nm1.registerNode();
     rm.waitForState(nm1.getNodeId(), NodeState.RUNNING);
 
-    rm.getRMContext().getNodesListManager().getHostsReader().
-        getExcludedHosts().add("127.0.0.1");
     rm.getRMContext().getDispatcher().getEventHandler().handle(
         new RMNodeEvent(nm1.getNodeId(),
             RMNodeEventType.GRACEFUL_DECOMMISSION));
@@ -230,21 +239,16 @@ public class TestNMReconnect extends ParameterizedSchedulerTestBase {
     // The node(127.0.0.1:1234) reconnected with RM. When it registered with
     // RM, RM set its lastNodeHeartbeatResponse's id to 0 asynchronously. But
     // the node's heartbeat come before RM succeeded setting the id to 0.
-    final DrainDispatcher dispatcher = new DrainDispatcher();
-    MockRM rm = new MockRM(){
-      @Override
-      protected Dispatcher createDispatcher() {
-        return dispatcher;
-      }
-    };
+    MockRM rm = new MockRM();
     rm.start();
+
     MockNM nm1 =
         new MockNM("127.0.0.1:1234", 15120, rm.getResourceTrackerService());
     nm1.registerNode();
     int i = 0;
     while(i < 3) {
       nm1.nodeHeartbeat(true);
-      dispatcher.await();
+      rm.drainEvents();
       i++;
     }
 
@@ -253,7 +257,7 @@ public class TestNMReconnect extends ParameterizedSchedulerTestBase {
     nm2.registerNode();
     RMNode rmNode = rm.getRMContext().getRMNodes().get(nm2.getNodeId());
     nm2.nodeHeartbeat(true);
-    dispatcher.await();
+    rm.drainEvents();
     Assert.assertEquals("Node is Not in Running state.", NodeState.RUNNING,
         rmNode.getState());
     rm.stop();

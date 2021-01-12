@@ -26,9 +26,9 @@ import java.nio.ByteOrder;
 import java.util.EnumSet;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.ByteBufferPositionedReadable;
 import org.apache.hadoop.fs.ByteBufferReadable;
+import org.apache.hadoop.fs.CanUnbuffer;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FSExceptionMessages;
 import org.apache.hadoop.fs.HasEnhancedByteBufferAccess;
@@ -43,15 +43,19 @@ import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public abstract class CryptoStreamsTestBase {
-  protected static final Log LOG = LogFactory.getLog(
+  protected static final Logger LOG = LoggerFactory.getLogger(
       CryptoStreamsTestBase.class);
 
   protected static CryptoCodec codec;
-  private static final byte[] key = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 
+  protected static final byte[] key = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
     0x07, 0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16};
-  private static final byte[] iv = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 
+  protected static final byte[] iv = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
     0x07, 0x08, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
   
   protected static final int count = 10000;
@@ -102,7 +106,58 @@ public abstract class CryptoStreamsTestBase {
     
     return total;
   }
-  
+
+  private int preadAll(PositionedReadable in, byte[] b, int off, int len)
+      throws IOException {
+    int n = 0;
+    int total = 0;
+    while (n != -1) {
+      total += n;
+      if (total >= len) {
+        break;
+      }
+      n = in.read(total, b, off + total, len - total);
+    }
+
+    return total;
+  }
+
+  private void preadCheck(PositionedReadable in) throws Exception {
+    byte[] result = new byte[dataLen];
+    int n = preadAll(in, result, 0, dataLen);
+
+    Assert.assertEquals(dataLen, n);
+    byte[] expectedData = new byte[n];
+    System.arraycopy(data, 0, expectedData, 0, n);
+    Assert.assertArrayEquals(result, expectedData);
+  }
+
+  private int byteBufferPreadAll(ByteBufferPositionedReadable in,
+                                 ByteBuffer buf) throws IOException {
+    int n = 0;
+    int total = 0;
+    while (n != -1) {
+      total += n;
+      if (!buf.hasRemaining()) {
+        break;
+      }
+      n = in.read(total, buf);
+    }
+
+    return total;
+  }
+
+  private void byteBufferPreadCheck(ByteBufferPositionedReadable in)
+          throws Exception {
+    ByteBuffer result = ByteBuffer.allocate(dataLen);
+    int n = byteBufferPreadAll(in, result);
+
+    Assert.assertEquals(dataLen, n);
+    ByteBuffer expectedData = ByteBuffer.allocate(n);
+    expectedData.put(data, 0, n);
+    Assert.assertArrayEquals(result.array(), expectedData.array());
+  }
+
   protected OutputStream getOutputStream(int bufferSize) throws IOException {
     return getOutputStream(bufferSize, key, iv);
   }
@@ -145,8 +200,7 @@ public abstract class CryptoStreamsTestBase {
     
     // EOF
     n = in.read(result, 0, dataLen);
-    Assert.assertEquals(n, -1);
-    in.close();
+    assertThat(n).isEqualTo(-1);
   }
   
   /** Test crypto writing with different buffer size. */
@@ -263,20 +317,36 @@ public abstract class CryptoStreamsTestBase {
     
     return total;
   }
+
+  private int readAll(InputStream in, long pos, ByteBuffer buf)
+      throws IOException {
+    int n = 0;
+    int total = 0;
+    while (n != -1) {
+      total += n;
+      if (!buf.hasRemaining()) {
+        break;
+      }
+      n = ((ByteBufferPositionedReadable) in).read(pos + total, buf);
+    }
+
+    return total;
+  }
   
   /** Test positioned read. */
   @Test(timeout=120000)
   public void testPositionedRead() throws Exception {
-    OutputStream out = getOutputStream(defaultBufferSize);
-    writeData(out);
+    try (OutputStream out = getOutputStream(defaultBufferSize)) {
+      writeData(out);
+    }
     
-    InputStream in = getInputStream(defaultBufferSize);
-    // Pos: 1/3 dataLen
-    positionedReadCheck(in , dataLen / 3);
+    try (InputStream in = getInputStream(defaultBufferSize)) {
+      // Pos: 1/3 dataLen
+      positionedReadCheck(in, dataLen / 3);
 
-    // Pos: 1/2 dataLen
-    positionedReadCheck(in, dataLen / 2);
-    in.close();
+      // Pos: 1/2 dataLen
+      positionedReadCheck(in, dataLen / 2);
+    }
   }
   
   private void positionedReadCheck(InputStream in, int pos) throws Exception {
@@ -290,43 +360,71 @@ public abstract class CryptoStreamsTestBase {
     System.arraycopy(data, pos, expectedData, 0, n);
     Assert.assertArrayEquals(readData, expectedData);
   }
+
+  /** Test positioned read with ByteBuffers. */
+  @Test(timeout=120000)
+  public void testPositionedReadWithByteBuffer() throws Exception {
+    try (OutputStream out = getOutputStream(defaultBufferSize)) {
+      writeData(out);
+    }
+
+    try (InputStream in = getInputStream(defaultBufferSize)) {
+      // Pos: 1/3 dataLen
+      positionedReadCheckWithByteBuffer(in, dataLen / 3);
+
+      // Pos: 1/2 dataLen
+      positionedReadCheckWithByteBuffer(in, dataLen / 2);
+    }
+  }
+
+  private void positionedReadCheckWithByteBuffer(InputStream in, int pos)
+          throws Exception {
+    ByteBuffer result = ByteBuffer.allocate(dataLen);
+    int n = readAll(in, pos, result);
+
+    Assert.assertEquals(dataLen, n + pos);
+    byte[] readData = new byte[n];
+    System.arraycopy(result.array(), 0, readData, 0, n);
+    byte[] expectedData = new byte[n];
+    System.arraycopy(data, pos, expectedData, 0, n);
+    Assert.assertArrayEquals(readData, expectedData);
+  }
   
-  /** Test read fully */
+  /** Test read fully. */
   @Test(timeout=120000)
   public void testReadFully() throws Exception {
     OutputStream out = getOutputStream(defaultBufferSize);
     writeData(out);
     
-    InputStream in = getInputStream(defaultBufferSize);
-    final int len1 = dataLen / 4;
-    // Read len1 bytes
-    byte[] readData = new byte[len1];
-    readAll(in, readData, 0, len1);
-    byte[] expectedData = new byte[len1];
-    System.arraycopy(data, 0, expectedData, 0, len1);
-    Assert.assertArrayEquals(readData, expectedData);
-    
-    // Pos: 1/3 dataLen
-    readFullyCheck(in, dataLen / 3);
-    
-    // Read len1 bytes
-    readData = new byte[len1];
-    readAll(in, readData, 0, len1);
-    expectedData = new byte[len1];
-    System.arraycopy(data, len1, expectedData, 0, len1);
-    Assert.assertArrayEquals(readData, expectedData);
-    
-    // Pos: 1/2 dataLen
-    readFullyCheck(in, dataLen / 2);
-    
-    // Read len1 bytes
-    readData = new byte[len1];
-    readAll(in, readData, 0, len1);
-    expectedData = new byte[len1];
-    System.arraycopy(data, 2 * len1, expectedData, 0, len1);
-    Assert.assertArrayEquals(readData, expectedData);
-    
-    in.close();
+    try (InputStream in = getInputStream(defaultBufferSize)) {
+      final int len1 = dataLen / 4;
+      // Read len1 bytes
+      byte[] readData = new byte[len1];
+      readAll(in, readData, 0, len1);
+      byte[] expectedData = new byte[len1];
+      System.arraycopy(data, 0, expectedData, 0, len1);
+      Assert.assertArrayEquals(readData, expectedData);
+
+      // Pos: 1/3 dataLen
+      readFullyCheck(in, dataLen / 3);
+
+      // Read len1 bytes
+      readData = new byte[len1];
+      readAll(in, readData, 0, len1);
+      expectedData = new byte[len1];
+      System.arraycopy(data, len1, expectedData, 0, len1);
+      Assert.assertArrayEquals(readData, expectedData);
+
+      // Pos: 1/2 dataLen
+      readFullyCheck(in, dataLen / 2);
+
+      // Read len1 bytes
+      readData = new byte[len1];
+      readAll(in, readData, 0, len1);
+      expectedData = new byte[len1];
+      System.arraycopy(data, 2 * len1, expectedData, 0, len1);
+      Assert.assertArrayEquals(readData, expectedData);
+    }
   }
   
   private void readFullyCheck(InputStream in, int pos) throws Exception {
@@ -340,6 +438,60 @@ public abstract class CryptoStreamsTestBase {
     result = new byte[dataLen]; // Exceeds maximum length 
     try {
       ((PositionedReadable) in).readFully(pos, result);
+      Assert.fail("Read fully exceeds maximum length should fail.");
+    } catch (EOFException e) {
+    }
+  }
+
+  /** Test byte byffer read fully. */
+  @Test(timeout=120000)
+  public void testByteBufferReadFully() throws Exception {
+    OutputStream out = getOutputStream(defaultBufferSize);
+    writeData(out);
+
+    try (InputStream in = getInputStream(defaultBufferSize)) {
+      final int len1 = dataLen / 4;
+      // Read len1 bytes
+      byte[] readData = new byte[len1];
+      readAll(in, readData, 0, len1);
+      byte[] expectedData = new byte[len1];
+      System.arraycopy(data, 0, expectedData, 0, len1);
+      Assert.assertArrayEquals(readData, expectedData);
+
+      // Pos: 1/3 dataLen
+      byteBufferReadFullyCheck(in, dataLen / 3);
+
+      // Read len1 bytes
+      readData = new byte[len1];
+      readAll(in, readData, 0, len1);
+      expectedData = new byte[len1];
+      System.arraycopy(data, len1, expectedData, 0, len1);
+      Assert.assertArrayEquals(readData, expectedData);
+
+      // Pos: 1/2 dataLen
+      byteBufferReadFullyCheck(in, dataLen / 2);
+
+      // Read len1 bytes
+      readData = new byte[len1];
+      readAll(in, readData, 0, len1);
+      expectedData = new byte[len1];
+      System.arraycopy(data, 2 * len1, expectedData, 0, len1);
+      Assert.assertArrayEquals(readData, expectedData);
+    }
+  }
+
+  private void byteBufferReadFullyCheck(InputStream in, int pos)
+          throws Exception {
+    ByteBuffer result = ByteBuffer.allocate(dataLen - pos);
+    ((ByteBufferPositionedReadable) in).readFully(pos, result);
+
+    byte[] expectedData = new byte[dataLen - pos];
+    System.arraycopy(data, pos, expectedData, 0, dataLen - pos);
+    Assert.assertArrayEquals(result.array(), expectedData);
+
+    result = ByteBuffer.allocate(dataLen); // Exceeds maximum length
+    try {
+      ((ByteBufferPositionedReadable) in).readFully(pos, result);
       Assert.fail("Read fully exceeds maximum length should fail.");
     } catch (EOFException e) {
     }
@@ -462,7 +614,7 @@ public abstract class CryptoStreamsTestBase {
     
     // Skip after EOF
     skipped = in.skip(3);
-    Assert.assertEquals(skipped, 0);
+    assertThat(skipped).isZero();
     
     in.close();
   }
@@ -480,12 +632,40 @@ public abstract class CryptoStreamsTestBase {
     System.arraycopy(data, 0, expectedData, 0, n);
     Assert.assertArrayEquals(readData, expectedData);
   }
+
+  private void byteBufferPreadCheck(InputStream in, ByteBuffer buf,
+      int bufPos) throws Exception {
+    // Test reading from position 0
+    buf.position(bufPos);
+    int n = ((ByteBufferPositionedReadable) in).read(0, buf);
+    Assert.assertEquals(bufPos + n, buf.position());
+    byte[] readData = new byte[n];
+    buf.rewind();
+    buf.position(bufPos);
+    buf.get(readData);
+    byte[] expectedData = new byte[n];
+    System.arraycopy(data, 0, expectedData, 0, n);
+    Assert.assertArrayEquals(readData, expectedData);
+
+    // Test reading from half way through the data
+    buf.position(bufPos);
+    n = ((ByteBufferPositionedReadable) in).read(dataLen / 2, buf);
+    Assert.assertEquals(bufPos + n, buf.position());
+    readData = new byte[n];
+    buf.rewind();
+    buf.position(bufPos);
+    buf.get(readData);
+    expectedData = new byte[n];
+    System.arraycopy(data, dataLen / 2, expectedData, 0, n);
+    Assert.assertArrayEquals(readData, expectedData);
+  }
   
   /** Test byte buffer read with different buffer size. */
   @Test(timeout=120000)
   public void testByteBufferRead() throws Exception {
-    OutputStream out = getOutputStream(defaultBufferSize);
-    writeData(out);
+    try (OutputStream out = getOutputStream(defaultBufferSize)) {
+      writeData(out);
+    }
     
     // Default buffer size, initial buffer position is 0
     InputStream in = getInputStream(defaultBufferSize);
@@ -534,6 +714,53 @@ public abstract class CryptoStreamsTestBase {
     buf.clear();
     byteBufferReadCheck(in, buf, 11);
     in.close();
+  }
+
+  /** Test byte buffer pread with different buffer size. */
+  @Test(timeout=120000)
+  public void testByteBufferPread() throws Exception {
+    try (OutputStream out = getOutputStream(defaultBufferSize)) {
+      writeData(out);
+    }
+
+    try (InputStream defaultBuf = getInputStream(defaultBufferSize);
+         InputStream smallBuf = getInputStream(smallBufferSize)) {
+
+      ByteBuffer buf = ByteBuffer.allocate(dataLen + 100);
+
+      // Default buffer size, initial buffer position is 0
+      byteBufferPreadCheck(defaultBuf, buf, 0);
+
+      // Default buffer size, initial buffer position is not 0
+      buf.clear();
+      byteBufferPreadCheck(defaultBuf, buf, 11);
+
+      // Small buffer size, initial buffer position is 0
+      buf.clear();
+      byteBufferPreadCheck(smallBuf, buf, 0);
+
+      // Small buffer size, initial buffer position is not 0
+      buf.clear();
+      byteBufferPreadCheck(smallBuf, buf, 11);
+
+      // Test with direct ByteBuffer
+      buf = ByteBuffer.allocateDirect(dataLen + 100);
+
+      // Direct buffer, default buffer size, initial buffer position is 0
+      byteBufferPreadCheck(defaultBuf, buf, 0);
+
+      // Direct buffer, default buffer size, initial buffer position is not 0
+      buf.clear();
+      byteBufferPreadCheck(defaultBuf, buf, 11);
+
+      // Direct buffer, small buffer size, initial buffer position is 0
+      buf.clear();
+      byteBufferPreadCheck(smallBuf, buf, 0);
+
+      // Direct buffer, small buffer size, initial buffer position is not 0
+      buf.clear();
+      byteBufferPreadCheck(smallBuf, buf, 11);
+    }
   }
   
   @Test(timeout=120000)
@@ -619,7 +846,7 @@ public abstract class CryptoStreamsTestBase {
     ((Seekable) in).seek(dataLen);
     buf.clear();
     n = ((ByteBufferReadable) in).read(buf);
-    Assert.assertEquals(n, -1);
+    assertThat(n).isEqualTo(-1);
     
     in.close();
   }
@@ -729,5 +956,66 @@ public abstract class CryptoStreamsTestBase {
     ((HasEnhancedByteBufferAccess) in).releaseBuffer(buffer);
     
     in.close();
+  }
+
+  /** Test unbuffer. */
+  @Test(timeout=120000)
+  public void testUnbuffer() throws Exception {
+    OutputStream out = getOutputStream(smallBufferSize);
+    writeData(out);
+
+    // Test buffered read
+    try (InputStream in = getInputStream(smallBufferSize)) {
+      // Test unbuffer after buffered read
+      readCheck(in);
+      ((CanUnbuffer) in).unbuffer();
+
+      if (in instanceof Seekable) {
+        // Test buffered read again after unbuffer
+        // Must seek to the beginning first
+        ((Seekable) in).seek(0);
+        readCheck(in);
+      }
+
+      // Test close after unbuffer
+      ((CanUnbuffer) in).unbuffer();
+      // The close will be called when exiting this try-with-resource block
+    }
+
+    // Test pread
+    try (InputStream in = getInputStream(smallBufferSize)) {
+      if (in instanceof PositionedReadable) {
+        PositionedReadable pin = (PositionedReadable) in;
+
+        // Test unbuffer after pread
+        preadCheck(pin);
+        ((CanUnbuffer) in).unbuffer();
+
+        // Test pread again after unbuffer
+        preadCheck(pin);
+
+        // Test close after unbuffer
+        ((CanUnbuffer) in).unbuffer();
+        // The close will be called when exiting this try-with-resource block
+      }
+    }
+
+    // Test ByteBuffer pread
+    try (InputStream in = getInputStream(smallBufferSize)) {
+      if (in instanceof ByteBufferPositionedReadable) {
+        ByteBufferPositionedReadable bbpin = (ByteBufferPositionedReadable) in;
+
+        // Test unbuffer after pread
+        byteBufferPreadCheck(bbpin);
+        ((CanUnbuffer) in).unbuffer();
+
+        // Test pread again after unbuffer
+        byteBufferPreadCheck(bbpin);
+
+        // Test close after unbuffer
+        ((CanUnbuffer) in).unbuffer();
+        // The close will be called when exiting this try-with-resource block
+      }
+    }
   }
 }

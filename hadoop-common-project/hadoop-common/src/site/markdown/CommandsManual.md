@@ -58,8 +58,9 @@ Many subcommands honor a common set of configuration options to alter their beha
 | `-conf <configuration file> ` | Specify an application configuration file. |
 | `-D <property>=<value> ` | Use value for given property. |
 | `-files <comma separated list of files> ` | Specify comma separated files to be copied to the map reduce cluster. Applies only to job. |
+| `-fs <file:///> or <hdfs://namenode:port>` | Specify default filesystem URL to use. Overrides 'fs.defaultFS' property from configurations. |
 | `-jt <local> or <resourcemanager:port>` | Specify a ResourceManager. Applies only to job. |
-| `-libjars <comma seperated list of jars> ` | Specify comma separated jar files to include in the classpath. Applies only to job. |
+| `-libjars <comma separated list of jars> ` | Specify comma separated jar files to include in the classpath. Applies only to job. |
 
 Hadoop Common Commands
 ======================
@@ -98,6 +99,23 @@ Usage: `hadoop classpath [--glob |--jar <path> |-h |--help]`
 
 Prints the class path needed to get the Hadoop jar and the required libraries. If called without arguments, then prints the classpath set up by the command scripts, which is likely to contain wildcards in the classpath entries. Additional options print the classpath after wildcard expansion or write the classpath into the manifest of a jar file. The latter is useful in environments where wildcards cannot be used and the expanded classpath exceeds the maximum supported command line length.
 
+### `conftest`
+
+Usage: `hadoop conftest [-conffile <path>]...`
+
+| COMMAND\_OPTION | Description |
+|:---- |:---- |
+| `-conffile` | Path of a configuration file or directory to validate |
+| `-h`, `--help` | print help |
+
+Validates configuration XML files.
+If the `-conffile` option is not specified, the files in `${HADOOP_CONF_DIR}` whose name end with .xml will be verified. If specified, that path will be verified. You can specify either a file or directory, and if a directory specified, the files in that directory whose name end with `.xml` will be verified.
+You can specify `-conffile` option multiple times.
+
+The validation is fairly minimal: the XML is parsed and duplicate and empty
+property names are checked for. The command does not support XInclude; if you
+using that to pull in configuration items, it will declare the XML file invalid.
+
 ### `credential`
 
 Usage: `hadoop credential <subcommand> [options]`
@@ -107,6 +125,7 @@ Usage: `hadoop credential <subcommand> [options]`
 | create *alias* [-provider *provider-path*] [-strict] [-value *credential-value*] | Prompts the user for a credential to be stored as the given alias. The *hadoop.security.credential.provider.path* within the core-site.xml file will be used unless a `-provider` is indicated. The `-strict` flag will cause the command to fail if the provider uses a default password. Use `-value` flag to supply the credential value (a.k.a. the alias password) instead of being prompted. |
 | delete *alias* [-provider *provider-path*] [-strict] [-f] | Deletes the credential with the provided alias. The *hadoop.security.credential.provider.path* within the core-site.xml file will be used unless a `-provider` is indicated. The `-strict` flag will cause the command to fail if the provider uses a default password. The command asks for confirmation unless `-f` is specified |
 | list [-provider *provider-path*] [-strict] | Lists all of the credential aliases The *hadoop.security.credential.provider.path* within the core-site.xml file will be used unless a `-provider` is indicated. The `-strict` flag will cause the command to fail if the provider uses a default password. |
+| check *alias* [-provider *provider-path*] [-strict] | Check the password for the given alias. The *hadoop.security.credential.provider.path* within the core-site.xml file will be used unless a `-provider` is indicated. The `-strict` flag will cause the command to fail if the provider uses a default password. |
 
 Command to manage credentials, passwords and secrets within credential providers.
 
@@ -154,6 +173,7 @@ For every subcommand that connects to a service, convenience flags are provided 
 | `remove -alias` *alias* <br/>&nbsp;&nbsp; `[-format (java|protobuf)]` <br/>&nbsp;&nbsp; *filename* `[` *filename2* `...]` | From each file specified, remove the tokens matching *alias* and write out each file using specified format. <br/>  *alias* must be specified. |
 | `cancel -alias` *alias* <br/>&nbsp;&nbsp; `[-format (java|protobuf)]` <br/>&nbsp;&nbsp;  *filename* `[` *filename2* `...]` | Just like `remove`, except the tokens are also cancelled using the service specified in the token object. <br/> *alias* must be specified. |
 | `renew -alias` *alias* <br/>&nbsp;&nbsp; `[-format (java|protobuf)]` <br/>&nbsp;&nbsp;  *filename* `[` *filename2* `...]` | For each file specified, renew the tokens matching *alias* and write out each file using specified format. <br/> *alias* must be specified. |
+| `import` *base64* <br/>&nbsp;&nbsp;  `[-alias` *alias* `]` <br/>&nbsp;&nbsp; *filename* | Import a token from a base64 token. <br/> *alias* will overwrite the service field in the token. |
 
 ### `fs`
 
@@ -186,6 +206,12 @@ user name.
 
 Example: `hadoop kerbname user@EXAMPLE.COM`
 
+### `kdiag`
+
+Usage: `hadoop kdiag`
+
+Diagnose Kerberos Problems
+
 ### `key`
 
 Usage: `hadoop key <subcommand> [options]`
@@ -196,13 +222,23 @@ Usage: `hadoop key <subcommand> [options]`
 | roll *keyname* [-provider *provider*] [-strict] [-help] | Creates a new version for the specified key within the provider indicated using the `-provider` argument. The `-strict` flag will cause the command to fail if the provider uses a default password. |
 | delete *keyname* [-provider *provider*] [-strict] [-f] [-help] | Deletes all versions of the key specified by the *keyname* argument from within the provider specified by `-provider`. The `-strict` flag will cause the command to fail if the provider uses a default password. The command asks for user confirmation unless `-f` is specified. |
 | list [-provider *provider*] [-strict] [-metadata] [-help] | Displays the keynames contained within a particular provider as configured in core-site.xml or specified with the `-provider` argument. The `-strict` flag will cause the command to fail if the provider uses a default password. `-metadata` displays the metadata. |
+| check *keyname* [-provider *provider*] [-strict] [-help] | Check password of the *keyname* contained within a particular provider as configured in core-site.xml or specified with the `-provider` argument. The `-strict` flag will cause the command to fail if the provider uses a default password. |
+
 | -help | Prints usage of this command |
 
 Manage keys via the KeyProvider. For details on KeyProviders, see the [Transparent Encryption Guide](../hadoop-hdfs/TransparentEncryption.html).
 
 Providers frequently require that a password or other secret is supplied. If the provider requires a password and is unable to find one, it will use a default password and emit a warning message that the default password is being used. If the `-strict` flag is supplied, the warning message becomes an error message and the command returns immediately with an error status.
 
-NOTE: Some KeyProviders (e.g. org.apache.hadoop.crypto.key.JavaKeyStoreProvider) does not support uppercase key names.
+NOTE: Some KeyProviders (e.g. org.apache.hadoop.crypto.key.JavaKeyStoreProvider) do not support uppercase key names.
+
+NOTE: Some KeyProviders do not directly execute a key deletion (e.g. performs a soft-delete instead, or delay the actual deletion, to prevent mistake). In these cases, one may encounter errors when creating/deleting a key with the same name after deleting it. Please check the underlying KeyProvider for details.
+
+### `kms`
+
+Usage: `hadoop kms`
+
+Run KMS, the Key Management Server.
 
 ### `trace`
 
@@ -219,6 +255,12 @@ Prints the version.
 Usage: `hadoop CLASSNAME`
 
 Runs the class named `CLASSNAME`. The class must be part of a package.
+
+### `envvars`
+
+Usage: `hadoop envvars`
+
+Display computed Hadoop environment variables.
 
 Administration Commands
 -----------------------
@@ -248,17 +290,18 @@ Example:
 Note that the setting is not permanent and will be reset when the daemon is restarted.
 This command works by sending a HTTP/HTTPS request to the daemon's internal Jetty servlet, so it supports the following daemons:
 
+* Common
+    * key management server
 * HDFS
     * name node
     * secondary name node
     * data node
     * journal node
+    * HttpFS server
 * YARN
     * resource manager
     * node manager
     * Timeline server
-
-However, the command does not support KMS server, because its web interface is based on Tomcat, which does not support the servlet.
 
 
 Files

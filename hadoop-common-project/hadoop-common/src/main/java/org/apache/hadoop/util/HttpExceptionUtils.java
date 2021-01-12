@@ -19,7 +19,6 @@ package org.apache.hadoop.util;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.codehaus.jackson.map.ObjectMapper;
 
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.core.MediaType;
@@ -29,16 +28,17 @@ import java.io.InputStream;
 import java.io.Writer;
 import java.lang.reflect.Constructor;
 import java.net.HttpURLConnection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
  * HTTP utility class to help propagate server side exception to the client
  * over HTTP as a JSON payload.
- * <p/>
+ * <p>
  * It creates HTTP Servlet and JAX-RPC error responses including details of the
  * exception that allows a client to recreate the remote exception.
- * <p/>
+ * <p>
  * It parses HTTP client connections and recreates the exception.
  */
 @InterfaceAudience.Private
@@ -72,11 +72,10 @@ public class HttpExceptionUtils {
     json.put(ERROR_MESSAGE_JSON, getOneLineMessage(ex));
     json.put(ERROR_EXCEPTION_JSON, ex.getClass().getSimpleName());
     json.put(ERROR_CLASSNAME_JSON, ex.getClass().getName());
-    Map<String, Object> jsonResponse = new LinkedHashMap<String, Object>();
-    jsonResponse.put(ERROR_JSON, json);
-    ObjectMapper jsonMapper = new ObjectMapper();
+    Map<String, Object> jsonResponse =
+        Collections.singletonMap(ERROR_JSON, json);
     Writer writer = response.getWriter();
-    jsonMapper.writerWithDefaultPrettyPrinter().writeValue(writer, jsonResponse);
+    JsonSerialization.writer().writeValue(writer, jsonResponse);
     writer.flush();
   }
 
@@ -93,8 +92,7 @@ public class HttpExceptionUtils {
     json.put(ERROR_MESSAGE_JSON, getOneLineMessage(ex));
     json.put(ERROR_EXCEPTION_JSON, ex.getClass().getSimpleName());
     json.put(ERROR_CLASSNAME_JSON, ex.getClass().getName());
-    Map<String, Object> response = new LinkedHashMap<String, Object>();
-    response.put(ERROR_JSON, json);
+    Map<String, Object> response = Collections.singletonMap(ERROR_JSON, json);
     return Response.status(status).type(MediaType.APPLICATION_JSON).
         entity(response).build();
   }
@@ -127,7 +125,7 @@ public class HttpExceptionUtils {
    * expected HTTP status code. If the current status code is not the expected
    * one it throws an exception with a detail message using Server side error
    * messages if available.
-   * <p/>
+   * <p>
    * <b>NOTE:</b> this method will throw the deserialized exception even if not
    * declared in the <code>throws</code> of the method signature.
    *
@@ -144,8 +142,7 @@ public class HttpExceptionUtils {
       InputStream es = null;
       try {
         es = conn.getErrorStream();
-        ObjectMapper mapper = new ObjectMapper();
-        Map json = mapper.readValue(es, Map.class);
+        Map json = JsonSerialization.mapReader().readValue(es);
         json = (Map) json.get(ERROR_JSON);
         String exClass = (String) json.get(ERROR_CLASSNAME_JSON);
         String exMsg = (String) json.get(ERROR_MESSAGE_JSON);
@@ -157,18 +154,20 @@ public class HttpExceptionUtils {
             toThrow = (Exception) constr.newInstance(exMsg);
           } catch (Exception ex) {
             toThrow = new IOException(String.format(
-                "HTTP status [%d], exception [%s], message [%s] ",
-                conn.getResponseCode(), exClass, exMsg));
+                "HTTP status [%d], exception [%s], message [%s], URL [%s]",
+                conn.getResponseCode(), exClass, exMsg, conn.getURL()));
           }
         } else {
           String msg = (exMsg != null) ? exMsg : conn.getResponseMessage();
           toThrow = new IOException(String.format(
-              "HTTP status [%d], message [%s]", conn.getResponseCode(), msg));
+              "HTTP status [%d], message [%s], URL [%s]",
+              conn.getResponseCode(), msg, conn.getURL()));
         }
       } catch (Exception ex) {
         toThrow = new IOException(String.format(
-            "HTTP status [%d], message [%s]", conn.getResponseCode(),
-            conn.getResponseMessage()));
+            "HTTP status [%d], message [%s], URL [%s], exception [%s]",
+            conn.getResponseCode(), conn.getResponseMessage(), conn.getURL(),
+            ex.toString()), ex);
       } finally {
         if (es != null) {
           try {

@@ -32,8 +32,8 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Charsets;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.commons.logging.impl.Jdk14Logger;
@@ -47,15 +47,17 @@ import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
 import org.apache.hadoop.security.authentication.client.KerberosAuthenticator;
 import org.apache.hadoop.security.ssl.SSLFactory;
+import org.apache.hadoop.util.GenericOptionsParser;
 import org.apache.hadoop.util.ServletUtil;
 import org.apache.hadoop.util.Tool;
+import org.apache.hadoop.util.ToolRunner;
 
 /**
  * Change log level in runtime.
  */
 @InterfaceStability.Evolving
 public class LogLevel {
-  public static final String USAGES = "\nUsage: General options are:\n"
+  public static final String USAGES = "\nUsage: Command options are:\n"
       + "\t[-getlevel <host:port> <classname> [-protocol (http|https)]\n"
       + "\t[-setlevel <host:port> <classname> <level> "
       + "[-protocol (http|https)]\n";
@@ -67,7 +69,7 @@ public class LogLevel {
    */
   public static void main(String[] args) throws Exception {
     CLI cli = new CLI(new Configuration());
-    System.exit(cli.run(args));
+    System.exit(ToolRunner.run(cli, args));
   }
 
   /**
@@ -81,6 +83,7 @@ public class LogLevel {
 
   private static void printUsage() {
     System.err.println(USAGES);
+    GenericOptionsParser.printGenericCommandUsage(System.err);
   }
 
   public static boolean isValidProtocol(String protocol) {
@@ -107,7 +110,7 @@ public class LogLevel {
         sendLogLevelRequest();
       } catch (HadoopIllegalArgumentException e) {
         printUsage();
-        throw e;
+        return -1;
       }
       return 0;
     }

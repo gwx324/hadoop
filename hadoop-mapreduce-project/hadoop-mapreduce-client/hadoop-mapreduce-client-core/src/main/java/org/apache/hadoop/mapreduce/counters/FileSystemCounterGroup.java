@@ -27,14 +27,12 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.Iterator;
 import java.util.Map;
 
-import com.google.common.base.Joiner;
-import static com.google.common.base.Preconditions.*;
-import com.google.common.collect.AbstractIterator;
-import com.google.common.collect.Iterators;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import static org.apache.hadoop.thirdparty.com.google.common.base.Preconditions.*;
+import org.apache.hadoop.thirdparty.com.google.common.collect.AbstractIterator;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Iterators;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.io.WritableUtils;
@@ -42,6 +40,8 @@ import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.FileSystemCounter;
 import org.apache.hadoop.mapreduce.util.ResourceBundles;
 import org.apache.hadoop.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * An abstract class to provide common implementation of the filesystem
@@ -56,12 +56,14 @@ public abstract class FileSystemCounterGroup<C extends Counter>
   static final int MAX_NUM_SCHEMES = 100; // intern/sanity check
   static final ConcurrentMap<String, String> schemes = Maps.newConcurrentMap();
   
-  private static final Log LOG = LogFactory.getLog(FileSystemCounterGroup.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(FileSystemCounterGroup.class);
 
   // C[] would need Array.newInstance which requires a Class<C> reference.
   // Just a few local casts probably worth not having to carry it around.
-  private final Map<String, Object[]> map =
-    new ConcurrentSkipListMap<String, Object[]>();
+  // Initialized lazily, since in some situations millions of empty maps can
+  // waste a substantial (e.g. 4% as we observed) portion of the heap
+  private Map<String, Object[]> map;
   private String displayName;
 
   private static final Joiner NAME_JOINER = Joiner.on('_');
@@ -213,6 +215,9 @@ public abstract class FileSystemCounterGroup<C extends Counter>
   @SuppressWarnings("unchecked")
   public synchronized C findCounter(String scheme, FileSystemCounter key) {
     final String canonicalScheme = checkScheme(scheme);
+    if (map == null) {
+      map = new ConcurrentSkipListMap<>();
+    }
     Object[] counters = map.get(canonicalScheme);
     int ord = key.ordinal();
     if (counters == null) {
@@ -246,10 +251,12 @@ public abstract class FileSystemCounterGroup<C extends Counter>
   protected abstract C newCounter(String scheme, FileSystemCounter key);
 
   @Override
-  public int size() {
+  public synchronized int size() {
     int n = 0;
-    for (Object[] counters : map.values()) {
-      n += numSetCounters(counters);
+    if (map != null) {
+      for (Object[] counters : map.values()) {
+        n += numSetCounters(counters);
+      }
     }
     return n;
   }
@@ -270,19 +277,23 @@ public abstract class FileSystemCounterGroup<C extends Counter>
    * FileSystemGroup ::= #scheme (scheme #counter (key value)*)*
    */
   @Override
-  public void write(DataOutput out) throws IOException {
-    WritableUtils.writeVInt(out, map.size()); // #scheme
-    for (Map.Entry<String, Object[]> entry : map.entrySet()) {
-      WritableUtils.writeString(out, entry.getKey()); // scheme
-      // #counter for the above scheme
-      WritableUtils.writeVInt(out, numSetCounters(entry.getValue()));
-      for (Object counter : entry.getValue()) {
-        if (counter == null) continue;
-        @SuppressWarnings("unchecked")
-        FSCounter c = (FSCounter) ((Counter)counter).getUnderlyingCounter();
-        WritableUtils.writeVInt(out, c.key.ordinal());  // key
-        WritableUtils.writeVLong(out, c.getValue());    // value
+  public synchronized void write(DataOutput out) throws IOException {
+    if (map != null) {
+      WritableUtils.writeVInt(out, map.size()); // #scheme
+      for (Map.Entry<String, Object[]> entry : map.entrySet()) {
+        WritableUtils.writeString(out, entry.getKey()); // scheme
+        // #counter for the above scheme
+        WritableUtils.writeVInt(out, numSetCounters(entry.getValue()));
+        for (Object counter : entry.getValue()) {
+          if (counter == null) continue;
+          @SuppressWarnings("unchecked")
+          FSCounter c = (FSCounter) ((Counter) counter).getUnderlyingCounter();
+          WritableUtils.writeVInt(out, c.key.ordinal());  // key
+          WritableUtils.writeVLong(out, c.getValue());    // value
+        }
       }
+    } else {
+      WritableUtils.writeVInt(out, 0);
     }
   }
 
@@ -309,8 +320,8 @@ public abstract class FileSystemCounterGroup<C extends Counter>
   @Override
   public Iterator<C> iterator() {
     return new AbstractIterator<C>() {
-      Iterator<Object[]> it = map.values().iterator();
-      Object[] counters = it.hasNext() ? it.next() : null;
+      Iterator<Object[]> it = map != null ? map.values().iterator() : null;
+      Object[] counters = (it != null && it.hasNext()) ? it.next() : null;
       int i = 0;
       @Override
       protected C computeNext() {
@@ -321,7 +332,7 @@ public abstract class FileSystemCounterGroup<C extends Counter>
             if (counter != null) return counter;
           }
           i = 0;
-          counters = it.hasNext() ? it.next() : null;
+          counters = (it != null && it.hasNext()) ? it.next() : null;
         }
         return endOfData();
       }
@@ -342,8 +353,10 @@ public abstract class FileSystemCounterGroup<C extends Counter>
   public synchronized int hashCode() {
     // need to be deep as counters is an array
     int hash = FileSystemCounter.class.hashCode();
-    for (Object[] counters : map.values()) {
-      if (counters != null) hash ^= Arrays.hashCode(counters);
+    if (map != null) {
+      for (Object[] counters : map.values()) {
+        if (counters != null) hash ^= Arrays.hashCode(counters);
+      }
     }
     return hash;
   }

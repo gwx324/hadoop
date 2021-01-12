@@ -18,20 +18,20 @@
 
 package org.apache.hadoop.yarn.server.timelineservice.reader;
 
-import static org.apache.hadoop.fs.CommonConfigurationKeys.DEFAULT_HADOOP_HTTP_STATIC_USER;
-import static org.apache.hadoop.fs.CommonConfigurationKeys.HADOOP_HTTP_STATIC_USER;
-
+import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.URI;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.http.HttpServer2;
-import org.apache.hadoop.http.lib.StaticUserWebFilter;
+import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.HttpCrossOriginFilterInitializer;
+import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.security.authentication.server.ProxyUserAuthenticationFilterInitializer;
 import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.ReflectionUtils;
@@ -41,25 +41,33 @@ import org.apache.hadoop.yarn.YarnUncaughtExceptionHandler;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
-import org.apache.hadoop.yarn.server.timelineservice.storage.HBaseTimelineReaderImpl;
+import org.apache.hadoop.yarn.server.timelineservice.reader.security.TimelineReaderAuthenticationFilterInitializer;
+import org.apache.hadoop.yarn.server.timelineservice.reader.security.TimelineReaderWhitelistAuthorizationFilterInitializer;
 import org.apache.hadoop.yarn.server.timelineservice.storage.TimelineReader;
+import org.apache.hadoop.yarn.server.util.timeline.TimelineServerUtils;
+import org.apache.hadoop.yarn.server.webapp.LogWebService;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
 import org.apache.hadoop.yarn.webapp.YarnJacksonJaxbJsonProvider;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Main class for Timeline Reader. */
 @Private
 @Unstable
 public class TimelineReaderServer extends CompositeService {
-  private static final Log LOG = LogFactory.getLog(TimelineReaderServer.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TimelineReaderServer.class);
   private static final int SHUTDOWN_HOOK_PRIORITY = 30;
   static final String TIMELINE_READER_MANAGER_ATTR =
       "timeline.reader.manager";
 
   private HttpServer2 readerWebServer;
   private TimelineReaderManager timelineReaderManager;
+  private String webAppURLWithoutScheme;
+
 
   public TimelineReaderServer() {
     super(TimelineReaderServer.class.getName());
@@ -70,22 +78,46 @@ public class TimelineReaderServer extends CompositeService {
     if (!YarnConfiguration.timelineServiceV2Enabled(conf)) {
       throw new YarnException("timeline service v.2 is not enabled");
     }
+    webAppURLWithoutScheme =
+        WebAppUtils.getTimelineReaderWebAppURLWithoutScheme(conf);
+    InetSocketAddress bindAddr =
+        NetUtils.createSocketAddr(webAppURLWithoutScheme);
+    // Login from keytab if security is enabled.
+    try {
+      SecurityUtil.login(conf, YarnConfiguration.TIMELINE_SERVICE_KEYTAB,
+          YarnConfiguration.TIMELINE_SERVICE_PRINCIPAL, bindAddr.getHostName());
+    } catch(IOException e) {
+      throw new YarnRuntimeException("Failed to login from keytab", e);
+    }
 
     TimelineReader timelineReaderStore = createTimelineReaderStore(conf);
+    timelineReaderStore.init(conf);
     addService(timelineReaderStore);
     timelineReaderManager = createTimelineReaderManager(timelineReaderStore);
     addService(timelineReaderManager);
     super.serviceInit(conf);
   }
 
-  private TimelineReader createTimelineReaderStore(Configuration conf) {
-    TimelineReader readerStore = ReflectionUtils.newInstance(conf.getClass(
+  private TimelineReader createTimelineReaderStore(final Configuration conf) {
+    String timelineReaderClassName = conf.get(
         YarnConfiguration.TIMELINE_SERVICE_READER_CLASS,
-        HBaseTimelineReaderImpl.class, TimelineReader.class), conf);
-    LOG.info("Using store " + readerStore.getClass().getName());
-    readerStore.init(conf);
-    return readerStore;
+        YarnConfiguration.DEFAULT_TIMELINE_SERVICE_READER_CLASS);
+    LOG.info("Using store: " + timelineReaderClassName);
+    try {
+      Class<?> timelineReaderClazz = Class.forName(timelineReaderClassName);
+      if (TimelineReader.class.isAssignableFrom(timelineReaderClazz)) {
+        return (TimelineReader) ReflectionUtils.newInstance(
+            timelineReaderClazz, conf);
+      } else {
+        throw new YarnRuntimeException("Class: " + timelineReaderClassName
+            + " not instance of " + TimelineReader.class.getCanonicalName());
+      }
+    } catch (ClassNotFoundException e) {
+      throw new YarnRuntimeException("Could not instantiate TimelineReader: "
+          + timelineReaderClassName, e);
+    }
   }
+
 
   private TimelineReaderManager createTimelineReaderManager(
       TimelineReader timelineReaderStore) {
@@ -98,6 +130,16 @@ public class TimelineReaderServer extends CompositeService {
     startTimelineReaderWebApp();
   }
 
+  private void join() {
+    // keep the main thread that started the server up until it receives a stop
+    // signal
+    if (readerWebServer != null) {
+      try {
+        readerWebServer.join();
+      } catch (InterruptedException ignore) {}
+    }
+  }
+
   @Override
   protected void serviceStop() throws Exception {
     if (readerWebServer != null) {
@@ -106,32 +148,69 @@ public class TimelineReaderServer extends CompositeService {
     super.serviceStop();
   }
 
+  protected void addFilters(Configuration conf) {
+    boolean enableCorsFilter = conf.getBoolean(
+        YarnConfiguration.TIMELINE_SERVICE_HTTP_CROSS_ORIGIN_ENABLED,
+        YarnConfiguration.TIMELINE_SERVICE_HTTP_CROSS_ORIGIN_ENABLED_DEFAULT);
+    // Setup CORS
+    if (enableCorsFilter) {
+      conf.setBoolean(HttpCrossOriginFilterInitializer.PREFIX
+          + HttpCrossOriginFilterInitializer.ENABLED_SUFFIX, true);
+    }
+    String initializers = conf.get("hadoop.http.filter.initializers", "");
+    Set<String> defaultInitializers = new LinkedHashSet<String>();
+    if (!initializers.contains(
+        ProxyUserAuthenticationFilterInitializer.class.getName())) {
+      if (!initializers.contains(
+          TimelineReaderAuthenticationFilterInitializer.class.getName())) {
+        defaultInitializers.add(
+            TimelineReaderAuthenticationFilterInitializer.class.getName());
+      }
+    } else {
+      defaultInitializers.add(
+          ProxyUserAuthenticationFilterInitializer.class.getName());
+    }
+
+    defaultInitializers.add(
+        TimelineReaderWhitelistAuthorizationFilterInitializer.class.getName());
+
+    TimelineServerUtils.setTimelineFilters(
+        conf, initializers, defaultInitializers);
+  }
+
   private void startTimelineReaderWebApp() {
     Configuration conf = getConfig();
-    String bindAddress = WebAppUtils.getWebAppBindURL(conf,
-        YarnConfiguration.TIMELINE_SERVICE_BIND_HOST,
-        WebAppUtils.getTimelineReaderWebAppURL(conf));
+    addFilters(conf);
+
+    String hostProperty = YarnConfiguration.TIMELINE_SERVICE_READER_BIND_HOST;
+    String host = conf.getTrimmed(hostProperty);
+    if (host == null || host.isEmpty()) {
+      // if reader bind-host is not set, fall back to timeline-service.bind-host
+      // to maintain compatibility
+      hostProperty = YarnConfiguration.TIMELINE_SERVICE_BIND_HOST;
+    }
+    String bindAddress = WebAppUtils
+        .getWebAppBindURL(conf, hostProperty, webAppURLWithoutScheme);
+
     LOG.info("Instantiating TimelineReaderWebApp at " + bindAddress);
     try {
+
+      String httpScheme = WebAppUtils.getHttpSchemePrefix(conf);
+
       HttpServer2.Builder builder = new HttpServer2.Builder()
             .setName("timeline")
             .setConf(conf)
-            .addEndpoint(URI.create("http://" + bindAddress));
+            .addEndpoint(URI.create(httpScheme + bindAddress));
+
+      if (httpScheme.equals(WebAppUtils.HTTPS_PREFIX)) {
+        WebAppUtils.loadSslConfiguration(builder, conf);
+      }
       readerWebServer = builder.build();
-
-      Map<String, String> options = new HashMap<>();
-      String username = conf.get(HADOOP_HTTP_STATIC_USER,
-          DEFAULT_HADOOP_HTTP_STATIC_USER);
-      options.put(HADOOP_HTTP_STATIC_USER, username);
-      HttpServer2.defineFilter(readerWebServer.getWebAppContext(),
-          "static_user_filter_timeline",
-          StaticUserWebFilter.StaticUserFilter.class.getName(),
-          options, new String[] {"/*"});
-
       readerWebServer.addJerseyResourcePackage(
           TimelineReaderWebServices.class.getPackage().getName() + ";"
               + GenericExceptionHandler.class.getPackage().getName() + ";"
-              + YarnJacksonJaxbJsonProvider.class.getPackage().getName(),
+              + YarnJacksonJaxbJsonProvider.class.getPackage().getName()+ ";"
+              + LogWebService.class.getPackage().getName(),
           "/*");
       readerWebServer.setAttribute(TIMELINE_READER_MANAGER_ATTR,
           timelineReaderManager);
@@ -144,7 +223,7 @@ public class TimelineReaderServer extends CompositeService {
   }
 
   @VisibleForTesting
-  int getWebServerPort() {
+  public int getWebServerPort() {
     return readerWebServer.getConnectorAddress(0).getPort();
   }
 
@@ -163,7 +242,7 @@ public class TimelineReaderServer extends CompositeService {
       timelineReaderServer.init(conf);
       timelineReaderServer.start();
     } catch (Throwable t) {
-      LOG.fatal("Error starting TimelineReaderWebServer", t);
+      LOG.error("Error starting TimelineReaderWebServer", t);
       ExitUtil.terminate(-1, "Error starting TimelineReaderWebServer");
     }
     return timelineReaderServer;
@@ -172,7 +251,8 @@ public class TimelineReaderServer extends CompositeService {
   public static void main(String[] args) {
     Configuration conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
-    conf.setFloat(YarnConfiguration.TIMELINE_SERVICE_VERSION, 2.0f);
-    startTimelineReaderServer(args, conf);
+    conf.setFloat(YarnConfiguration.TIMELINE_SERVICE_VERSIONS, 2.0f);
+    TimelineReaderServer server = startTimelineReaderServer(args, conf);
+    server.join();
   }
 }

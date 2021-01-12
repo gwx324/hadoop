@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.mapreduce.v2.app;
 
-import static org.mockito.Matchers.any;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -43,6 +43,7 @@ import org.apache.hadoop.yarn.api.records.PreemptionContainer;
 import org.apache.hadoop.yarn.api.records.PreemptionContract;
 import org.apache.hadoop.yarn.api.records.PreemptionMessage;
 import org.apache.hadoop.yarn.api.records.StrictPreemptionContract;
+import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
@@ -84,9 +85,9 @@ public class TestKillAMPreemptionPolicy {
     policy.init(mActxt);
     pM = getPreemptionMessage(true, false, container);
     policy.preempt(mPctxt, pM);
-    verify(mActxt.getEventHandler(), times(2)).handle(
+    verify(mActxt.getEventHandler(), times(1)).handle(
         any(TaskAttemptEvent.class));
-    verify(mActxt.getEventHandler(), times(2)).handle(
+    verify(mActxt.getEventHandler(), times(1)).handle(
         any(JobCounterUpdateEvent.class));
 
     // strictContract is null & contract is not null
@@ -94,9 +95,9 @@ public class TestKillAMPreemptionPolicy {
     policy.init(mActxt);
     pM = getPreemptionMessage(false, true, container);
     policy.preempt(mPctxt, pM);
-    verify(mActxt.getEventHandler(), times(2)).handle(
+    verify(mActxt.getEventHandler(), times(1)).handle(
         any(TaskAttemptEvent.class));
-    verify(mActxt.getEventHandler(), times(2)).handle(
+    verify(mActxt.getEventHandler(), times(1)).handle(
         any(JobCounterUpdateEvent.class));
 
     // strictContract is not null & contract is not null
@@ -104,15 +105,16 @@ public class TestKillAMPreemptionPolicy {
     policy.init(mActxt);
     pM = getPreemptionMessage(true, true, container);
     policy.preempt(mPctxt, pM);
-    verify(mActxt.getEventHandler(), times(4)).handle(
+    verify(mActxt.getEventHandler(), times(2)).handle(
         any(TaskAttemptEvent.class));
-    verify(mActxt.getEventHandler(), times(4)).handle(
+    verify(mActxt.getEventHandler(), times(2)).handle(
         any(JobCounterUpdateEvent.class));
   }
 
   private RunningAppContext getRunningAppContext() {
     RunningAppContext mActxt = mock(RunningAppContext.class);
-    EventHandler<?> eventHandler = mock(EventHandler.class);
+    @SuppressWarnings("unchecked")
+    EventHandler<Event> eventHandler = mock(EventHandler.class);
     when(mActxt.getEventHandler()).thenReturn(eventHandler);
     return mActxt;
   }

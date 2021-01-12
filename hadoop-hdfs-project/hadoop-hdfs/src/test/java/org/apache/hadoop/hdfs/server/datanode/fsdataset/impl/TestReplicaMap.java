@@ -26,11 +26,13 @@ import org.apache.hadoop.hdfs.server.datanode.FinalizedReplica;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
 /**
  * Unit test for ReplicasMap class
  */
 public class TestReplicaMap {
-  private final ReplicaMap map = new ReplicaMap(TestReplicaMap.class);
+  private final ReplicaMap map = new ReplicaMap(new ReentrantReadWriteLock());
   private final String bpid = "BP-TEST";
   private final  Block block = new Block(1234, 1234, 1234);
   
@@ -106,5 +108,27 @@ public class TestReplicaMap {
     // Test 6: remove success
     map.add(bpid, new FinalizedReplica(block, null, null));
     assertNotNull(map.remove(bpid, block.getBlockId()));
+  }
+
+  @Test
+  public void testMergeAll() {
+    ReplicaMap temReplicaMap = new ReplicaMap(new ReentrantReadWriteLock());
+    Block tmpBlock = new Block(5678, 5678, 5678);
+    temReplicaMap.add(bpid, new FinalizedReplica(tmpBlock, null, null));
+
+    map.mergeAll(temReplicaMap);
+    assertNotNull(map.get(bpid, 1234));
+    assertNotNull(map.get(bpid, 5678));
+  }
+
+  @Test
+  public void testAddAll() {
+    ReplicaMap temReplicaMap = new ReplicaMap(new ReentrantReadWriteLock());
+    Block tmpBlock = new Block(5678, 5678, 5678);
+    temReplicaMap.add(bpid, new FinalizedReplica(tmpBlock, null, null));
+
+    map.addAll(temReplicaMap);
+    assertNull(map.get(bpid, 1234));
+    assertNotNull(map.get(bpid, 5678));
   }
 }

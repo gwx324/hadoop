@@ -20,21 +20,33 @@ package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
 
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.SettableFuture;
+
 public class RMStateUpdateAppEvent extends RMStateStoreEvent {
   private final ApplicationStateData appState;
   // After application state is updated in state store,
   // should notify back to application or not
   private boolean notifyApplication;
+  private SettableFuture<Object> future;
 
   public RMStateUpdateAppEvent(ApplicationStateData appState) {
-    super(RMStateStoreEventType.UPDATE_APP);
-    this.appState = appState;
-    this.notifyApplication = true;
+    this (appState, true);
   }
 
-  public RMStateUpdateAppEvent(ApplicationStateData appState, boolean notifyApp) {
-    this(appState);
+  public RMStateUpdateAppEvent(ApplicationStateData appState,
+      boolean notifyApplication) {
+    super(RMStateStoreEventType.UPDATE_APP);
+    this.appState = appState;
+    this.notifyApplication = notifyApplication;
+    this.future = null;
+  }
+
+  public RMStateUpdateAppEvent(ApplicationStateData appState, boolean notifyApp,
+      SettableFuture<Object> future) {
+    super(RMStateStoreEventType.UPDATE_APP);
+    this.appState = appState;
     this.notifyApplication = notifyApp;
+    this.future = future;
   }
 
   public ApplicationStateData getAppState() {
@@ -43,5 +55,9 @@ public class RMStateUpdateAppEvent extends RMStateStoreEvent {
 
   public boolean isNotifyApplication() {
     return notifyApplication;
+  }
+
+  public SettableFuture<Object> getResult() {
+    return future;
   }
 }

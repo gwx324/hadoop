@@ -19,7 +19,7 @@ package org.apache.hadoop.http.lib;
 
 import java.io.IOException;
 import java.security.Principal;
-import java.util.HashMap;
+import java.util.Collections;
 
 import javax.servlet.FilterChain;
 import javax.servlet.FilterConfig;
@@ -29,11 +29,11 @@ import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletRequestWrapper;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.http.FilterContainer;
 import org.apache.hadoop.http.FilterInitializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.servlet.Filter;
 
@@ -47,7 +47,8 @@ import static org.apache.hadoop.fs.CommonConfigurationKeys.DEFAULT_HADOOP_HTTP_S
 public class StaticUserWebFilter extends FilterInitializer {
   static final String DEPRECATED_UGI_KEY = "dfs.web.ugi";
 
-  private static final Log LOG = LogFactory.getLog(StaticUserWebFilter.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(StaticUserWebFilter.class);
 
   static class User implements Principal {
     private final String name;
@@ -120,14 +121,10 @@ public class StaticUserWebFilter extends FilterInitializer {
 
   @Override
   public void initFilter(FilterContainer container, Configuration conf) {
-    HashMap<String, String> options = new HashMap<String, String>();
-    
     String username = getUsernameFromConf(conf);
-    options.put(HADOOP_HTTP_STATIC_USER, username);
 
-    container.addFilter("static_user_filter", 
-                        StaticUserFilter.class.getName(), 
-                        options);
+    container.addFilter("static_user_filter", StaticUserFilter.class.getName(),
+        Collections.singletonMap(HADOOP_HTTP_STATIC_USER, username));
   }
 
   /**

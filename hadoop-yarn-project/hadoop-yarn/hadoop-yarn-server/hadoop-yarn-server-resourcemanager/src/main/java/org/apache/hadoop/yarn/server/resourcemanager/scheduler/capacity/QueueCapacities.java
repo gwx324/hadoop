@@ -26,7 +26,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 
@@ -50,7 +50,7 @@ public class QueueCapacities {
   // Usage enum here to make implement cleaner
   private enum CapacityType {
     USED_CAP(0), ABS_USED_CAP(1), MAX_CAP(2), ABS_MAX_CAP(3), CAP(4), ABS_CAP(5),
-      MAX_AM_PERC(6), RESERVED_CAP(7), ABS_RESERVED_CAP(8);
+      MAX_AM_PERC(6), RESERVED_CAP(7), ABS_RESERVED_CAP(8), WEIGHT(9), NORMALIZED_WEIGHT(10);
 
     private int idx;
 
@@ -64,29 +64,38 @@ public class QueueCapacities {
     
     public Capacities() {
       capacitiesArr = new float[CapacityType.values().length];
+
+      // Set weight to -1 by default (means not set)
+      capacitiesArr[CapacityType.WEIGHT.idx] = -1;
     }
     
     @Override
     public String toString() {
       StringBuilder sb = new StringBuilder();
-      sb.append("{used=" + capacitiesArr[0] + "%, ");
-      sb.append("abs_used=" + capacitiesArr[1] + "%, ");
-      sb.append("max_cap=" + capacitiesArr[2] + "%, ");
-      sb.append("abs_max_cap=" + capacitiesArr[3] + "%, ");
-      sb.append("cap=" + capacitiesArr[4] + "%, ");
-      sb.append("abs_cap=" + capacitiesArr[5] + "%}");
-      sb.append("max_am_perc=" + capacitiesArr[6] + "%}");
-      sb.append("reserved_cap=" + capacitiesArr[7] + "%}");
-      sb.append("abs_reserved_cap=" + capacitiesArr[8] + "%}");
+      sb.append("{used=" + capacitiesArr[0] + "%, ")
+          .append("abs_used=" + capacitiesArr[1] + "%, ")
+          .append("max_cap=" + capacitiesArr[2] + "%, ")
+          .append("abs_max_cap=" + capacitiesArr[3] + "%, ")
+          .append("cap=" + capacitiesArr[4] + "%, ")
+          .append("abs_cap=" + capacitiesArr[5] + "%, ")
+          .append("max_am_perc=" + capacitiesArr[6] + "%, ")
+          .append("reserved_cap=" + capacitiesArr[7] + "%, ")
+          .append("abs_reserved_cap=" + capacitiesArr[8] + "%, ")
+          .append("weight=" + capacitiesArr[9] + "w, ")
+          .append("normalized_weight=" + capacitiesArr[9] + "w}");
       return sb.toString();
     }
   }
   
   private float _get(String label, CapacityType type) {
+    readLock.lock();
     try {
-      readLock.lock();
       Capacities cap = capacitiesMap.get(label);
       if (null == cap) {
+        // Special handle weight mode
+        if (type == CapacityType.WEIGHT) {
+          return -1f;
+        }
         return LABEL_DOESNT_EXIST_CAP;
       }
       return cap.capacitiesArr[type.idx];
@@ -96,8 +105,8 @@ public class QueueCapacities {
   }
   
   private void _set(String label, CapacityType type, float value) {
+    writeLock.lock();
     try {
-      writeLock.lock();
       Capacities cap = capacitiesMap.get(label);
       if (null == cap) {
         cap = new Capacities();
@@ -270,6 +279,40 @@ public class QueueCapacities {
     _set(label, CapacityType.ABS_RESERVED_CAP, value);
   }
 
+  /* Weight Getter and Setter */
+  public float getWeight() {
+    return _get(NL, CapacityType.WEIGHT);
+  }
+
+  public float getWeight(String label) {
+    return _get(label, CapacityType.WEIGHT);
+  }
+
+  public void setWeight(float value) {
+    _set(NL, CapacityType.WEIGHT, value);
+  }
+
+  public void setWeight(String label, float value) {
+    _set(label, CapacityType.WEIGHT, value);
+  }
+
+  /* Weight Getter and Setter */
+  public float getNormalizedWeight() {
+    return _get(NL, CapacityType.NORMALIZED_WEIGHT);
+  }
+
+  public float getNormalizedWeight(String label) {
+    return _get(label, CapacityType.NORMALIZED_WEIGHT);
+  }
+
+  public void setNormalizedWeight(float value) {
+    _set(NL, CapacityType.NORMALIZED_WEIGHT, value);
+  }
+
+  public void setNormalizedWeight(String label, float value) {
+    _set(label, CapacityType.NORMALIZED_WEIGHT, value);
+  }
+
   /**
    * Clear configurable fields, like
    * (absolute)capacity/(absolute)maximum-capacity, this will be used by queue
@@ -277,13 +320,14 @@ public class QueueCapacities {
    * configurable fields, and load new values
    */
   public void clearConfigurableFields() {
+    writeLock.lock();
     try {
-      writeLock.lock();
       for (String label : capacitiesMap.keySet()) {
         _set(label, CapacityType.CAP, 0);
         _set(label, CapacityType.MAX_CAP, 0);
         _set(label, CapacityType.ABS_CAP, 0);
         _set(label, CapacityType.ABS_MAX_CAP, 0);
+        _set(label, CapacityType.WEIGHT, 0);
       }
     } finally {
       writeLock.unlock();
@@ -291,8 +335,8 @@ public class QueueCapacities {
   }
   
   public Set<String> getExistingNodeLabels() {
+    readLock.lock();
     try {
-      readLock.lock();
       return new HashSet<String>(capacitiesMap.keySet());
     } finally {
       readLock.unlock();
@@ -301,8 +345,8 @@ public class QueueCapacities {
   
   @Override
   public String toString() {
+    readLock.lock();
     try {
-      readLock.lock();
       return this.capacitiesMap.toString();
     } finally {
       readLock.unlock();
@@ -310,8 +354,8 @@ public class QueueCapacities {
   }
   
   public Set<String> getNodePartitionsSet() {
+    readLock.lock();
     try {
-      readLock.lock();
       return capacitiesMap.keySet();
     } finally {
       readLock.unlock();

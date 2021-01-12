@@ -17,7 +17,7 @@
 
 package org.apache.hadoop.hdfs.server.diskbalancer.planner;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hdfs.server.diskbalancer.datamodel
@@ -34,7 +34,7 @@ import java.util.TreeSet;
 /**
  * Greedy Planner is a simple planner that computes the largest possible move at
  * any point of time given a volumeSet.
- * <p/>
+ * <p>
  * This is done by choosing the disks with largest  amount of data above and
  * below the idealStorage and then a move is scheduled between them.
  */
@@ -64,7 +64,7 @@ public class GreedyPlanner implements Planner {
    */
   @Override
   public NodePlan plan(DiskBalancerDataNode node) throws Exception {
-    long startTime = Time.monotonicNow();
+    final long startTime = Time.monotonicNow();
     NodePlan plan = new NodePlan(node.getDataNodeName(),
         node.getDataNodePort());
     LOG.info("Starting plan for Node : {}:{}",
@@ -75,12 +75,10 @@ public class GreedyPlanner implements Planner {
       }
     }
 
-    long endTime = Time.monotonicNow();
-    String message = String
-        .format("Compute Plan for Node : %s:%d took %d ms ",
-            node.getDataNodeName(), node.getDataNodePort(),
-            endTime - startTime);
-    LOG.info(message);
+    final long endTime = Time.monotonicNow();
+    LOG.info("Compute Plan for Node : {}:{} took {} ms",
+        node.getDataNodeName(), node.getDataNodePort(), endTime - startTime);
+
     return plan;
   }
 
@@ -117,21 +115,19 @@ public class GreedyPlanner implements Planner {
 
       applyStep(nextStep, currentSet, lowVolume, highVolume);
       if (nextStep != null) {
-        LOG.debug("Step : {} ",  nextStep.toString());
+        LOG.debug("Step : {} ", nextStep);
         plan.addStep(nextStep);
       }
     }
 
-    String message = String
-        .format("Disk Volume set %s Type : %s plan completed.",
-            currentSet.getSetID(),
-            currentSet.getVolumes().get(0).getStorageType());
+    LOG.info("Disk Volume set {} - Type : {} plan completed.",
+        currentSet.getSetID(),
+        currentSet.getVolumes().get(0).getStorageType());
 
     plan.setNodeName(node.getDataNodeName());
     plan.setNodeUUID(node.getDataNodeUUID());
     plan.setTimeStamp(Time.now());
     plan.setPort(node.getDataNodePort());
-    LOG.info(message);
   }
 
   /**
@@ -158,6 +154,7 @@ public class GreedyPlanner implements Planner {
 
     // since the volume data changed , we need to recompute the DataDensity.
     currentSet.computeVolumeDataDensity();
+    printQueue(currentSet.getSortedQueue());
   }
 
   /**
@@ -184,7 +181,7 @@ public class GreedyPlanner implements Planner {
     if (maxLowVolumeCanReceive <= 0) {
       LOG.debug("{} Skipping disk from computation. Maximum data size " +
           "achieved.", lowVolume.getPath());
-      lowVolume.setSkip(true);
+      skipVolume(currentSet, lowVolume);
     }
 
     long maxHighVolumeCanGive = highVolume.getUsed() -
@@ -195,7 +192,7 @@ public class GreedyPlanner implements Planner {
     if (maxHighVolumeCanGive <= 0) {
       LOG.debug(" {} Skipping disk from computation. Minimum data size " +
           "achieved.", highVolume.getPath());
-      highVolume.setSkip(true);
+      skipVolume(currentSet, highVolume);
     }
 
 
@@ -206,7 +203,7 @@ public class GreedyPlanner implements Planner {
       // Create a new step
       nextStep = new MoveStep(highVolume, currentSet.getIdealUsed(), lowVolume,
           bytesToMove, currentSet.getSetID());
-      LOG.debug(nextStep.toString());
+      LOG.debug("Next Step: {}", nextStep);
     }
     return nextStep;
   }
@@ -219,16 +216,19 @@ public class GreedyPlanner implements Planner {
    */
   private void skipVolume(DiskBalancerVolumeSet currentSet,
                           DiskBalancerVolume volume) {
-
-    String message = String.format(
-        "Skipping volume. Volume : %s " +
-            "Type : %s Target " +
-            "Number of bytes : %f lowVolume dfsUsed : %d. Skipping this " +
-            "volume from all future balancing calls.", volume.getPath(),
-        volume.getStorageType(),
-        currentSet.getIdealUsed() * volume.getCapacity(), volume.getUsed());
+    if (LOG.isDebugEnabled()) {
+      String message =
+          String.format(
+              "Skipping volume. Volume : %s " +
+              "Type : %s Target " +
+              "Number of bytes : %f lowVolume dfsUsed : %d. Skipping this " +
+              "volume from all future balancing calls.", volume.getPath(),
+              volume.getStorageType(),
+              currentSet.getIdealUsed() * volume.getCapacity(),
+              volume.getUsed());
+      LOG.debug(message);
+    }
     volume.setSkip(true);
-    LOG.debug(message);
   }
 
   // Removes all volumes which are part of the volumeSet but skip flag is set.
@@ -242,6 +242,7 @@ public class GreedyPlanner implements Planner {
       }
     }
     currentSet.computeVolumeDataDensity();
+    printQueue(currentSet.getSortedQueue());
   }
 
   /**
@@ -251,14 +252,14 @@ public class GreedyPlanner implements Planner {
    * @param queue - Queue
    */
   private void printQueue(TreeSet<DiskBalancerVolume> queue) {
-    String format = String.format("First Volume : %s, DataDensity : %f",
-        queue.first().getPath(),
-        queue.first().getVolumeDataDensity());
-    LOG.info(format);
-
-    format = String
-        .format("Last Volume : %s, DataDensity : %f%n", queue.last().getPath(),
-            queue.last().getVolumeDataDensity());
-    LOG.info(format);
+    if (LOG.isDebugEnabled()) {
+      String format =
+          String.format(
+              "First Volume : %s, DataDensity : %f, " +
+              "Last Volume : %s, DataDensity : %f",
+              queue.first().getPath(), queue.first().getVolumeDataDensity(),
+              queue.last().getPath(), queue.last().getVolumeDataDensity());
+      LOG.debug(format);
+    }
   }
 }

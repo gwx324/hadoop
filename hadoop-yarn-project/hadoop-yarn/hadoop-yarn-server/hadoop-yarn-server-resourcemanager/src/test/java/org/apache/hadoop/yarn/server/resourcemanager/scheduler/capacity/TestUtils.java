@@ -18,25 +18,11 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
-import static org.mockito.Matchers.any;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.when;
-
-import java.util.Set;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
-import org.apache.hadoop.yarn.api.records.ApplicationId;
-import org.apache.hadoop.yarn.api.records.Container;
-import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.apache.hadoop.yarn.api.records.NodeId;
-import org.apache.hadoop.yarn.api.records.Priority;
-import org.apache.hadoop.yarn.api.records.Resource;
-import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.api.records.*;
 import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
@@ -51,23 +37,33 @@ import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsMana
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.ContainerAllocationExpirer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerRequestKey;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerNode;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint.AllocationTagsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.AMRMTokenSecretManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
+import org.apache.hadoop.yarn.server.scheduler.SchedulerRequestKey;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.collect.Sets;
+import java.io.IOException;
+import java.util.Map;
+import java.util.Set;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
 
 public class TestUtils {
-  private static final Log LOG = LogFactory.getLog(TestUtils.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestUtils.class);
 
   /**
    * Get a mock {@link RMContext} for use in test cases.
@@ -88,7 +84,7 @@ public class TestUtils {
           EventHandler handler) {
       }
       @Override
-      public EventHandler getEventHandler() {
+      public EventHandler<Event> getEventHandler() {
         return handler; 
       }
     };
@@ -116,7 +112,7 @@ public class TestUtils {
       }
     });
     
-    when(nlm.getResourceByLabel(any(String.class), any(Resource.class)))
+    when(nlm.getResourceByLabel(any(), any(Resource.class)))
         .thenAnswer(new Answer<Resource>() {
           @Override public Resource answer(InvocationOnMock invocation)
               throws Throwable {
@@ -125,6 +121,7 @@ public class TestUtils {
           }
         });
 
+    rmContext.setYarnConfiguration(conf);
     rmContext.setNodeLabelManager(nlm);
     rmContext.setSystemMetricsPublisher(mock(SystemMetricsPublisher.class));
     rmContext.setRMApplicationHistoryWriter(mock(RMApplicationHistoryWriter.class));
@@ -133,13 +130,16 @@ public class TestUtils {
         new DefaultResourceCalculator());
     rmContext.setScheduler(mockScheduler);
 
+    AllocationTagsManager ptm = mock(AllocationTagsManager.class);
+    rmContext.setAllocationTagsManager(ptm);
+
     return rmContext;
   }
   
   /**
    * Hook to spy on queues.
    */
-  static class SpyHook extends CapacityScheduler.QueueHook {
+  static class SpyHook extends CapacitySchedulerQueueManager.QueueHook {
     @Override
     public CSQueue hook(CSQueue queue) {
       return spy(queue);
@@ -161,10 +161,17 @@ public class TestUtils {
   public static ResourceRequest createResourceRequest(
       String resourceName, int memory, int numContainers, boolean relaxLocality,
       Priority priority, RecordFactory recordFactory, String labelExpression) {
-    ResourceRequest request = 
+    return createResourceRequest(resourceName, memory, 1, numContainers,
+        relaxLocality, priority, recordFactory, labelExpression);
+  }
+
+  public static ResourceRequest createResourceRequest(String resourceName,
+      int memory, int vcores, int numContainers, boolean relaxLocality,
+      Priority priority, RecordFactory recordFactory, String labelExpression) {
+    ResourceRequest request =
         recordFactory.newRecordInstance(ResourceRequest.class);
-    Resource capability = Resources.createResource(memory, 1);
-    
+    Resource capability = Resources.createResource(memory, vcores);
+
     request.setNumContainers(numContainers);
     request.setResourceName(resourceName);
     request.setCapability(capability);
@@ -191,17 +198,30 @@ public class TestUtils {
     ApplicationId applicationId = BuilderUtils.newApplicationId(0l, appId);
     return ApplicationAttemptId.newInstance(applicationId, attemptId);
   }
-  
-  public static FiCaSchedulerNode getMockNode(
-      String host, String rack, int port, int capability) {
+
+  public static FiCaSchedulerNode getMockNodeWithAttributes(String host,
+      String rack, int port, int memory, Set<NodeAttribute> attributes) {
+    FiCaSchedulerNode node = getMockNode(host, rack, port, memory, 1);
+    when(node.getNodeAttributes()).thenReturn(attributes);
+    return node;
+  }
+
+  public static FiCaSchedulerNode getMockNode(String host, String rack,
+      int port, int memory) {
+    return getMockNode(host, rack, port, memory, 1);
+  }
+
+  public static FiCaSchedulerNode getMockNode(String host, String rack,
+      int port, int memory, int vcores) {
     NodeId nodeId = NodeId.newInstance(host, port);
     RMNode rmNode = mock(RMNode.class);
     when(rmNode.getNodeID()).thenReturn(nodeId);
     when(rmNode.getTotalCapability()).thenReturn(
-        Resources.createResource(capability, 1));
+        Resources.createResource(memory, vcores));
     when(rmNode.getNodeAddress()).thenReturn(host+":"+port);
     when(rmNode.getHostName()).thenReturn(host);
     when(rmNode.getRackName()).thenReturn(rack);
+    when(rmNode.getState()).thenReturn(NodeState.RUNNING);
     
     FiCaSchedulerNode node = spy(new FiCaSchedulerNode(rmNode, false));
     LOG.info("node = " + host + " avail=" + node.getUnallocatedResource());
@@ -219,6 +239,11 @@ public class TestUtils {
     doReturn((int)id).when(containerId).getId();
     doReturn(id).when(containerId).getContainerId();
     return containerId;
+  }
+
+  public static ContainerId getMockContainerId(int appId, int containerId) {
+    ApplicationAttemptId attemptId = getMockApplicationAttemptId(appId, 1);
+    return ContainerId.newContainerId(attemptId, containerId);
   }
   
   public static Container getMockContainer(
@@ -252,7 +277,7 @@ public class TestUtils {
   public static Configuration getConfigurationWithQueueLabels(Configuration config) {
     CapacitySchedulerConfiguration conf =
         new CapacitySchedulerConfiguration(config);
-    
+
     // Define top-level queues
     conf.setQueues(CapacitySchedulerConfiguration.ROOT, new String[] {"a", "b", "c"});
     conf.setCapacityByLabel(CapacitySchedulerConfiguration.ROOT, "x", 100);
@@ -295,7 +320,7 @@ public class TestUtils {
     
     return conf;
   }
-  
+
   public static Configuration getComplexConfigurationWithQueueLabels(
       Configuration config) {
     CapacitySchedulerConfiguration conf =
@@ -417,5 +442,29 @@ public class TestUtils {
     ResourceRequest req = ResourceRequest.newInstance(pri, null, null, 0);
     req.setAllocationRequestId(allocationRequestId);
     return SchedulerRequestKey.create(req);
+  }
+
+  public static void applyResourceCommitRequest(Resource clusterResource,
+      CSAssignment csAssignment,
+      final Map<NodeId, FiCaSchedulerNode> nodes,
+      final Map<ApplicationAttemptId, FiCaSchedulerApp> apps)
+      throws IOException {
+    CapacityScheduler cs = new CapacityScheduler() {
+      @Override
+      public FiCaSchedulerNode getNode(NodeId nodeId) {
+        return nodes.get(nodeId);
+      }
+
+      @Override
+      public FiCaSchedulerApp getApplicationAttempt(
+          ApplicationAttemptId applicationAttemptId) {
+        return apps.get(applicationAttemptId);
+      }
+    };
+
+    cs.setResourceCalculator(new DefaultResourceCalculator());
+
+    cs.submitResourceCommitRequest(clusterResource,
+        csAssignment);
   }
 }

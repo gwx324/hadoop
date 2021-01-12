@@ -17,23 +17,24 @@
  */
 package org.apache.hadoop.mapreduce.v2.util;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Splitter;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.mapreduce.JobID;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TypeConverter;
 import org.apache.hadoop.mapreduce.v2.jobhistory.JHAdminConfig;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.ipc.RPCUtil;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
+import java.util.NoSuchElementException;
 import java.util.Iterator;
 
 import static org.apache.hadoop.http.HttpConfig.Policy;
@@ -76,7 +77,9 @@ public class MRWebAppUtil {
         : "http://";
   }
 
-  public static String getJHSWebappScheme() {
+  public static String getJHSWebappScheme(Configuration conf) {
+    setHttpPolicyInJHS(conf.get(JHAdminConfig.MR_HS_HTTP_POLICY,
+        JHAdminConfig.DEFAULT_MR_HS_HTTP_POLICY));
     return httpPolicyInJHS == HttpConfig.Policy.HTTPS_ONLY ? "https://"
         : "http://";
   }
@@ -101,7 +104,7 @@ public class MRWebAppUtil {
   }
   
   public static String getJHSWebappURLWithScheme(Configuration conf) {
-    return getJHSWebappScheme() + getJHSWebappURLWithoutScheme(conf);
+    return getJHSWebappScheme(conf) + getJHSWebappURLWithoutScheme(conf);
   }
   
   public static InetSocketAddress getJHSWebBindAddress(Configuration conf) {
@@ -125,9 +128,15 @@ public class MRWebAppUtil {
       throws UnknownHostException {
     //construct the history url for job
     String addr = getJHSWebappURLWithoutScheme(conf);
-    Iterator<String> it = ADDR_SPLITTER.split(addr).iterator();
-    it.next(); // ignore the bind host
-    String port = it.next();
+    String port;
+    try{
+      Iterator<String> it = ADDR_SPLITTER.split(addr).iterator();
+      it.next(); // ignore the bind host
+      port = it.next();
+    } catch(NoSuchElementException e) {
+      throw new IllegalArgumentException("MapReduce JobHistory WebApp Address"
+        + " does not contain a valid host:port authority: " + addr);
+    }
     // Use hs address to figure out the host for webapp
     addr = conf.get(JHAdminConfig.MR_HISTORY_ADDRESS,
         JHAdminConfig.DEFAULT_MR_HISTORY_ADDRESS);
@@ -153,7 +162,7 @@ public class MRWebAppUtil {
   
   public static String getApplicationWebURLOnJHSWithScheme(Configuration conf,
       ApplicationId appId) throws UnknownHostException {
-    return getJHSWebappScheme()
+    return getJHSWebappScheme(conf)
         + getApplicationWebURLOnJHSWithoutScheme(conf, appId);
   }
 
@@ -170,6 +179,9 @@ public class MRWebAppUtil {
   }
 
   public static String getAMWebappScheme(Configuration conf) {
-    return "http://";
+    return conf.getBoolean(
+        MRJobConfig.MR_AM_WEBAPP_HTTPS_ENABLED,
+        MRJobConfig.DEFAULT_MR_AM_WEBAPP_HTTPS_ENABLED)
+        ? "https://" : "http://";
   }
 }

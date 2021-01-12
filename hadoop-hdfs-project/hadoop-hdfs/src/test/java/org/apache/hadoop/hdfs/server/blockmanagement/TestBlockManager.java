@@ -17,29 +17,89 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState.UNDER_CONSTRUCTION;
-import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.verify;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.LinkedListMultimap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
+import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
+import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CreateFlag;
+import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DFSOutputStream;
+import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.apache.hadoop.hdfs.HdfsConfiguration;
+import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.StripedFileTestUtil;
+import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
+import org.apache.hadoop.hdfs.protocol.BlockType;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor.BlockTargetPair;
+import org.apache.hadoop.hdfs.server.common.blockaliasmap.BlockAliasMap;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
+import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.FinalizedReplica;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.TestProvidedImpl;
+import org.apache.hadoop.hdfs.server.datanode.InternalDataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.ReplicaBeingWritten;
+import org.apache.hadoop.hdfs.server.namenode.CacheManager;
+import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
+import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+import org.apache.hadoop.hdfs.server.namenode.INodeId;
+import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+import org.apache.hadoop.hdfs.server.namenode.TestINodeFile;
+import org.apache.hadoop.hdfs.server.namenode.ha.HAContext;
+import org.apache.hadoop.hdfs.server.namenode.ha.HAState;
+import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
+import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
+import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
+import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
+import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
+import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
+import org.apache.hadoop.hdfs.server.protocol.StorageReport;
+import org.apache.hadoop.io.EnumSetWritable;
+import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.io.erasurecode.ECSchema;
+import org.apache.hadoop.ipc.RemoteException;
+import org.apache.hadoop.metrics2.MetricsRecordBuilder;
+import org.apache.hadoop.net.NetworkTopology;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.MetricsAsserts;
+import org.apache.hadoop.util.GSet;
+import org.apache.hadoop.util.LightWeightGSet;
+import org.slf4j.event.Level;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
+import org.mockito.Mockito;
 
 import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.InputStreamReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map.Entry;
@@ -55,60 +115,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.CreateFlag;
-import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.StorageType;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
-import org.apache.hadoop.hdfs.DFSOutputStream;
-import org.apache.hadoop.hdfs.DFSTestUtil;
-import org.apache.hadoop.hdfs.DistributedFileSystem;
-import org.apache.hadoop.hdfs.HdfsConfiguration;
-import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.protocol.Block;
-import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
-import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
-import org.apache.hadoop.hdfs.protocol.LocatedBlock;
-import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
-import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor.BlockTargetPair;
-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
-import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.datanode.InternalDataNodeTestUtils;
-import org.apache.hadoop.hdfs.server.datanode.FinalizedReplica;
-import org.apache.hadoop.hdfs.server.datanode.ReplicaBeingWritten;
-import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
-import org.apache.hadoop.hdfs.server.namenode.INodeFile;
-import org.apache.hadoop.hdfs.server.namenode.INodeId;
-import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
-import org.apache.hadoop.hdfs.server.namenode.TestINodeFile;
-import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
-import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
-import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
-import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
-import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
-import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
-import org.apache.hadoop.hdfs.server.protocol.StorageReport;
-import org.apache.hadoop.io.EnumSetWritable;
-import org.apache.hadoop.io.IOUtils;
-import org.apache.hadoop.ipc.RemoteException;
-import org.apache.hadoop.metrics2.MetricsRecordBuilder;
-import org.apache.hadoop.net.NetworkTopology;
-import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.hadoop.test.MetricsAsserts;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.Mockito;
-
-import com.google.common.base.Joiner;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.LinkedListMultimap;
-import com.google.common.collect.Lists;
+import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState.UNDER_CONSTRUCTION;
+import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class TestBlockManager {
   private DatanodeStorageInfo[] storages;
@@ -125,12 +145,14 @@ public class TestBlockManager {
    * of times trying to trigger the incorrect behavior.
    */
   private static final int NUM_TEST_ITERS = 30;
-  
   private static final int BLOCK_SIZE = 64*1024;
+  private static final org.slf4j.Logger LOG =
+      LoggerFactory.getLogger(TestBlockManager.class);
 
   private FSNamesystem fsn;
   private BlockManager bm;
   private long mockINodeId;
+
 
   @Before
   public void setupMockCluster() throws IOException {
@@ -141,7 +163,19 @@ public class TestBlockManager {
     Mockito.doReturn(true).when(fsn).hasWriteLock();
     Mockito.doReturn(true).when(fsn).hasReadLock();
     Mockito.doReturn(true).when(fsn).isRunning();
+    //Make shouldPopulaeReplQueues return true
+    HAContext haContext = Mockito.mock(HAContext.class);
+    HAState haState = Mockito.mock(HAState.class);
+    Mockito.when(haContext.getState()).thenReturn(haState);
+    Mockito.when(haState.shouldPopulateReplQueues()).thenReturn(true);
+    Mockito.when(fsn.getHAContext()).thenReturn(haContext);
     bm = new BlockManager(fsn, false, conf);
+    CacheManager cm = Mockito.mock(CacheManager.class);
+    Mockito.doReturn(cm).when(fsn).getCacheManager();
+    GSet<CachedBlock, CachedBlock> cb =
+        new LightWeightGSet<CachedBlock, CachedBlock>(1);
+    Mockito.when(cm.getCachedBlocks()).thenReturn(cb);
+
     final String[] racks = {
         "/rackA",
         "/rackA",
@@ -313,6 +347,8 @@ public class TestBlockManager {
   @Test
   public void testOneOfTwoRacksDecommissioned() throws Exception {
     addNodes(nodes);
+    NameNode.initMetrics(new Configuration(),
+        HdfsServerConstants.NamenodeRole.NAMENODE);
     for (int i = 0; i < NUM_TEST_ITERS; i++) {
       doTestOneOfTwoRacksDecommissioned(i);
     }
@@ -415,17 +451,18 @@ public class TestBlockManager {
       throws Exception {
     assertEquals(0, bm.numOfUnderReplicatedBlocks());
     BlockInfo block = addBlockOnNodes(testIndex, origNodes);
-    assertFalse(bm.isNeededReconstruction(block, bm.countLiveNodes(block)));
+    assertFalse(bm.isNeededReconstruction(block,
+        bm.countNodes(block, fsn.isInStartupSafeMode())));
   }
-  
+
   @Test(timeout = 60000)
   public void testNeededReconstructionWhileAppending() throws IOException {
     Configuration conf = new HdfsConfiguration();
     String src = "/test-file";
     Path file = new Path(src);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
-    cluster.waitActive();
     try {
+      cluster.waitActive();
       BlockManager bm = cluster.getNamesystem().getBlockManager();
       FileSystem fs = cluster.getFileSystem();
       NamenodeProtocols namenode = cluster.getNameNodeRpc();
@@ -458,15 +495,52 @@ public class TestBlockManager {
         namenode.updatePipeline(clientName, oldBlock, newBlock,
             newLocatedBlock.getLocations(), newLocatedBlock.getStorageIDs());
         BlockInfo bi = bm.getStoredBlock(newBlock.getLocalBlock());
-        assertFalse(bm.isNeededReconstruction(bi, bm.countLiveNodes(bi)));
+        assertFalse(bm.isNeededReconstruction(bi, bm.countNodes(bi,
+            cluster.getNamesystem().isInStartupSafeMode())));
       } finally {
         IOUtils.closeStream(out);
       }
     } finally {
-      cluster.shutdown();
+      if (cluster != null) {
+        cluster.shutdown();
+      }
     }
   }
-  
+
+  @Test(timeout = 60000)
+  public void testDeleteCorruptReplicaWithStatleStorages() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    conf.setInt(HdfsClientConfigKeys.BlockWrite.ReplaceDatanodeOnFailure.
+        MIN_REPLICATION, 2);
+    Path file = new Path("/test-file");
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
+    try {
+      cluster.waitActive();
+      BlockManager blockManager = cluster.getNamesystem().getBlockManager();
+      blockManager.getDatanodeManager().markAllDatanodesStale();
+      FileSystem fs = cluster.getFileSystem();
+      FSDataOutputStream out = fs.create(file);
+      for (int i = 0; i < 1024 * 1024 * 1; i++) {
+        out.write(i);
+      }
+      out.hflush();
+      MiniDFSCluster.DataNodeProperties datanode = cluster.stopDataNode(0);
+      for (int i = 0; i < 1024 * 1024 * 1; i++) {
+        out.write(i);
+      }
+      out.close();
+      cluster.restartDataNode(datanode);
+      cluster.triggerBlockReports();
+      DataNodeTestUtils.triggerBlockReport(datanode.getDatanode());
+      assertEquals(0, blockManager.getCorruptBlocks());
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
   /**
    * Tell the block manager that replication is completed for the given
    * pipeline.
@@ -515,7 +589,7 @@ public class TestBlockManager {
     }
     return ret;
   }
-  
+
   private List<DatanodeDescriptor> startDecommission(int ... indexes) {
     List<DatanodeDescriptor> nodes = getNodes(indexes);
     for (DatanodeDescriptor node : nodes) {
@@ -627,6 +701,7 @@ public class TestBlockManager {
             liveNodes,
             new NumberReplicas(),
             new ArrayList<Byte>(),
+            new ArrayList<Byte>(),
             LowRedundancyBlocks.QUEUE_HIGHEST_PRIORITY)[0]);
 
     assertEquals("Does not choose a source node for a less-than-highest-priority"
@@ -637,6 +712,7 @@ public class TestBlockManager {
             cntNodes,
             liveNodes,
             new NumberReplicas(),
+            new ArrayList<Byte>(),
             new ArrayList<Byte>(),
             LowRedundancyBlocks.QUEUE_VERY_LOW_REDUNDANCY).length);
 
@@ -652,7 +728,130 @@ public class TestBlockManager {
             liveNodes,
             new NumberReplicas(),
             new ArrayList<Byte>(),
+            new ArrayList<Byte>(),
             LowRedundancyBlocks.QUEUE_HIGHEST_PRIORITY).length);
+  }
+
+  @Test
+  public void testChooseSrcDatanodesWithDupEC() throws Exception {
+    bm.maxReplicationStreams = 4;
+
+    long blockId = -9223372036854775776L; // real ec block id
+    Block aBlock = new Block(blockId, 0, 0);
+    // ec policy
+    ECSchema rsSchema = new ECSchema("rs", 3, 2);
+    String policyName = "RS-3-2-128k";
+    int cellSize = 128 * 1024;
+    ErasureCodingPolicy ecPolicy =
+        new ErasureCodingPolicy(policyName, rsSchema, cellSize, (byte) -1);
+    // striped blockInfo
+    BlockInfoStriped aBlockInfoStriped = new BlockInfoStriped(aBlock, ecPolicy);
+    // ec storageInfo
+    DatanodeStorageInfo ds1 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage1", "1.1.1.1", "rack1", "host1");
+    DatanodeStorageInfo ds2 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage2", "2.2.2.2", "rack2", "host2");
+    DatanodeStorageInfo ds3 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage3", "3.3.3.3", "rack3", "host3");
+    DatanodeStorageInfo ds4 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage4", "4.4.4.4", "rack4", "host4");
+    DatanodeStorageInfo ds5 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage5", "5.5.5.5", "rack5", "host5");
+    // link block with storage
+    aBlockInfoStriped.addStorage(ds1, aBlock);
+    aBlockInfoStriped.addStorage(ds2, new Block(blockId + 1, 0, 0));
+    aBlockInfoStriped.addStorage(ds3, new Block(blockId + 2, 0, 0));
+    // dup internal block
+    aBlockInfoStriped.addStorage(ds4, new Block(blockId + 3, 0, 0));
+    aBlockInfoStriped.addStorage(ds5, new Block(blockId + 3, 0, 0));
+    // simulate the node 2 arrive maxReplicationStreams
+    for(int i = 0; i < 4; i++){
+      ds4.getDatanodeDescriptor().incrementPendingReplicationWithoutTargets();
+    }
+
+    addEcBlockToBM(blockId, ecPolicy);
+    List<DatanodeDescriptor> cntNodes = new LinkedList<DatanodeDescriptor>();
+    List<DatanodeStorageInfo> liveNodes = new LinkedList<DatanodeStorageInfo>();
+    NumberReplicas numReplicas = new NumberReplicas();
+    List<Byte> liveBlockIndices = new ArrayList<>();
+    List<Byte> liveBusyBlockIndices = new ArrayList<>();
+
+    bm.chooseSourceDatanodes(
+            aBlockInfoStriped,
+            cntNodes,
+            liveNodes,
+            numReplicas, liveBlockIndices,
+            liveBusyBlockIndices,
+            LowRedundancyBlocks.QUEUE_VERY_LOW_REDUNDANCY);
+
+    assertEquals("Choose the source node for reconstruction with one node reach"
+            + " the MAX maxReplicationStreams, the numReplicas still return the"
+            + " correct live replicas.", 4,
+            numReplicas.liveReplicas());
+
+    assertEquals("Choose the source node for reconstruction with one node reach"
+            + " the MAX maxReplicationStreams, the numReplicas should return"
+            + " the correct redundant Internal Blocks.", 1,
+            numReplicas.redundantInternalBlocks());
+  }
+
+  @Test
+  public void testChooseSrcDNWithDupECInDecommissioningNode() throws Exception {
+    long blockId = -9223372036854775776L; // real ec block id
+    Block aBlock = new Block(blockId, 0, 0);
+    // RS-3-2 EC policy
+    ErasureCodingPolicy ecPolicy =
+        SystemErasureCodingPolicies.getPolicies().get(1);
+    // striped blockInfo
+    BlockInfoStriped aBlockInfoStriped = new BlockInfoStriped(aBlock, ecPolicy);
+    // ec storageInfo
+    DatanodeStorageInfo ds1 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage1", "1.1.1.1", "rack1", "host1");
+    DatanodeStorageInfo ds2 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage2", "2.2.2.2", "rack2", "host2");
+    DatanodeStorageInfo ds3 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage3", "3.3.3.3", "rack3", "host3");
+    DatanodeStorageInfo ds4 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage4", "4.4.4.4", "rack4", "host4");
+    DatanodeStorageInfo ds5 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage5", "5.5.5.5", "rack5", "host5");
+    DatanodeStorageInfo ds6 = DFSTestUtil.createDatanodeStorageInfo(
+        "storage6", "6.6.6.6", "rack6", "host6");
+
+    // link block with storage
+    aBlockInfoStriped.addStorage(ds1, aBlock);
+    aBlockInfoStriped.addStorage(ds2, new Block(blockId + 1, 0, 0));
+    aBlockInfoStriped.addStorage(ds3, new Block(blockId + 2, 0, 0));
+    aBlockInfoStriped.addStorage(ds4, new Block(blockId + 3, 0, 0));
+    aBlockInfoStriped.addStorage(ds5, new Block(blockId + 4, 0, 0));
+    // NOTE: duplicate block 0，this DN will replace the decommission ds1 DN
+    aBlockInfoStriped.addStorage(ds6, aBlock);
+
+    addEcBlockToBM(blockId, ecPolicy);
+    // decommission datanode where store block 0
+    ds1.getDatanodeDescriptor().startDecommission();
+
+    List<DatanodeDescriptor> containingNodes =
+        new LinkedList<DatanodeDescriptor>();
+    List<DatanodeStorageInfo> nodesContainingLiveReplicas =
+        new LinkedList<DatanodeStorageInfo>();
+    NumberReplicas numReplicas = new NumberReplicas();
+    List<Byte> liveBlockIndices = new ArrayList<>();
+    List<Byte> liveBusyBlockIndices = new ArrayList<>();
+
+    bm.chooseSourceDatanodes(
+        aBlockInfoStriped,
+        containingNodes,
+        nodesContainingLiveReplicas,
+        numReplicas, liveBlockIndices,
+        liveBusyBlockIndices,
+        LowRedundancyBlocks.QUEUE_HIGHEST_PRIORITY);
+    assertEquals("There are 5 live replicas in " +
+            "[ds2, ds3, ds4, ds5, ds6] datanodes ",
+        5, numReplicas.liveReplicas());
+    assertEquals("The ds1 datanode is in decommissioning, " +
+            "so there is no redundant replica",
+        0, numReplicas.redundantInternalBlocks());
   }
 
   @Test
@@ -677,7 +876,9 @@ public class TestBlockManager {
             bm.getStoredBlock(aBlock),
             cntNodes,
             liveNodes,
-            new NumberReplicas(), new LinkedList<Byte>(),
+            new NumberReplicas(),
+            new LinkedList<Byte>(),
+            new ArrayList<Byte>(),
             LowRedundancyBlocks.QUEUE_LOW_REDUNDANCY)[0]);
 
 
@@ -691,7 +892,9 @@ public class TestBlockManager {
             bm.getStoredBlock(aBlock),
             cntNodes,
             liveNodes,
-            new NumberReplicas(), new LinkedList<Byte>(),
+            new NumberReplicas(),
+            new LinkedList<Byte>(),
+            new ArrayList<Byte>(),
             LowRedundancyBlocks.QUEUE_LOW_REDUNDANCY).length);
   }
 
@@ -716,12 +919,12 @@ public class TestBlockManager {
     reset(node);
     
     bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
-        BlockListAsLongs.EMPTY, null, false);
+        BlockListAsLongs.EMPTY, null);
     assertEquals(1, ds.getBlockReportCount());
     // send block report again, should NOT be processed
     reset(node);
     bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
-        BlockListAsLongs.EMPTY, null, false);
+        BlockListAsLongs.EMPTY, null);
     assertEquals(1, ds.getBlockReportCount());
 
     // re-register as if node restarted, should update existing node
@@ -732,7 +935,7 @@ public class TestBlockManager {
     // send block report, should be processed after restart
     reset(node);
     bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
-                     BlockListAsLongs.EMPTY, null, false);
+                     BlockListAsLongs.EMPTY, null);
     // Reinitialize as registration with empty storage list pruned
     // node.storageMap.
     ds = node.getStorageInfos()[0];
@@ -761,7 +964,7 @@ public class TestBlockManager {
     reset(node);
     doReturn(1).when(node).numBlocks();
     bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
-        BlockListAsLongs.EMPTY, null, false);
+        BlockListAsLongs.EMPTY, null);
     assertEquals(1, ds.getBlockReportCount());
   }
 
@@ -835,7 +1038,7 @@ public class TestBlockManager {
     assertEquals(0, ds.getBlockReportCount());
     bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
         builder.build(),
-        new BlockReportContext(1, 0, System.nanoTime(), 0, true), false);
+        new BlockReportContext(1, 0, System.nanoTime(), 0, true));
     assertEquals(1, ds.getBlockReportCount());
 
     // verify the storage info is correct
@@ -848,6 +1051,57 @@ public class TestBlockManager {
     assertNull(bm.getStoredBlock(new Block(ReceivedDeletedBlockId)));
     assertTrue(bm.getStoredBlock(new Block(existedBlock)).findStorageInfo
         (ds) >= 0);
+  }
+
+  @Test
+  public void testSafeModeWithProvidedStorageBR() throws Exception {
+    DatanodeDescriptor node0 = spy(nodes.get(0));
+    DatanodeStorageInfo ds0 = node0.getStorageInfos()[0];
+    node0.setAlive(true);
+    DatanodeDescriptor node1 = spy(nodes.get(1));
+    DatanodeStorageInfo ds1 = node1.getStorageInfos()[0];
+    node1.setAlive(true);
+
+    String providedStorageID = DFSConfigKeys.DFS_PROVIDER_STORAGEUUID_DEFAULT;
+    DatanodeStorage providedStorage = new DatanodeStorage(
+        providedStorageID, DatanodeStorage.State.NORMAL, StorageType.PROVIDED);
+
+    // create block manager with provided storage enabled
+    Configuration conf = new HdfsConfiguration();
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_PROVIDED_ENABLED, true);
+    conf.setClass(DFSConfigKeys.DFS_PROVIDED_ALIASMAP_CLASS,
+        TestProvidedImpl.TestFileRegionBlockAliasMap.class,
+        BlockAliasMap.class);
+    BlockManager bmPs = new BlockManager(fsn, false, conf);
+    bmPs.setBlockPoolId("BP-12344-10.1.1.2-12344");
+
+    // pretend to be in safemode
+    doReturn(true).when(fsn).isInStartupSafeMode();
+
+    // register new node
+    DatanodeRegistration nodeReg0 =
+        new DatanodeRegistration(node0, null, null, "");
+    bmPs.getDatanodeManager().registerDatanode(nodeReg0);
+    bmPs.getDatanodeManager().addDatanode(node0);
+    DatanodeRegistration nodeReg1 =
+        new DatanodeRegistration(node1, null, null, "");
+    bmPs.getDatanodeManager().registerDatanode(nodeReg1);
+    bmPs.getDatanodeManager().addDatanode(node1);
+
+    // process reports of provided storage and disk storage
+    bmPs.processReport(node0, providedStorage, BlockListAsLongs.EMPTY, null);
+    bmPs.processReport(node0, new DatanodeStorage(ds0.getStorageID()),
+        BlockListAsLongs.EMPTY, null);
+    bmPs.processReport(node1, providedStorage, BlockListAsLongs.EMPTY, null);
+    bmPs.processReport(node1, new DatanodeStorage(ds1.getStorageID()),
+        BlockListAsLongs.EMPTY, null);
+
+    // The provided stoage report should not affect disk storage report
+    DatanodeStorageInfo dsPs =
+        bmPs.getProvidedStorageMap().getProvidedStorageInfo();
+    assertEquals(2, dsPs.getBlockReportCount());
+    assertEquals(1, ds0.getBlockReportCount());
+    assertEquals(1, ds1.getBlockReportCount());
   }
 
   @Test
@@ -874,8 +1128,7 @@ public class TestBlockManager {
     assertEquals(0, ds.getBlockReportCount());
     bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
                      generateReport(blocks),
-                     new BlockReportContext(1, 0, System.nanoTime(), 0, false),
-                     false);
+                     new BlockReportContext(1, 0, System.nanoTime(), 0, false));
     assertEquals(1, ds.getBlockReportCount());
     // verify the storage info is correct
     for (BlockInfo block : blocks) {
@@ -885,8 +1138,7 @@ public class TestBlockManager {
     // Send unsorted report
     bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
                      generateReport(blocks),
-                     new BlockReportContext(1, 0, System.nanoTime(), 0, false),
-                     false);
+                     new BlockReportContext(1, 0, System.nanoTime(), 0, false));
     assertEquals(2, ds.getBlockReportCount());
     // verify the storage info is correct
     for (BlockInfo block : blocks) {
@@ -897,8 +1149,7 @@ public class TestBlockManager {
     Collections.sort(blocks);
     bm.processReport(node, new DatanodeStorage(ds.getStorageID()),
                      generateReport(blocks),
-                     new BlockReportContext(1, 0, System.nanoTime(), 0, true),
-                     false);
+                     new BlockReportContext(1, 0, System.nanoTime(), 0, true));
     assertEquals(3, ds.getBlockReportCount());
     // verify the storage info is correct
     for (BlockInfo block : blocks) {
@@ -912,6 +1163,55 @@ public class TestBlockManager {
       builder.add(new FinalizedReplica(block, null, null));
     }
     return builder.build();
+  }
+
+  @Test
+  public void testUCBlockNotConsideredMissing() throws Exception {
+    DatanodeDescriptor node = nodes.get(0);
+    DatanodeStorageInfo ds = node.getStorageInfos()[0];
+    node.setAlive(true);
+    DatanodeRegistration nodeReg =
+        new DatanodeRegistration(node, null, null, "");
+
+    // register new node
+    bm.getDatanodeManager().registerDatanode(nodeReg);
+    bm.getDatanodeManager().addDatanode(node);
+
+    // Build an incremental report
+    List<ReceivedDeletedBlockInfo> rdbiList = new ArrayList<>();
+
+    // blk_42 is under construction, finalizes on one node and is
+    // immediately deleted on same node
+    long blockId = 42;  // arbitrary
+    BlockInfo receivedBlock = addUcBlockToBM(blockId);
+
+    rdbiList.add(new ReceivedDeletedBlockInfo(new Block(receivedBlock),
+        ReceivedDeletedBlockInfo.BlockStatus.RECEIVED_BLOCK, null));
+    rdbiList.add(new ReceivedDeletedBlockInfo(
+        new Block(blockId),
+        ReceivedDeletedBlockInfo.BlockStatus.DELETED_BLOCK, null));
+
+    // process IBR
+    StorageReceivedDeletedBlocks srdb =
+        new StorageReceivedDeletedBlocks(new DatanodeStorage(ds.getStorageID()),
+            rdbiList.toArray(new ReceivedDeletedBlockInfo[rdbiList.size()]));
+    bm.setInitializedReplQueues(true);
+    bm.processIncrementalBlockReport(node, srdb);
+    // Needed replications should still be 0.
+    assertEquals("UC block was incorrectly added to needed Replications",
+        0, bm.neededReconstruction.size());
+    bm.setInitializedReplQueues(false);
+  }
+
+  private BlockInfo addEcBlockToBM(long blkId, ErasureCodingPolicy ecPolicy) {
+    Block block = new Block(blkId);
+    BlockInfo blockInfo = new BlockInfoStriped(block, ecPolicy);
+    long inodeId = ++mockINodeId;
+    final INodeFile bc = TestINodeFile.createINodeFile(inodeId);
+    bm.blocksMap.addBlockCollection(blockInfo, bc);
+    blockInfo.setBlockCollectionId(inodeId);
+    doReturn(bc).when(fsn).getBlockCollection(inodeId);
+    return blockInfo;
   }
 
   private BlockInfo addBlockToBM(long blkId) {
@@ -971,8 +1271,7 @@ public class TestBlockManager {
         		0x1BAD5EED);
       }
       catch (RemoteException re) {
-    	  GenericTestUtils.assertExceptionContains("nodes instead of "
-    	  		+ "minReplication", re);
+        GenericTestUtils.assertExceptionContains("of the 1 minReplication", re);
       }
     }
     finally {
@@ -980,7 +1279,9 @@ public class TestBlockManager {
       assertTrue(fs.exists(file1));
       fs.delete(file1, true);
       assertTrue(!fs.exists(file1));
-      cluster.shutdown();
+      if (cluster != null) {
+        cluster.shutdown();
+      }
     }
   }
 
@@ -1013,6 +1314,7 @@ public class TestBlockManager {
 
       final CyclicBarrier startBarrier = new CyclicBarrier(2);
       final CountDownLatch endLatch = new CountDownLatch(3);
+      final CountDownLatch doneLatch = new CountDownLatch(1);
 
       // create a task intended to block while processing, thus causing
       // the queue to backup.  simulates how a full BR is processed.
@@ -1020,7 +1322,7 @@ public class TestBlockManager {
           new Callable<Void>(){
             @Override
             public Void call() throws IOException {
-              return bm.runBlockOp(new Callable<Void>() {
+              bm.runBlockOp(new Callable<Void>() {
                 @Override
                 public Void call()
                     throws InterruptedException, BrokenBarrierException {
@@ -1030,6 +1332,9 @@ public class TestBlockManager {
                   return null;
                 }
               });
+              // signal that runBlockOp returned
+              doneLatch.countDown();
+              return null;
             }
           });
 
@@ -1074,16 +1379,19 @@ public class TestBlockManager {
       startBarrier.await(1, TimeUnit.SECONDS);
       assertTrue(endLatch.await(1, TimeUnit.SECONDS));
       assertEquals(0, bm.getBlockOpQueueLength());
-      assertTrue(blockingOp.isDone());
+      assertTrue(doneLatch.await(1, TimeUnit.SECONDS));
     } finally {
-      cluster.shutdown();
+      if (cluster != null) {
+        cluster.shutdown();
+      }
     }
   }
 
   // spam the block manager with IBRs to verify queuing is occurring.
   @Test
   public void testAsyncIBR() throws Exception {
-    Logger.getRootLogger().setLevel(Level.WARN);
+    GenericTestUtils.setLogLevel(
+        LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME), Level.WARN);
 
     // will create files with many small blocks.
     final int blkSize = 4*1024;
@@ -1151,83 +1459,94 @@ public class TestBlockManager {
       long batched = MetricsAsserts.getLongCounter("BlockOpsBatched", rb);
       assertTrue(batched > 0);
     } finally {
-      cluster.shutdown();
+      if (cluster != null) {
+        cluster.shutdown();
+      }
     }
   }
 
-  @Test
+  @Test(timeout = 60000)
   public void testBlockManagerMachinesArray() throws Exception {
     final Configuration conf = new HdfsConfiguration();
     final MiniDFSCluster cluster =
         new MiniDFSCluster.Builder(conf).numDataNodes(4).build();
-    cluster.waitActive();
-    BlockManager blockManager = cluster.getNamesystem().getBlockManager();
-    FileSystem fs = cluster.getFileSystem();
-    final Path filePath = new Path("/tmp.txt");
-    final long fileLen = 1L;
-    DFSTestUtil.createFile(fs, filePath, fileLen, (short) 3, 1L);
-    ArrayList<DataNode> datanodes = cluster.getDataNodes();
-    assertEquals(datanodes.size(), 4);
-    FSNamesystem ns = cluster.getNamesystem();
-    // get the block
-    final String bpid = cluster.getNamesystem().getBlockPoolId();
-    File storageDir = cluster.getInstanceStorageDir(0, 0);
-    File dataDir = MiniDFSCluster.getFinalizedDir(storageDir, bpid);
-    assertTrue("Data directory does not exist", dataDir.exists());
-    BlockInfo blockInfo = blockManager.blocksMap.getBlocks().iterator().next();
-    ExtendedBlock blk = new ExtendedBlock(bpid, blockInfo.getBlockId(),
-        blockInfo.getNumBytes(), blockInfo.getGenerationStamp());
-    DatanodeDescriptor failedStorageDataNode =
-        blockManager.getStoredBlock(blockInfo).getDatanode(0);
-    DatanodeDescriptor corruptStorageDataNode =
-        blockManager.getStoredBlock(blockInfo).getDatanode(1);
+    try {
+      cluster.waitActive();
+      BlockManager blockManager = cluster.getNamesystem().getBlockManager();
+      FileSystem fs = cluster.getFileSystem();
+      final Path filePath = new Path("/tmp.txt");
+      final long fileLen = 1L;
+      DFSTestUtil.createFile(fs, filePath, fileLen, (short) 3, 1L);
+      DFSTestUtil.waitForReplication((DistributedFileSystem)fs,
+          filePath, (short) 3, 60000);
+      ArrayList<DataNode> datanodes = cluster.getDataNodes();
+      assertEquals(datanodes.size(), 4);
+      FSNamesystem ns = cluster.getNamesystem();
+      // get the block
+      final String bpid = cluster.getNamesystem().getBlockPoolId();
+      File storageDir = cluster.getInstanceStorageDir(0, 0);
+      File dataDir = MiniDFSCluster.getFinalizedDir(storageDir, bpid);
+      assertTrue("Data directory does not exist", dataDir.exists());
+      BlockInfo blockInfo =
+          blockManager.blocksMap.getBlocks().iterator().next();
+      ExtendedBlock blk = new ExtendedBlock(bpid, blockInfo.getBlockId(),
+          blockInfo.getNumBytes(), blockInfo.getGenerationStamp());
+      DatanodeDescriptor failedStorageDataNode =
+          blockManager.getStoredBlock(blockInfo).getDatanode(0);
+      DatanodeDescriptor corruptStorageDataNode =
+          blockManager.getStoredBlock(blockInfo).getDatanode(1);
 
-    ArrayList<StorageReport> reports = new ArrayList<StorageReport>();
-    for(int i=0; i<failedStorageDataNode.getStorageInfos().length; i++) {
-      DatanodeStorageInfo storageInfo = failedStorageDataNode
-          .getStorageInfos()[i];
-      DatanodeStorage dns = new DatanodeStorage(
-          failedStorageDataNode.getStorageInfos()[i].getStorageID(),
-          DatanodeStorage.State.FAILED,
-          failedStorageDataNode.getStorageInfos()[i].getStorageType());
-      while(storageInfo.getBlockIterator().hasNext()) {
-        BlockInfo blockInfo1 = storageInfo.getBlockIterator().next();
-        if(blockInfo1.equals(blockInfo)) {
-          StorageReport report = new StorageReport(
-              dns, true, storageInfo.getCapacity(),
-              storageInfo.getDfsUsed(), storageInfo.getRemaining(),
-              storageInfo.getBlockPoolUsed());
-          reports.add(report);
-          break;
+      ArrayList<StorageReport> reports = new ArrayList<StorageReport>();
+      for(int i=0; i<failedStorageDataNode.getStorageInfos().length; i++) {
+        DatanodeStorageInfo storageInfo = failedStorageDataNode
+            .getStorageInfos()[i];
+        DatanodeStorage dns = new DatanodeStorage(
+            failedStorageDataNode.getStorageInfos()[i].getStorageID(),
+            DatanodeStorage.State.FAILED,
+            failedStorageDataNode.getStorageInfos()[i].getStorageType());
+        while(storageInfo.getBlockIterator().hasNext()) {
+          BlockInfo blockInfo1 = storageInfo.getBlockIterator().next();
+          if(blockInfo1.equals(blockInfo)) {
+            StorageReport report = new StorageReport(
+                dns, true, storageInfo.getCapacity(),
+                storageInfo.getDfsUsed(), storageInfo.getRemaining(),
+                storageInfo.getBlockPoolUsed(), 0L);
+            reports.add(report);
+            break;
+          }
         }
       }
-    }
-    failedStorageDataNode.updateHeartbeat(reports.toArray(StorageReport
-        .EMPTY_ARRAY), 0L, 0L, 0, 0, null);
-    ns.writeLock();
-    DatanodeStorageInfo corruptStorageInfo= null;
-    for(int i=0; i<corruptStorageDataNode.getStorageInfos().length; i++) {
-      corruptStorageInfo = corruptStorageDataNode.getStorageInfos()[i];
-      while(corruptStorageInfo.getBlockIterator().hasNext()) {
-        BlockInfo blockInfo1 = corruptStorageInfo.getBlockIterator().next();
-        if (blockInfo1.equals(blockInfo)) {
-          break;
+      failedStorageDataNode.updateHeartbeat(reports.toArray(StorageReport
+          .EMPTY_ARRAY), 0L, 0L, 0, 0, null);
+      ns.writeLock();
+      DatanodeStorageInfo corruptStorageInfo= null;
+      for(int i=0; i<corruptStorageDataNode.getStorageInfos().length; i++) {
+        corruptStorageInfo = corruptStorageDataNode.getStorageInfos()[i];
+        while(corruptStorageInfo.getBlockIterator().hasNext()) {
+          BlockInfo blockInfo1 = corruptStorageInfo.getBlockIterator().next();
+          if (blockInfo1.equals(blockInfo)) {
+            break;
+          }
         }
       }
+      blockManager.findAndMarkBlockAsCorrupt(blk, corruptStorageDataNode,
+          corruptStorageInfo.getStorageID(),
+          CorruptReplicasMap.Reason.ANY.toString());
+      ns.writeUnlock();
+      BlockInfo[] blockInfos = new BlockInfo[] {blockInfo};
+      ns.readLock();
+      LocatedBlocks locatedBlocks =
+          blockManager.createLocatedBlocks(blockInfos, 3L, false, 0L, 3L,
+              false, false, null, null);
+      assertTrue("Located Blocks should exclude corrupt" +
+              "replicas and failed storages",
+          locatedBlocks.getLocatedBlocks().size() == 1);
+      ns.readUnlock();
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
     }
-    blockManager.findAndMarkBlockAsCorrupt(blk, corruptStorageDataNode,
-        corruptStorageInfo.getStorageID(),
-        CorruptReplicasMap.Reason.ANY.toString());
-    ns.writeUnlock();
-    BlockInfo[] blockInfos = new BlockInfo[] {blockInfo};
-    ns.readLock();
-    LocatedBlocks locatedBlocks =
-        blockManager.createLocatedBlocks(blockInfos, 3L, false, 0L, 3L,
-        false, false, null, null);
-    assertTrue("Located Blocks should exclude corrupt" +
-        "replicas and failed storages",
-        locatedBlocks.getLocatedBlocks().size() == 1);
-    ns.readUnlock();
   }
 
   @Test
@@ -1242,17 +1561,21 @@ public class TestBlockManager {
     FileInputStream fstream = new FileInputStream(file);
     DataInputStream in = new DataInputStream(fstream);
     BufferedReader reader = new BufferedReader(new InputStreamReader(in));
+    String corruptBlocksLine;
+    Boolean foundIt = false;
     try {
-      for(int i =0;i<6;i++) {
-        reader.readLine();
+      while ((corruptBlocksLine = reader.readLine()) != null) {
+        if (corruptBlocksLine.compareTo("Corrupt Blocks:") == 0) {
+          foundIt = true;
+          break;
+        }
       }
-      String corruptBlocksLine = reader.readLine();
-      assertEquals("Unexpected text in metasave," +
-              "was expecting corrupt blocks section!", 0,
-          corruptBlocksLine.compareTo("Corrupt Blocks:"));
+      assertTrue("Unexpected text in metasave," +
+              "was expecting corrupt blocks section!", foundIt);
       corruptBlocksLine = reader.readLine();
-      String regex = "Block=[0-9]+\\tNode=.*\\tStorageID=.*StorageState.*" +
-          "TotalReplicas=.*Reason=GENSTAMP_MISMATCH";
+      String regex = "Block=blk_[0-9]+_[0-9]+\\tSize=.*\\tNode=.*" +
+          "\\tStorageID=.*\\tStorageState.*" +
+          "\\tTotalReplicas=.*\\tReason=GENSTAMP_MISMATCH";
       assertTrue("Unexpected corrupt block section in metasave!",
           corruptBlocksLine.matches(regex));
       corruptBlocksLine = reader.readLine();
@@ -1275,13 +1598,355 @@ public class TestBlockManager {
     spyBM.createLocatedBlocks(new BlockInfo[]{blockInfo}, 3L, false, 0L, 3L,
         false, false, null, null);
     verify(spyBM, Mockito.atLeast(0)).
-        isReplicaCorrupt(Mockito.any(BlockInfo.class),
-            Mockito.any(DatanodeDescriptor.class));
+        isReplicaCorrupt(any(BlockInfo.class),
+            any(DatanodeDescriptor.class));
     addCorruptBlockOnNodes(0, origNodes);
     spyBM.createLocatedBlocks(new BlockInfo[]{blockInfo}, 3L, false, 0L, 3L,
         false, false, null, null);
     verify(spyBM, Mockito.atLeast(1)).
-        isReplicaCorrupt(Mockito.any(BlockInfo.class),
-            Mockito.any(DatanodeDescriptor.class));
+        isReplicaCorrupt(any(BlockInfo.class),
+            any(DatanodeDescriptor.class));
+  }
+
+  @Test (timeout = 300000)
+  public void testPlacementPolicySatisfied() throws Exception {
+    LOG.info("Starting testPlacementPolicySatisfied.");
+    final String[] initialRacks = new String[]{
+        "/rack0", "/rack1", "/rack2", "/rack3", "/rack4", "/rack5"};
+    final String[] initialHosts = new String[]{
+        "host0", "host1", "host2", "host3", "host4", "host5"};
+    final int numDataBlocks = StripedFileTestUtil.getDefaultECPolicy()
+        .getNumDataUnits();
+    final int numParityBlocks = StripedFileTestUtil.getDefaultECPolicy()
+        .getNumParityUnits();
+    final long blockSize = 6 * 1024 * 1024;
+    Configuration conf = new Configuration();
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
+    conf.setLong(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
+    MiniDFSCluster cluster = null;
+    try {
+      cluster = new MiniDFSCluster.Builder(conf)
+          .racks(initialRacks)
+          .hosts(initialHosts)
+          .numDataNodes(initialRacks.length)
+          .build();
+      cluster.waitActive();
+      final DistributedFileSystem dfs = cluster.getFileSystem();
+      final Path ecDir = new Path("/ec");
+      final Path testFileUnsatisfied = new Path(ecDir, "test1");
+      final Path testFileSatisfied = new Path(ecDir, "test2");
+      dfs.enableErasureCodingPolicy(
+          StripedFileTestUtil.getDefaultECPolicy().getName());
+      cluster.getFileSystem().getClient().mkdirs(ecDir.toString(), null, true);
+      cluster.getFileSystem().getClient()
+          .setErasureCodingPolicy(ecDir.toString(),
+              StripedFileTestUtil.getDefaultECPolicy().getName());
+      long fileLen = blockSize * numDataBlocks;
+
+      // Create a file to be stored in 6 racks.
+      DFSTestUtil.createFile(dfs, testFileUnsatisfied, fileLen, (short) 1, 1);
+      // Block placement policy should be satisfied as rack count
+      // is less than numDataBlocks + numParityBlocks.
+      verifyPlacementPolicy(cluster, testFileUnsatisfied, true);
+
+      LOG.info("Adding 3 new hosts in the existing racks.");
+      cluster.startDataNodes(conf, 3, true, null,
+          new String[]{"/rack3", "/rack4", "/rack5"},
+          new String[]{"host3-2", "host4-2", "host5-2"}, null);
+      cluster.triggerHeartbeats();
+
+      LOG.info("Waiting for EC reconstruction to complete.");
+      DFSTestUtil.waitForReplication(dfs, testFileUnsatisfied,
+          (short)(numDataBlocks + numParityBlocks), 30 * 1000);
+      // Block placement policy should still be satisfied
+      // as there are only 6 racks.
+      verifyPlacementPolicy(cluster, testFileUnsatisfied, true);
+
+      LOG.info("Adding 3 new hosts in 3 new racks.");
+      cluster.startDataNodes(conf, 3, true, null,
+          new String[]{"/rack6", "/rack7", "/rack8"},
+          new String[]{"host6", "host7", "host8"},
+          null);
+      cluster.triggerHeartbeats();
+      // Addition of new racks can make the existing EC files block
+      // placements unsatisfied and there is NO automatic block
+      // reconstruction for this yet.
+      // TODO:
+      //  Verify for block placement satisfied once the automatic
+      //  block reconstruction is implemented.
+      verifyPlacementPolicy(cluster, testFileUnsatisfied, false);
+
+      // Create a new file
+      DFSTestUtil.createFile(dfs, testFileSatisfied, fileLen, (short) 1, 1);
+      // The new file should be rightly placed on all 9 racks
+      // and the block placement policy should be satisfied.
+      verifyPlacementPolicy(cluster, testFileUnsatisfied, false);
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  private void verifyPlacementPolicy(final MiniDFSCluster cluster,
+      final Path file, boolean isBlockPlacementSatisfied) throws IOException {
+    DistributedFileSystem dfs = cluster.getFileSystem();
+    BlockManager blockManager = cluster.getNamesystem().getBlockManager();
+    LocatedBlock lb = DFSTestUtil.getAllBlocks(dfs, file).get(0);
+    BlockInfo blockInfo =
+        blockManager.getStoredBlock(lb.getBlock().getLocalBlock());
+    Iterator<DatanodeStorageInfo> itr = blockInfo.getStorageInfos();
+    LOG.info("Block " + blockInfo + " storages: ");
+    while (itr.hasNext()) {
+      DatanodeStorageInfo dn = itr.next();
+      LOG.info(" Rack: " + dn.getDatanodeDescriptor().getNetworkLocation()
+          + ", DataNode: " + dn.getDatanodeDescriptor().getXferAddr());
+    }
+    if (isBlockPlacementSatisfied) {
+      assertTrue("Block group of " + file + "should be placement" +
+              " policy satisfied, currently!",
+          blockManager.isPlacementPolicySatisfied(blockInfo));
+    } else {
+      assertFalse("Block group of " + file + " should be placement" +
+              " policy unsatisfied, currently!",
+          blockManager.isPlacementPolicySatisfied(blockInfo));
+    }
+  }
+
+  /**
+   * Unit test to check the race condition for adding a Block to
+   * postponedMisreplicatedBlocks set which may not present in BlockManager
+   * thus avoiding NullPointerException.
+   **/
+  @Test
+  public void testMetaSavePostponedMisreplicatedBlocks() throws IOException {
+    bm.postponeBlock(new Block());
+
+    File file = new File("test.log");
+    PrintWriter out = new PrintWriter(file);
+
+    bm.metaSave(out);
+    out.flush();
+
+    FileInputStream fstream = new FileInputStream(file);
+    DataInputStream in = new DataInputStream(fstream);
+
+    BufferedReader reader = new BufferedReader(new InputStreamReader(in));
+    StringBuffer buffer = new StringBuffer();
+    String line;
+    try {
+      while ((line = reader.readLine()) != null) {
+        buffer.append(line);
+      }
+      String output = buffer.toString();
+      assertTrue("Metasave output should not have null block ",
+          output.contains("Block blk_0_0 is Null"));
+
+    } finally {
+      reader.close();
+      file.delete();
+    }
+  }
+
+  @Test
+  public void testMetaSaveMissingReplicas() throws Exception {
+    List<DatanodeStorageInfo> origStorages = getStorages(0, 1);
+    List<DatanodeDescriptor> origNodes = getNodes(origStorages);
+    BlockInfo block = makeBlockReplicasMissing(0, origNodes);
+    File file = new File("test.log");
+    PrintWriter out = new PrintWriter(file);
+    bm.metaSave(out);
+    out.flush();
+    FileInputStream fstream = new FileInputStream(file);
+    DataInputStream in = new DataInputStream(fstream);
+    BufferedReader reader = new BufferedReader(new InputStreamReader(in));
+    StringBuffer buffer = new StringBuffer();
+    String line;
+    try {
+      while ((line = reader.readLine()) != null) {
+        buffer.append(line);
+      }
+      String output = buffer.toString();
+      assertTrue("Metasave output should have reported missing blocks.",
+          output.contains("Metasave: Blocks currently missing: 1"));
+      assertTrue("There should be 0 blocks waiting for reconstruction",
+          output.contains("Metasave: Blocks waiting for reconstruction: 0"));
+      String blockNameGS = block.getBlockName() + "_" +
+          block.getGenerationStamp();
+      assertTrue("Block " + blockNameGS + " should be MISSING.",
+          output.contains(blockNameGS + " MISSING"));
+    } finally {
+      reader.close();
+      file.delete();
+    }
+  }
+
+  private BlockInfo makeBlockReplicasMissing(long blockId,
+      List<DatanodeDescriptor> nodesList) throws IOException {
+    long inodeId = ++mockINodeId;
+    final INodeFile bc = TestINodeFile.createINodeFile(inodeId);
+
+    BlockInfo blockInfo = blockOnNodes(blockId, nodesList);
+    blockInfo.setReplication((short) 3);
+    blockInfo.setBlockCollectionId(inodeId);
+
+    Mockito.doReturn(bc).when(fsn).getBlockCollection(inodeId);
+    bm.blocksMap.addBlockCollection(blockInfo, bc);
+    bm.markBlockReplicasAsCorrupt(blockInfo, blockInfo,
+        blockInfo.getGenerationStamp() + 1,
+        blockInfo.getNumBytes(),
+        new DatanodeStorageInfo[]{});
+    BlockCollection mockedBc = mock(BlockCollection.class);
+    when(mockedBc.getBlocks()).thenReturn(new BlockInfo[]{blockInfo});
+    bm.checkRedundancy(mockedBc);
+    return blockInfo;
+  }
+
+  private BlockInfo makeBlockReplicasMaintenance(long blockId,
+      List<DatanodeDescriptor> nodesList) throws IOException {
+    long inodeId = ++mockINodeId;
+    final INodeFile bc = TestINodeFile.createINodeFile(inodeId);
+
+    BlockInfo blockInfo = blockOnNodes(blockId, nodesList);
+    blockInfo.setReplication((short) 3);
+    blockInfo.setBlockCollectionId(inodeId);
+
+    Mockito.doReturn(bc).when(fsn).getBlockCollection(inodeId);
+    bm.blocksMap.addBlockCollection(blockInfo, bc);
+    nodesList.get(0).setInMaintenance();
+    BlockCollection mockedBc = mock(BlockCollection.class);
+    when(mockedBc.getBlocks()).thenReturn(new BlockInfo[]{blockInfo});
+    bm.checkRedundancy(mockedBc);
+    return blockInfo;
+  }
+
+  @Test
+  public void testMetaSaveInMaintenanceReplicas() throws Exception {
+    List<DatanodeStorageInfo> origStorages = getStorages(0, 1);
+    List<DatanodeDescriptor> origNodes = getNodes(origStorages);
+    BlockInfo block = makeBlockReplicasMaintenance(0, origNodes);
+    File file = new File("test.log");
+    PrintWriter out = new PrintWriter(file);
+    bm.metaSave(out);
+    out.flush();
+    FileInputStream fstream = new FileInputStream(file);
+    DataInputStream in = new DataInputStream(fstream);
+    BufferedReader reader = new BufferedReader(new InputStreamReader(in));
+    StringBuffer buffer = new StringBuffer();
+    String line;
+    try {
+      while ((line = reader.readLine()) != null) {
+        buffer.append(line);
+        System.out.println(line);
+      }
+      String output = buffer.toString();
+      assertTrue("Metasave output should not have reported " +
+              "missing blocks.",
+          output.contains("Metasave: Blocks currently missing: 0"));
+      assertTrue("There should be 1 block waiting for reconstruction",
+          output.contains("Metasave: Blocks waiting for reconstruction: 1"));
+      String blockNameGS = block.getBlockName() + "_" +
+          block.getGenerationStamp();
+      assertTrue("Block " + blockNameGS +
+              " should be list as maintenance.",
+          output.contains(blockNameGS + " (replicas: live: 1 decommissioning " +
+              "and decommissioned: 0 corrupt: 0 in excess: " +
+              "0 maintenance mode: 1)"));
+    } finally {
+      reader.close();
+      file.delete();
+    }
+  }
+
+  private BlockInfo makeBlockReplicasDecommission(long blockId,
+      List<DatanodeDescriptor> nodesList) throws IOException {
+    long inodeId = ++mockINodeId;
+    final INodeFile bc = TestINodeFile.createINodeFile(inodeId);
+
+    BlockInfo blockInfo = blockOnNodes(blockId, nodesList);
+    blockInfo.setReplication((short) 3);
+    blockInfo.setBlockCollectionId(inodeId);
+
+    Mockito.doReturn(bc).when(fsn).getBlockCollection(inodeId);
+    bm.blocksMap.addBlockCollection(blockInfo, bc);
+    nodesList.get(0).startDecommission();
+    BlockCollection mockedBc = mock(BlockCollection.class);
+    when(mockedBc.getBlocks()).thenReturn(new BlockInfo[]{blockInfo});
+    bm.checkRedundancy(mockedBc);
+    return blockInfo;
+  }
+
+  @Test
+  public void testMetaSaveDecommissioningReplicas() throws Exception {
+    List<DatanodeStorageInfo> origStorages = getStorages(0, 1);
+    List<DatanodeDescriptor> origNodes = getNodes(origStorages);
+    BlockInfo block = makeBlockReplicasDecommission(0, origNodes);
+    File file = new File("test.log");
+    PrintWriter out = new PrintWriter(file);
+    bm.metaSave(out);
+    out.flush();
+    FileInputStream fstream = new FileInputStream(file);
+    DataInputStream in = new DataInputStream(fstream);
+    BufferedReader reader = new BufferedReader(new InputStreamReader(in));
+    StringBuffer buffer = new StringBuffer();
+    String line;
+    try {
+      while ((line = reader.readLine()) != null) {
+        buffer.append(line);
+      }
+      String output = buffer.toString();
+      assertTrue("Metasave output should not have reported " +
+              "missing blocks.",
+          output.contains("Metasave: Blocks currently missing: 0"));
+      assertTrue("There should be 1 block waiting for reconstruction",
+          output.contains("Metasave: Blocks waiting for reconstruction: 1"));
+      String blockNameGS = block.getBlockName() + "_" +
+          block.getGenerationStamp();
+      assertTrue("Block " + blockNameGS +
+              " should be list as maintenance.",
+          output.contains(blockNameGS + " (replicas: live: 1 decommissioning " +
+              "and decommissioned: 1 corrupt: 0 in excess: " +
+              "0 maintenance mode: 0)"));
+    } finally {
+      reader.close();
+      file.delete();
+    }
+  }
+
+  @Test
+  public void testLegacyBlockInInvalidateBlocks() {
+    final long legancyGenerationStampLimit = 10000;
+    BlockIdManager bim = Mockito.mock(BlockIdManager.class);
+
+    when(bim.getLegacyGenerationStampLimit())
+        .thenReturn(legancyGenerationStampLimit);
+    when(bim.isStripedBlock(any(Block.class))).thenCallRealMethod();
+    when(bim.isLegacyBlock(any(Block.class))).thenCallRealMethod();
+
+    InvalidateBlocks ibs = new InvalidateBlocks(100, 30000, bim);
+
+    Block legacy = new Block(-1, 10, legancyGenerationStampLimit / 10);
+    Block striped = new Block(
+        bm.nextBlockId(BlockType.STRIPED), 10,
+        legancyGenerationStampLimit + 10);
+
+    DatanodeInfo legacyDnInfo = DFSTestUtil.getLocalDatanodeInfo();
+    DatanodeInfo stripedDnInfo = DFSTestUtil.getLocalDatanodeInfo();
+
+    ibs.add(legacy, legacyDnInfo, false);
+    assertEquals(1, ibs.getBlocks());
+    assertEquals(0, ibs.getECBlocks());
+
+    ibs.add(striped, stripedDnInfo, false);
+    assertEquals(1, ibs.getBlocks());
+    assertEquals(1, ibs.getECBlocks());
+
+    ibs.remove(legacyDnInfo);
+    assertEquals(0, ibs.getBlocks());
+    assertEquals(1, ibs.getECBlocks());
+
+    ibs.remove(stripedDnInfo);
+    assertEquals(0, ibs.getBlocks());
+    assertEquals(0, ibs.getECBlocks());
   }
 }

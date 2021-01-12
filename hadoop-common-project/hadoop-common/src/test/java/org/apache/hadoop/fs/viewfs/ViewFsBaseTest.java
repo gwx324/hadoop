@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.fs.viewfs;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.apache.hadoop.fs.FileContextTestHelper.checkFileLinkStatus;
 import static org.apache.hadoop.fs.FileContextTestHelper.checkFileStatus;
 import static org.apache.hadoop.fs.FileContextTestHelper.exists;
@@ -25,24 +26,42 @@ import static org.apache.hadoop.fs.FileContextTestHelper.isFile;
 import static org.apache.hadoop.fs.viewfs.Constants.PERMISSION_555;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URISyntaxException;
+import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.AbstractFileSystem;
 import org.apache.hadoop.fs.BlockLocation;
+import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileContextTestHelper;
+import org.apache.hadoop.fs.FsServerDefaults;
+import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.FileContextTestHelper.fileType;
 import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FsConstants;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.UnresolvedLinkException;
+import org.apache.hadoop.fs.contract.ContractTestUtils;
+import org.apache.hadoop.fs.local.LocalConfigKeys;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.AclUtil;
@@ -50,11 +69,12 @@ import org.apache.hadoop.fs.viewfs.ViewFs.MountPoint;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.LambdaTestUtils;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.Mockito;
 
 
 /**
@@ -77,6 +97,8 @@ import org.mockito.Mockito;
  * </p>
  */
 abstract public class ViewFsBaseTest {
+  protected static final String MOUNT_TABLE_NAME = "mycluster";
+
   FileContext fcView; // the view file system - the mounts are here
   FileContext fcTarget; // the target file system - the mount will point here
   Path targetTestRoot;
@@ -110,6 +132,9 @@ abstract public class ViewFsBaseTest {
     
     // Set up the defaultMT in the config with our mount point links
     conf = new Configuration();
+    conf.set(
+        Constants.CONFIG_VIEWFS_DEFAULT_MOUNT_TABLE_NAME_KEY,
+        MOUNT_TABLE_NAME);
     ConfigUtil.addLink(conf, "/targetRoot", targetTestRoot.toUri());
     ConfigUtil.addLink(conf, "/user",
         new Path(targetTestRoot,"user").toUri());
@@ -217,7 +242,7 @@ abstract public class ViewFsBaseTest {
         isFile(fcTarget, new Path(targetTestRoot,"dir2/foo")));
     
     // Delete the created file
-    Assert.assertTrue("Delete should suceed",
+    Assert.assertTrue("Delete should succeed",
         fcView.delete(new Path("/internalDir/linkToDir2/foo"),false));
     Assert.assertFalse("File should not exist after deletion",
         exists(fcView, new Path("/internalDir/linkToDir2/foo")));
@@ -317,36 +342,106 @@ abstract public class ViewFsBaseTest {
       }
     }
     Assert.assertTrue(dirFooPresent);
+    RemoteIterator<LocatedFileStatus> dirLocatedContents =
+        fcView.listLocatedStatus(new Path("/targetRoot/"));
+    dirFooPresent = false;
+    while (dirLocatedContents.hasNext()) {
+      FileStatus fileStatus = dirLocatedContents.next();
+      if (fileStatus.getPath().getName().equals("dirFoo")) {
+        dirFooPresent = true;
+      }
+    }
+    Assert.assertTrue(dirFooPresent);
   }
   
   // rename across mount points that point to same target also fail 
-  @Test(expected=IOException.class) 
+  @Test
   public void testRenameAcrossMounts1() throws IOException {
     fileContextTestHelper.createFile(fcView, "/user/foo");
-    fcView.rename(new Path("/user/foo"), new Path("/user2/fooBarBar"));
-    /* - code if we had wanted this to succeed
-    Assert.assertFalse(exists(fc, new Path("/user/foo")));
-    Assert.assertFalse(exists(fclocal, new Path(targetTestRoot,"user/foo")));
-    Assert.assertTrue(isFile(fc,
-       FileContextTestHelper.getTestRootPath(fc,"/user2/fooBarBar")));
-    Assert.assertTrue(isFile(fclocal,
-        new Path(targetTestRoot,"user/fooBarBar")));
-    */
+    try {
+      fcView.rename(new Path("/user/foo"), new Path("/user2/fooBarBar"));
+      ContractTestUtils.fail("IOException is not thrown on rename operation");
+    } catch (IOException e) {
+      GenericTestUtils
+          .assertExceptionContains("Renames across Mount points not supported",
+              e);
+    }
   }
   
   
   // rename across mount points fail if the mount link targets are different
   // even if the targets are part of the same target FS
 
-  @Test(expected=IOException.class) 
+  @Test
   public void testRenameAcrossMounts2() throws IOException {
     fileContextTestHelper.createFile(fcView, "/user/foo");
-    fcView.rename(new Path("/user/foo"), new Path("/data/fooBar"));
+    try {
+      fcView.rename(new Path("/user/foo"), new Path("/data/fooBar"));
+      ContractTestUtils.fail("IOException is not thrown on rename operation");
+    } catch (IOException e) {
+      GenericTestUtils
+          .assertExceptionContains("Renames across Mount points not supported",
+              e);
+    }
   }
-  
-  
-  
-  
+
+  // RenameStrategy SAME_TARGET_URI_ACROSS_MOUNTPOINT enabled
+  // to rename across mount points that point to same target URI
+  @Test
+  public void testRenameAcrossMounts3() throws IOException {
+    Configuration conf2 = new Configuration(conf);
+    conf2.set(Constants.CONFIG_VIEWFS_RENAME_STRATEGY,
+        ViewFileSystem.RenameStrategy.SAME_TARGET_URI_ACROSS_MOUNTPOINT
+            .toString());
+
+    FileContext fcView2 =
+        FileContext.getFileContext(FsConstants.VIEWFS_URI, conf2);
+    String user1Path = "/user/foo";
+    fileContextTestHelper.createFile(fcView2, user1Path);
+    String user2Path = "/user2/fooBarBar";
+    Path user2Dst = new Path(user2Path);
+    fcView2.rename(new Path(user1Path), user2Dst);
+    ContractTestUtils
+        .assertPathDoesNotExist(fcView2, "src should not exist after rename",
+            new Path(user1Path));
+    ContractTestUtils
+        .assertPathDoesNotExist(fcTarget, "src should not exist after rename",
+            new Path(targetTestRoot, "user/foo"));
+    ContractTestUtils.assertIsFile(fcView2,
+        fileContextTestHelper.getTestRootPath(fcView2, user2Path));
+    ContractTestUtils
+        .assertIsFile(fcTarget, new Path(targetTestRoot, "user/fooBarBar"));
+  }
+
+  // RenameStrategy SAME_FILESYSTEM_ACROSS_MOUNTPOINT enabled
+  // to rename across mount points if the mount link targets are different
+  // but are part of the same target FS
+  @Test
+  public void testRenameAcrossMounts4() throws IOException {
+    Configuration conf2 = new Configuration(conf);
+    conf2.set(Constants.CONFIG_VIEWFS_RENAME_STRATEGY,
+        ViewFileSystem.RenameStrategy.SAME_FILESYSTEM_ACROSS_MOUNTPOINT
+            .toString());
+    FileContext fcView2 =
+        FileContext.getFileContext(FsConstants.VIEWFS_URI, conf2);
+    String userPath = "/user/foo";
+    fileContextTestHelper.createFile(fcView2, userPath);
+    String anotherMountPath = "/data/fooBar";
+    Path anotherDst = new Path(anotherMountPath);
+    fcView2.rename(new Path(userPath), anotherDst);
+
+    ContractTestUtils
+        .assertPathDoesNotExist(fcView2, "src should not exist after rename",
+            new Path(userPath));
+    ContractTestUtils
+        .assertPathDoesNotExist(fcTarget, "src should not exist after rename",
+            new Path(targetTestRoot, "user/foo"));
+    ContractTestUtils.assertIsFile(fcView2,
+        fileContextTestHelper.getTestRootPath(fcView2, anotherMountPath));
+    ContractTestUtils
+        .assertIsFile(fcView2, new Path(targetTestRoot, "data/fooBar"));
+  }
+
   static protected boolean SupportsBlocks = false; //  local fs use 1 block
                                                    // override for HDFS
   @Test
@@ -372,9 +467,9 @@ abstract public class ViewFsBaseTest {
     Assert.assertEquals(targetBL.length, viewBL.length);
     int i = 0;
     for (BlockLocation vbl : viewBL) {
-      Assert.assertEquals(vbl.toString(), targetBL[i].toString());
-      Assert.assertEquals(targetBL[i].getOffset(), vbl.getOffset());
-      Assert.assertEquals(targetBL[i].getLength(), vbl.getLength());
+      assertThat(vbl.toString()).isEqualTo(targetBL[i].toString());
+      assertThat(vbl.getOffset()).isEqualTo(targetBL[i].getOffset());
+      assertThat(vbl.getLength()).isEqualTo(targetBL[i].getLength());
       i++;     
     } 
   }
@@ -448,24 +543,20 @@ abstract public class ViewFsBaseTest {
   }
   
   @Test
-  public void testGetFileChecksum() throws AccessControlException
-    , UnresolvedLinkException, IOException {
-    AbstractFileSystem mockAFS = Mockito.mock(AbstractFileSystem.class);
+  public void testGetFileChecksum() throws AccessControlException,
+      UnresolvedLinkException, IOException, URISyntaxException {
+    AbstractFileSystem mockAFS = mock(AbstractFileSystem.class);
     InodeTree.ResolveResult<AbstractFileSystem> res =
-      new InodeTree.ResolveResult<AbstractFileSystem>(null, mockAFS , null,
-        new Path("someFile"));
+        new InodeTree.ResolveResult<AbstractFileSystem>(null, mockAFS, null,
+            new Path("someFile"), true);
     @SuppressWarnings("unchecked")
-    InodeTree<AbstractFileSystem> fsState = Mockito.mock(InodeTree.class);
-    Mockito.when(fsState.resolve(Mockito.anyString()
-      , Mockito.anyBoolean())).thenReturn(res);
-    ViewFs vfs = Mockito.mock(ViewFs.class);
+    InodeTree<AbstractFileSystem> fsState = mock(InodeTree.class);
+    when(fsState.resolve(anyString(), anyBoolean())).thenReturn(res);
+    ViewFs vfs = new ViewFs(conf);
     vfs.fsState = fsState;
 
-    Mockito.when(vfs.getFileChecksum(new Path("/tmp/someFile")))
-      .thenCallRealMethod();
     vfs.getFileChecksum(new Path("/tmp/someFile"));
-
-    Mockito.verify(mockAFS).getFileChecksum(new Path("someFile"));
+    verify(mockAFS).getFileChecksum(new Path("someFile"));
   }
 
   @Test(expected=FileNotFoundException.class) 
@@ -798,4 +889,142 @@ abstract public class ViewFsBaseTest {
   public void testInternalDeleteSnapshot() throws IOException {
     fcView.deleteSnapshot(new Path("/internalDir"), "snap1");
   }
+
+  @Test
+  public void testOwnerForInternalDir()
+      throws IOException, InterruptedException, URISyntaxException {
+    final UserGroupInformation userUgi = UserGroupInformation
+        .createUserForTesting("user@HADOOP.COM", new String[]{"hadoop"});
+    userUgi.doAs(new PrivilegedExceptionAction<Object>() {
+      @Override
+      public Object run() throws IOException, URISyntaxException {
+        UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
+        String doAsUserName = ugi.getUserName();
+        assertEquals(doAsUserName, "user@HADOOP.COM");
+        FileContext
+            viewFS = FileContext.getFileContext(FsConstants.VIEWFS_URI, conf);
+        FileStatus stat = viewFS.getFileStatus(new Path("/internalDir"));
+        assertEquals(userUgi.getShortUserName(), stat.getOwner());
+        return null;
+      }
+    });
+  }
+
+  @Test
+  public void testRespectsServerDefaults() throws Exception {
+    FsServerDefaults targetDefs =
+        fcTarget.getDefaultFileSystem().getServerDefaults(new Path("/"));
+    FsServerDefaults viewDefs =
+        fcView.getDefaultFileSystem().getServerDefaults(new Path("/data"));
+    assertEquals(targetDefs.getReplication(), viewDefs.getReplication());
+    assertEquals(targetDefs.getBlockSize(), viewDefs.getBlockSize());
+    assertEquals(targetDefs.getBytesPerChecksum(),
+        viewDefs.getBytesPerChecksum());
+    assertEquals(targetDefs.getFileBufferSize(),
+        viewDefs.getFileBufferSize());
+    assertEquals(targetDefs.getWritePacketSize(),
+        viewDefs.getWritePacketSize());
+    assertEquals(targetDefs.getEncryptDataTransfer(),
+        viewDefs.getEncryptDataTransfer());
+    assertEquals(targetDefs.getTrashInterval(), viewDefs.getTrashInterval());
+    assertEquals(targetDefs.getChecksumType(), viewDefs.getChecksumType());
+
+    fcView.create(new Path("/data/file"), EnumSet.of(CreateFlag.CREATE))
+        .close();
+    FileStatus stat =
+        fcTarget.getFileStatus(new Path(targetTestRoot, "data/file"));
+    assertEquals(targetDefs.getReplication(), stat.getReplication());
+  }
+
+  @Test
+  public void testServerDefaultsInternalDir() throws Exception {
+    FsServerDefaults localDefs = LocalConfigKeys.getServerDefaults();
+    FsServerDefaults viewDefs = fcView
+        .getDefaultFileSystem().getServerDefaults(new Path("/internalDir"));
+    assertEquals(localDefs.getReplication(), viewDefs.getReplication());
+    assertEquals(localDefs.getBlockSize(), viewDefs.getBlockSize());
+    assertEquals(localDefs.getBytesPerChecksum(),
+        viewDefs.getBytesPerChecksum());
+    assertEquals(localDefs.getFileBufferSize(),
+        viewDefs.getFileBufferSize());
+    assertEquals(localDefs.getWritePacketSize(),
+        viewDefs.getWritePacketSize());
+    assertEquals(localDefs.getEncryptDataTransfer(),
+        viewDefs.getEncryptDataTransfer());
+    assertEquals(localDefs.getTrashInterval(), viewDefs.getTrashInterval());
+    assertEquals(localDefs.getChecksumType(), viewDefs.getChecksumType());
+  }
+
+  // Confirm that listLocatedStatus is delegated properly to the underlying
+  // AbstractFileSystem to allow for optimizations
+  @Test
+  public void testListLocatedStatus() throws IOException {
+    final Path mockTarget = new Path("mockfs://listLocatedStatus/foo");
+    final Path mountPoint = new Path("/fooMount");
+    final Configuration newConf = new Configuration();
+    newConf.setClass("fs.AbstractFileSystem.mockfs.impl", MockFs.class,
+        AbstractFileSystem.class);
+    ConfigUtil.addLink(newConf, mountPoint.toString(), mockTarget.toUri());
+    FileContext.getFileContext(URI.create("viewfs:///"), newConf)
+        .listLocatedStatus(mountPoint);
+    AbstractFileSystem mockFs = MockFs.getMockFs(mockTarget.toUri());
+    verify(mockFs).listLocatedStatus(new Path(mockTarget.toUri().getPath()));
+    verify(mockFs, never()).listStatus(any(Path.class));
+    verify(mockFs, never()).listStatusIterator(any(Path.class));
+  }
+
+  // Confirm that listStatus is delegated properly to the underlying
+  // AbstractFileSystem's listStatusIterator to allow for optimizations
+  @Test
+  public void testListStatusIterator() throws IOException {
+    final Path mockTarget = new Path("mockfs://listStatusIterator/foo");
+    final Path mountPoint = new Path("/fooMount");
+    final Configuration newConf = new Configuration();
+    newConf.setClass("fs.AbstractFileSystem.mockfs.impl", MockFs.class,
+        AbstractFileSystem.class);
+    ConfigUtil.addLink(newConf, mountPoint.toString(), mockTarget.toUri());
+    FileContext.getFileContext(URI.create("viewfs:///"), newConf)
+        .listStatus(mountPoint);
+    AbstractFileSystem mockFs = MockFs.getMockFs(mockTarget.toUri());
+    verify(mockFs).listStatusIterator(new Path(mockTarget.toUri().getPath()));
+    verify(mockFs, never()).listStatus(any(Path.class));
+  }
+
+  static class MockFs extends ChRootedFs {
+    private static Map<String, AbstractFileSystem> fsCache = new HashMap<>();
+    MockFs(URI uri, Configuration conf) throws URISyntaxException {
+      super(getMockFs(uri), new Path("/"));
+    }
+    static AbstractFileSystem getMockFs(URI uri) {
+      AbstractFileSystem mockFs = fsCache.get(uri.getAuthority());
+      if (mockFs == null) {
+        mockFs = mock(AbstractFileSystem.class);
+        when(mockFs.getUri()).thenReturn(uri);
+        when(mockFs.getUriDefaultPort()).thenReturn(1);
+        when(mockFs.getUriPath(any(Path.class))).thenCallRealMethod();
+        when(mockFs.isValidName(anyString())).thenReturn(true);
+        fsCache.put(uri.getAuthority(), mockFs);
+      }
+      return mockFs;
+    }
+  }
+
+  @Test
+  public void testListStatusWithNoGroups() throws Exception {
+    final UserGroupInformation userUgi = UserGroupInformation
+        .createUserForTesting("user@HADOOP.COM", new String[] {});
+    userUgi.doAs(new PrivilegedExceptionAction<Object>() {
+      @Override
+      public Object run() throws Exception {
+        URI viewFsUri = new URI(
+            FsConstants.VIEWFS_SCHEME, MOUNT_TABLE_NAME, "/", null, null);
+        FileSystem vfs = FileSystem.get(viewFsUri, conf);
+        LambdaTestUtils.intercept(IOException.class,
+            "There is no primary group for UGI", () -> vfs
+                .listStatus(new Path(viewFsUri.toString() + "internalDir")));
+        return null;
+      }
+    });
+  }
+
 }

@@ -21,10 +21,13 @@ package org.apache.hadoop.yarn.server.resourcemanager;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
 import org.junit.Assert;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -35,26 +38,26 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.NodeHeartbeatResponse;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
-import org.apache.log4j.Level;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
 import org.junit.Test;
 
 public class TestSignalContainer {
 
-  private static final Log LOG = LogFactory
-    .getLog(TestSignalContainer.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestSignalContainer.class);
 
   @Test
   public void testSignalRequestDeliveryToNM() throws Exception {
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.DEBUG);
+    GenericTestUtils.setRootLogLevel(Level.DEBUG);
     MockRM rm = new MockRM();
+    FairScheduler fs = null;
+    if (rm.getResourceScheduler().getClass() == FairScheduler.class) {
+      fs = (FairScheduler)rm.getResourceScheduler();
+    }
     rm.start();
 
     MockNM nm1 = rm.registerNode("h1:1234", 5000);
 
-    RMApp app = rm.submitApp(2000);
+    RMApp app = MockRMAppSubmitter.submitWithMemory(2000, rm);
 
     //kick the scheduling
     nm1.nodeHeartbeat(true);
@@ -69,18 +72,20 @@ public class TestSignalContainer {
 
     //kick the scheduler
     nm1.nodeHeartbeat(true);
-    List<Container> conts = null;
-    int contReceived = 0;
+    List<Container> conts = new ArrayList<>(request);
     int waitCount = 0;
-    while (contReceived < request && waitCount++ < 200) {
-      LOG.info("Got " + contReceived + " containers. Waiting to get "
+    while (conts.size() < request && waitCount++ < 200) {
+      LOG.info("Got " + conts.size() + " containers. Waiting to get "
            + request);
       Thread.sleep(100);
-      conts = am.allocate(new ArrayList<ResourceRequest>(),
+      List<Container> allocation = am.allocate(new ArrayList<ResourceRequest>(),
           new ArrayList<ContainerId>()).getAllocatedContainers();
-      contReceived += conts.size();
+      conts.addAll(allocation);
+      if (fs != null) {
+        nm1.nodeHeartbeat(true);
+      }
     }
-    Assert.assertEquals(request, contReceived);
+    Assert.assertEquals(request, conts.size());
 
     for(Container container : conts) {
       rm.signalToContainer(container.getId(),

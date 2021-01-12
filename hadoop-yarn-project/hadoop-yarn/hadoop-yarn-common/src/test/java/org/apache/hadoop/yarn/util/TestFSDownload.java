@@ -58,8 +58,8 @@ import org.junit.Assert;
 
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -78,19 +78,24 @@ import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.junit.AfterClass;
 import org.junit.Test;
 
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
 
+/**
+ * Unit test for the FSDownload class.
+ */
 public class TestFSDownload {
 
-  private static final Log LOG = LogFactory.getLog(TestFSDownload.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestFSDownload.class);
   private static AtomicLong uniqueNumberGenerator =
     new AtomicLong(System.currentTimeMillis());
   private enum TEST_FILE_TYPE {
     TAR, JAR, ZIP, TGZ
   };
-  
+  private Configuration conf = new Configuration();
+
   @AfterClass
   public static void deleteTestDir() throws IOException {
     FileContext fs = FileContext.getLocalFSFileContext();
@@ -132,6 +137,18 @@ public class TestFSDownload {
     FileOutputStream stream = new FileOutputStream(jarFile);
     LOG.info("Create jar out stream ");
     JarOutputStream out = new JarOutputStream(stream, new Manifest());
+    ZipEntry entry = new ZipEntry("classes/1.class");
+    out.putNextEntry(entry);
+    out.write(1);
+    out.write(2);
+    out.write(3);
+    out.closeEntry();
+    ZipEntry entry2 = new ZipEntry("classes/2.class");
+    out.putNextEntry(entry2);
+    out.write(1);
+    out.write(2);
+    out.write(3);
+    out.closeEntry();
     LOG.info("Done writing jar stream ");
     out.close();
     LocalResource ret = recordFactory.newRecordInstance(LocalResource.class);
@@ -256,7 +273,6 @@ public class TestFSDownload {
   @Test (timeout=10000)
   public void testDownloadBadPublic() throws IOException, URISyntaxException,
       InterruptedException {
-    Configuration conf = new Configuration();
     conf.set(CommonConfigurationKeys.FS_PERMISSIONS_UMASK_KEY, "077");
     FileContext files = FileContext.getLocalFSFileContext(conf);
     final Path basedir = files.makeQualified(new Path("target",
@@ -307,7 +323,6 @@ public class TestFSDownload {
   @Test (timeout=60000)
   public void testDownloadPublicWithStatCache() throws IOException,
       URISyntaxException, InterruptedException, ExecutionException {
-    final Configuration conf = new Configuration();
     FileContext files = FileContext.getLocalFSFileContext(conf);
     Path basedir = files.makeQualified(new Path("target",
       TestFSDownload.class.getSimpleName()));
@@ -382,7 +397,6 @@ public class TestFSDownload {
   @Test (timeout=10000)
   public void testDownload() throws IOException, URISyntaxException,
       InterruptedException {
-    Configuration conf = new Configuration();
     conf.set(CommonConfigurationKeys.FS_PERMISSIONS_UMASK_KEY, "077");
     FileContext files = FileContext.getLocalFSFileContext(conf);
     final Path basedir = files.makeQualified(new Path("target",
@@ -455,7 +469,6 @@ public class TestFSDownload {
 
   private void downloadWithFileType(TEST_FILE_TYPE fileType) throws IOException, 
       URISyntaxException, InterruptedException{
-    Configuration conf = new Configuration();
     conf.set(CommonConfigurationKeys.FS_PERMISSIONS_UMASK_KEY, "077");
     FileContext files = FileContext.getLocalFSFileContext(conf);
     final Path basedir = files.makeQualified(new Path("target",
@@ -530,7 +543,7 @@ public class TestFSDownload {
     }
   }
 
-  @Test (timeout=10000) 
+  @Test (timeout=10000)
   public void testDownloadArchive() throws IOException, URISyntaxException,
       InterruptedException {
     downloadWithFileType(TEST_FILE_TYPE.TAR);
@@ -542,7 +555,7 @@ public class TestFSDownload {
     downloadWithFileType(TEST_FILE_TYPE.JAR);
   }
 
-  @Test (timeout=10000) 
+  @Test (timeout=10000)
   public void testDownloadArchiveZip() throws IOException, URISyntaxException,
       InterruptedException {
     downloadWithFileType(TEST_FILE_TYPE.ZIP);
@@ -603,7 +616,6 @@ public class TestFSDownload {
 
   @Test (timeout=10000)
   public void testDirDownload() throws IOException, InterruptedException {
-    Configuration conf = new Configuration();
     FileContext files = FileContext.getLocalFSFileContext(conf);
     final Path basedir = files.makeQualified(new Path("target",
       TestFSDownload.class.getSimpleName()));
@@ -668,7 +680,6 @@ public class TestFSDownload {
 
   @Test (timeout=10000)
   public void testUniqueDestinationPath() throws Exception {
-    Configuration conf = new Configuration();
     FileContext files = FileContext.getLocalFSFileContext(conf);
     final Path basedir = files.makeQualified(new Path("target",
         TestFSDownload.class.getSimpleName()));
@@ -699,5 +710,79 @@ public class TestFSDownload {
     // resource. Therefore the final localizedPath for the resource should be
     // destination directory (passed as an argument) + file name.
     Assert.assertEquals(destPath, rPath.get().getParent());
+  }
+
+  /**
+   * This test method is responsible for creating an IOException resulting
+   * from modification to the local resource's timestamp on the source FS just
+   * before the download of this local resource has started.
+   */
+  @Test(timeout=10000)
+  public void testResourceTimestampChangeDuringDownload()
+      throws IOException, InterruptedException {
+    conf = new Configuration();
+    FileContext files = FileContext.getLocalFSFileContext(conf);
+    final Path basedir = files.makeQualified(
+        new Path("target", TestFSDownload.class.getSimpleName()));
+    files.mkdir(basedir, null, true);
+    conf.setStrings(TestFSDownload.class.getName(), basedir.toString());
+
+    LocalDirAllocator dirs =
+        new LocalDirAllocator(TestFSDownload.class.getName());
+
+    Path path = new Path(basedir, "test-file");
+    Random rand = new Random();
+    long sharedSeed = rand.nextLong();
+    rand.setSeed(sharedSeed);
+    int size = 512;
+    LocalResourceVisibility vis = LocalResourceVisibility.PUBLIC;
+    LocalResource localResource = createFile(files, path, size, rand, vis);
+
+    Path destPath = dirs.getLocalPathForWrite(basedir.toString(), size, conf);
+    destPath = new Path(destPath,
+        Long.toString(uniqueNumberGenerator.incrementAndGet()));
+
+    FSDownload fsDownload = new FSDownload(files,
+        UserGroupInformation.getCurrentUser(), conf, destPath, localResource);
+
+    // Store the original local resource timestamp used to set up the
+    // FSDownload object just before (but before the download starts)
+    // for comparison purposes later on.
+    long origLRTimestamp = localResource.getTimestamp();
+
+    // Modify the local resource's timestamp to yesterday on the Filesystem
+    // just before FSDownload starts.
+    final long msInADay = 86400 * 1000;
+    long modifiedFSTimestamp = origLRTimestamp - msInADay;
+    try {
+      Path sourceFsPath = localResource.getResource().toPath();
+      FileSystem sourceFs = sourceFsPath.getFileSystem(conf);
+      sourceFs.setTimes(sourceFsPath, modifiedFSTimestamp, modifiedFSTimestamp);
+    } catch (URISyntaxException use) {
+      Assert.fail("No exception expected.");
+    }
+
+    // Execute the FSDownload operation.
+    Map<LocalResource, Future<Path>> pending = new HashMap<>();
+    ExecutorService exec = HadoopExecutors.newSingleThreadExecutor();
+    pending.put(localResource, exec.submit(fsDownload));
+
+    exec.shutdown();
+
+    exec.awaitTermination(1000, TimeUnit.MILLISECONDS);
+    Assert.assertTrue(pending.get(localResource).isDone());
+
+    try {
+      for (Map.Entry<LocalResource, Future<Path>> p : pending.entrySet()) {
+        p.getValue().get();
+      }
+      Assert.fail("Exception expected from timestamp update during download");
+    } catch (ExecutionException ee) {
+      Assert.assertTrue(ee.getCause() instanceof IOException);
+      Assert.assertTrue("Exception contains original timestamp",
+          ee.getMessage().contains(Times.formatISO8601(origLRTimestamp)));
+      Assert.assertTrue("Exception contains modified timestamp",
+          ee.getMessage().contains(Times.formatISO8601(modifiedFSTimestamp)));
+    }
   }
 }

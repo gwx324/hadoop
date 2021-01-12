@@ -1,4 +1,3 @@
-package org.apache.hadoop.fs;
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -16,6 +15,9 @@ package org.apache.hadoop.fs;
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+package org.apache.hadoop.fs;
+
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
@@ -24,10 +26,12 @@ import java.util.Collection;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FileSystem.Statistics;
+import org.apache.hadoop.fs.impl.OpenFileParameters;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.FsAction;
@@ -57,8 +61,7 @@ public abstract class FilterFs extends AbstractFileSystem {
   }
   
   protected FilterFs(AbstractFileSystem fs) throws URISyntaxException {
-    super(fs.getUri(), fs.getUri().getScheme(),
-        fs.getUri().getAuthority() != null, fs.getUriDefaultPort());
+    super(fs.getUri(), fs.getUri().getScheme(), false, fs.getUriDefaultPort());
     myFs = fs;
   }
 
@@ -122,6 +125,11 @@ public abstract class FilterFs extends AbstractFileSystem {
   }
 
   @Override
+  public void msync() throws IOException, UnsupportedOperationException {
+    myFs.msync();
+  }
+
+  @Override
   public void access(Path path, FsAction mode) throws AccessControlException,
       FileNotFoundException, UnresolvedLinkException, IOException {
     checkPath(path);
@@ -147,10 +155,15 @@ public abstract class FilterFs extends AbstractFileSystem {
   }
 
   @Override
+  @Deprecated
   public FsServerDefaults getServerDefaults() throws IOException {
     return myFs.getServerDefaults();
   }
   
+  @Override
+  public FsServerDefaults getServerDefaults(final Path f) throws IOException {
+    return myFs.getServerDefaults(f);
+  }
 
   @Override
   public Path resolvePath(final Path p) throws FileNotFoundException,
@@ -400,6 +413,11 @@ public abstract class FilterFs extends AbstractFileSystem {
   }
 
   @Override
+  public void satisfyStoragePolicy(final Path path) throws IOException {
+    myFs.satisfyStoragePolicy(path);
+  }
+
+  @Override
   public void setStoragePolicy(Path path, String policyName)
       throws IOException {
     myFs.setStoragePolicy(path, policyName);
@@ -421,5 +439,24 @@ public abstract class FilterFs extends AbstractFileSystem {
   public Collection<? extends BlockStoragePolicySpi> getAllStoragePolicies()
       throws IOException {
     return myFs.getAllStoragePolicies();
+  }
+
+  @Override
+  public CompletableFuture<FSDataInputStream> openFileWithOptions(
+      final Path path,
+      final OpenFileParameters parameters) throws IOException {
+    return myFs.openFileWithOptions(path, parameters);
+  }
+
+  public boolean hasPathCapability(final Path path,
+      final String capability)
+      throws IOException {
+    return myFs.hasPathCapability(path, capability);
+  }
+
+  @Override
+  public MultipartUploaderBuilder createMultipartUploader(final Path basePath)
+      throws IOException {
+    return myFs.createMultipartUploader(basePath);
   }
 }

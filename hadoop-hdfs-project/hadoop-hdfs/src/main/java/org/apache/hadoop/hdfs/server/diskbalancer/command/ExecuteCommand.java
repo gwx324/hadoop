@@ -19,7 +19,7 @@
 
 package org.apache.hadoop.hdfs.server.diskbalancer.command;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.codec.digest.DigestUtils;
@@ -29,7 +29,7 @@ import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
 import org.apache.hadoop.hdfs.server.diskbalancer.DiskBalancerException;
 import org.apache.hadoop.hdfs.server.diskbalancer.planner.NodePlan;
-import org.apache.hadoop.hdfs.tools.DiskBalancer;
+import org.apache.hadoop.hdfs.tools.DiskBalancerCLI;
 
 import java.io.IOException;
 
@@ -46,7 +46,10 @@ public class ExecuteCommand extends Command {
    */
   public ExecuteCommand(Configuration conf) {
     super(conf);
-    addValidCommandParameters(DiskBalancer.EXECUTE, "Executes a given plan.");
+    addValidCommandParameters(DiskBalancerCLI.EXECUTE,
+        "Executes a given plan.");
+    addValidCommandParameters(DiskBalancerCLI.SKIPDATECHECK,
+        "skips the date check and force execute the plan");
   }
 
   /**
@@ -57,10 +60,10 @@ public class ExecuteCommand extends Command {
   @Override
   public void execute(CommandLine cmd) throws Exception {
     LOG.info("Executing \"execute plan\" command");
-    Preconditions.checkState(cmd.hasOption(DiskBalancer.EXECUTE));
-    verifyCommandOptions(DiskBalancer.EXECUTE, cmd);
+    Preconditions.checkState(cmd.hasOption(DiskBalancerCLI.EXECUTE));
+    verifyCommandOptions(DiskBalancerCLI.EXECUTE, cmd);
 
-    String planFile = cmd.getOptionValue(DiskBalancer.EXECUTE);
+    String planFile = cmd.getOptionValue(DiskBalancerCLI.EXECUTE);
     Preconditions.checkArgument(planFile != null && !planFile.isEmpty(),
         "Invalid plan file specified.");
 
@@ -68,7 +71,16 @@ public class ExecuteCommand extends Command {
     try (FSDataInputStream plan = open(planFile)) {
       planData = IOUtils.toString(plan);
     }
-    submitPlan(planFile, planData);
+
+    boolean skipDateCheck = false;
+    if(cmd.hasOption(DiskBalancerCLI.SKIPDATECHECK)) {
+      skipDateCheck = true;
+      LOG.warn("Skipping date check on this plan. This could mean we are " +
+          "executing an old plan and may not be the right plan for this " +
+          "data node.");
+    }
+
+    submitPlan(planFile, planData, skipDateCheck);
   }
 
   /**
@@ -76,20 +88,21 @@ public class ExecuteCommand extends Command {
    *
    * @param planFile - Plan file name
    * @param planData - Plan data in json format
+   * @param skipDateCheck - skips date check
    * @throws IOException
    */
-  private void submitPlan(final String planFile, final String planData)
+  private void submitPlan(final String planFile, final String planData,
+                          boolean skipDateCheck)
           throws IOException {
     Preconditions.checkNotNull(planData);
     NodePlan plan = NodePlan.parseJson(planData);
     String dataNodeAddress = plan.getNodeName() + ":" + plan.getPort();
     Preconditions.checkNotNull(dataNodeAddress);
     ClientDatanodeProtocol dataNode = getDataNodeProxy(dataNodeAddress);
-    String planHash = DigestUtils.sha512Hex(planData);
+    String planHash = DigestUtils.sha1Hex(planData);
     try {
-      // TODO : Support skipping date check.
-      dataNode.submitDiskBalancerPlan(planHash, DiskBalancer.PLAN_VERSION,
-                                      planFile, planData, false);
+      dataNode.submitDiskBalancerPlan(planHash, DiskBalancerCLI.PLAN_VERSION,
+                                      planFile, planData, skipDateCheck);
     } catch (DiskBalancerException ex) {
       LOG.error("Submitting plan on  {} failed. Result: {}, Message: {}",
           plan.getNodeName(), ex.getResult().toString(), ex.getMessage());
@@ -111,6 +124,6 @@ public class ExecuteCommand extends Command {
 
     HelpFormatter helpFormatter = new HelpFormatter();
     helpFormatter.printHelp("hdfs diskbalancer -execute <planfile>",
-        header, DiskBalancer.getExecuteOptions(), footer);
+        header, DiskBalancerCLI.getExecuteOptions(), footer);
   }
 }

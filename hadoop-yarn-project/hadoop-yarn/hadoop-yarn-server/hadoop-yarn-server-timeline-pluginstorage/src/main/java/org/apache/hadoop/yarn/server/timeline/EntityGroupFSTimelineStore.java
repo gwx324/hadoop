@@ -17,8 +17,15 @@
 
 package org.apache.hadoop.yarn.server.timeline;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.databind.MappingJsonFactory;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.type.TypeFactory;
+import com.fasterxml.jackson.module.jaxb.JaxbAnnotationIntrospector;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.commons.lang3.mutable.MutableBoolean;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
@@ -35,7 +42,6 @@ import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
-import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineDomain;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineDomains;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntities;
@@ -49,10 +55,7 @@ import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.timeline.TimelineDataManager.CheckAcl;
 import org.apache.hadoop.yarn.server.timeline.security.TimelineACLsManager;
-import org.codehaus.jackson.JsonFactory;
-import org.codehaus.jackson.map.MappingJsonFactory;
-import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.jackson.xc.JaxbAnnotationIntrospector;
+import org.apache.hadoop.yarn.util.Apps;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -101,11 +104,6 @@ public class EntityGroupFSTimelineStore extends CompositeService
   private static final FsPermission DONE_DIR_PERMISSION =
       new FsPermission((short) 0700);
 
-  private static final EnumSet<YarnApplicationState>
-      APP_FINAL_STATES = EnumSet.of(
-      YarnApplicationState.FAILED,
-      YarnApplicationState.KILLED,
-      YarnApplicationState.FINISHED);
   // Active dir: <activeRoot>/appId/attemptId/cacheId.log
   // Done dir: <doneRoot>/cluster_ts/hash1/hash2/appId/attemptId/cacheId.log
   private static final String APP_DONE_DIR_PREFIX_FORMAT =
@@ -293,7 +291,8 @@ public class EntityGroupFSTimelineStore extends CompositeService
     }
 
     objMapper = new ObjectMapper();
-    objMapper.setAnnotationIntrospector(new JaxbAnnotationIntrospector());
+    objMapper.setAnnotationIntrospector(
+        new JaxbAnnotationIntrospector(TypeFactory.defaultInstance()));
     jsonFactory = new MappingJsonFactory(objMapper);
     final long scanIntervalSecs = conf.getLong(
         YarnConfiguration
@@ -354,7 +353,13 @@ public class EntityGroupFSTimelineStore extends CompositeService
   @VisibleForTesting
   int scanActiveLogs() throws IOException {
     long startTime = Time.monotonicNow();
-    RemoteIterator<FileStatus> iter = list(activeRootPath);
+    int logsToScanCount = scanActiveLogs(activeRootPath);
+    metrics.addActiveLogDirScanTime(Time.monotonicNow() - startTime);
+    return logsToScanCount;
+  }
+
+  int scanActiveLogs(Path dir) throws IOException {
+    RemoteIterator<FileStatus> iter = list(dir);
     int logsToScanCount = 0;
     while (iter.hasNext()) {
       FileStatus stat = iter.next();
@@ -366,10 +371,14 @@ public class EntityGroupFSTimelineStore extends CompositeService
         AppLogs logs = getAndSetActiveLog(appId, stat.getPath());
         executor.execute(new ActiveLogParser(logs));
       } else {
-        LOG.debug("Unable to parse entry {}", name);
+        if (stat.isDirectory()) {
+          logsToScanCount += scanActiveLogs(stat.getPath());
+        } else {
+          LOG.warn("Ignoring unexpected file in active directory {}",
+              stat.getPath());
+        }
       }
     }
-    metrics.addActiveLogDirScanTime(Time.monotonicNow() - startTime);
     return logsToScanCount;
   }
 
@@ -416,6 +425,18 @@ public class EntityGroupFSTimelineStore extends CompositeService
         appDirPath = getActiveAppPath(applicationId);
         if (fs.exists(appDirPath)) {
           appState = AppState.ACTIVE;
+        } else {
+          // check for user directory inside active path
+          RemoteIterator<FileStatus> iter = list(activeRootPath);
+          while (iter.hasNext()) {
+            Path child = new Path(iter.next().getPath().getName(),
+                applicationId.toString());
+            appDirPath = new Path(activeRootPath, child);
+            if (fs.exists(appDirPath)) {
+              appState = AppState.ACTIVE;
+              break;
+            }
+          }
         }
       }
       if (appState != AppState.UNKNOWN) {
@@ -437,42 +458,73 @@ public class EntityGroupFSTimelineStore extends CompositeService
    *                dirpath should be a directory that contains a set of
    *                application log directories. The cleaner method will not
    *                work if the given dirpath itself is an application log dir.
-   * @param fs
    * @param retainMillis
    * @throws IOException
    */
   @InterfaceAudience.Private
   @VisibleForTesting
-  void cleanLogs(Path dirpath, FileSystem fs, long retainMillis)
+  void cleanLogs(Path dirpath, long retainMillis)
       throws IOException {
+    long now = Time.now();
+    RemoteIterator<FileStatus> iter = list(dirpath);
+    while (iter.hasNext()) {
+      FileStatus stat = iter.next();
+      if (isValidClusterTimeStampDir(stat)) {
+        Path clusterTimeStampPath = stat.getPath();
+        MutableBoolean appLogDirPresent = new MutableBoolean(false);
+        cleanAppLogDir(clusterTimeStampPath, retainMillis, appLogDirPresent);
+        if (appLogDirPresent.isFalse() &&
+            (now - stat.getModificationTime() > retainMillis)) {
+          deleteDir(clusterTimeStampPath);
+        }
+      }
+    }
+  }
+
+
+  private void cleanAppLogDir(Path dirpath, long retainMillis,
+      MutableBoolean appLogDirPresent) throws IOException {
     long now = Time.now();
     // Depth first search from root directory for all application log dirs
     RemoteIterator<FileStatus> iter = list(dirpath);
     while (iter.hasNext()) {
       FileStatus stat = iter.next();
+      Path childPath = stat.getPath();
       if (stat.isDirectory()) {
         // If current is an application log dir, decide if we need to remove it
         // and remove if necessary.
         // Otherwise, keep iterating into it.
-        ApplicationId appId = parseApplicationId(dirpath.getName());
+        ApplicationId appId = parseApplicationId(childPath.getName());
         if (appId != null) { // Application log dir
-          if (shouldCleanAppLogDir(dirpath, now, fs, retainMillis)) {
-            try {
-              LOG.info("Deleting {}", dirpath);
-              if (!fs.delete(dirpath, true)) {
-                LOG.error("Unable to remove " + dirpath);
-              }
-              metrics.incrLogsDirsCleaned();
-            } catch (IOException e) {
-              LOG.error("Unable to remove " + dirpath, e);
-            }
+          appLogDirPresent.setTrue();
+          if (shouldCleanAppLogDir(childPath, now, fs, retainMillis)) {
+            deleteDir(childPath);
           }
         } else { // Keep cleaning inside
-          cleanLogs(stat.getPath(), fs, retainMillis);
+          cleanAppLogDir(childPath, retainMillis, appLogDirPresent);
         }
       }
     }
   }
+
+  private void deleteDir(Path path) {
+    try {
+      LOG.info("Deleting {}", path);
+      if (fs.delete(path, true)) {
+        metrics.incrLogsDirsCleaned();
+      } else {
+        LOG.error("Unable to remove {}", path);
+      }
+    } catch (IOException e) {
+      LOG.error("Unable to remove {}", path, e);
+    }
+  }
+
+  private boolean isValidClusterTimeStampDir(FileStatus stat) {
+    return stat.isDirectory() &&
+        StringUtils.isNumeric(stat.getPath().getName());
+  }
+
 
   private static boolean shouldCleanAppLogDir(Path appLogPath, long now,
       FileSystem fs, long logRetainMillis) throws IOException {
@@ -497,15 +549,11 @@ public class EntityGroupFSTimelineStore extends CompositeService
 
   // converts the String to an ApplicationId or null if conversion failed
   private static ApplicationId parseApplicationId(String appIdStr) {
-    ApplicationId appId = null;
-    if (appIdStr.startsWith(ApplicationId.appIdStrPrefix)) {
-      try {
-        appId = ApplicationId.fromString(appIdStr);
-      } catch (IllegalArgumentException e) {
-        appId = null;
-      }
+    try {
+      return ApplicationId.fromString(appIdStr);
+    } catch (IllegalArgumentException e) {
+      return null;
     }
-    return appId;
   }
 
   private static ClassLoader createPluginClassLoader(
@@ -596,8 +644,7 @@ public class EntityGroupFSTimelineStore extends CompositeService
     AppState appState = AppState.ACTIVE;
     try {
       ApplicationReport report = yarnClient.getApplicationReport(appId);
-      YarnApplicationState yarnState = report.getYarnApplicationState();
-      if (APP_FINAL_STATES.contains(yarnState)) {
+      if (Apps.isApplicationFinalState(report.getYarnApplicationState())) {
         appState = AppState.COMPLETED;
       }
     } catch (ApplicationNotFoundException e) {
@@ -889,7 +936,7 @@ public class EntityGroupFSTimelineStore extends CompositeService
       LOG.debug("Cleaner starting");
       long startTime = Time.monotonicNow();
       try {
-        cleanLogs(doneRootPath, fs, logRetainMillis);
+        cleanLogs(doneRootPath, logRetainMillis);
       } catch (Exception e) {
         Throwable t = extract(e);
         if (t instanceof InterruptedException) {
@@ -1061,6 +1108,11 @@ public class EntityGroupFSTimelineStore extends CompositeService
     LOG.debug("getEntityTimelines type={} ids={}", entityType, entityIds);
     TimelineEvents returnEvents = new TimelineEvents();
     List<EntityCacheItem> relatedCacheItems = new ArrayList<>();
+
+    if (entityIds == null || entityIds.isEmpty()) {
+      return returnEvents;
+    }
+
     for (String entityId : entityIds) {
       LOG.debug("getEntityTimeline type={} id={}", entityType, entityId);
       List<TimelineStore> stores

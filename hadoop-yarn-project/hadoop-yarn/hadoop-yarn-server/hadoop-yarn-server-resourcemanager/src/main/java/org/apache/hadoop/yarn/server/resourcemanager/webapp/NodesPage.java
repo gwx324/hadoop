@@ -18,17 +18,12 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
-import static org.apache.hadoop.yarn.webapp.YarnWebParams.NODE_LABEL;
-import static org.apache.hadoop.yarn.webapp.YarnWebParams.NODE_STATE;
-import static org.apache.hadoop.yarn.webapp.view.JQueryUI.DATATABLES;
-import static org.apache.hadoop.yarn.webapp.view.JQueryUI.DATATABLES_ID;
-import static org.apache.hadoop.yarn.webapp.view.JQueryUI.initID;
-import static org.apache.hadoop.yarn.webapp.view.JQueryUI.tableInit;
-
-import java.util.Collection;
-
+import com.google.inject.Inject;
+import org.apache.commons.text.StringEscapeUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
@@ -36,34 +31,48 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeInfo;
 import org.apache.hadoop.yarn.util.Times;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.webapp.SubView;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TABLE;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TBODY;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.TABLE;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.TBODY;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
 
-import com.google.inject.Inject;
+import java.util.Collection;
+
+import static org.apache.hadoop.yarn.webapp.YarnWebParams.NODE_LABEL;
+import static org.apache.hadoop.yarn.webapp.YarnWebParams.NODE_STATE;
+import static org.apache.hadoop.yarn.webapp.view.JQueryUI.DATATABLES;
+import static org.apache.hadoop.yarn.webapp.view.JQueryUI.DATATABLES_ID;
+import static org.apache.hadoop.yarn.webapp.view.JQueryUI.initID;
+import static org.apache.hadoop.yarn.webapp.view.JQueryUI.tableInit;
 
 class NodesPage extends RmView {
 
   static class NodesBlock extends HtmlBlock {
     final ResourceManager rm;
     private static final long BYTES_IN_MB = 1024 * 1024;
+    private static final long BYTES_IN_GB = 1024 * 1024 * 1024;
+    private static boolean opportunisticContainersEnabled;
 
     @Inject
     NodesBlock(ResourceManager rm, ViewContext ctx) {
       super(ctx);
       this.rm = rm;
+      this.opportunisticContainersEnabled = YarnConfiguration
+          .isOpportunisticContainerAllocationEnabled(
+              this.rm.getRMContext().getYarnConfiguration());
     }
 
     @Override
     protected void render(Block html) {
-      html._(MetricsOverviewTable.class);
+      html.__(MetricsOverviewTable.class);
 
       ResourceScheduler sched = rm.getResourceScheduler();
+
       String type = $(NODE_STATE);
       String labelFilter = $(NODE_LABEL, CommonNodeLabelsManager.ANY).trim();
-      TBODY<TABLE<Hamlet>> tbody =
+      Hamlet.TR<Hamlet.THEAD<TABLE<Hamlet>>> trbody =
           html.table("#nodes").thead().tr()
               .th(".nodelabels", "Node Labels")
               .th(".rack", "Rack")
@@ -71,13 +80,39 @@ class NodesPage extends RmView {
               .th(".nodeaddress", "Node Address")
               .th(".nodehttpaddress", "Node HTTP Address")
               .th(".lastHealthUpdate", "Last health-update")
-              .th(".healthReport", "Health-report")
-              .th(".containers", "Containers")
-              .th(".mem", "Mem Used")
-              .th(".mem", "Mem Avail")
-              .th(".vcores", "VCores Used")
-              .th(".vcores", "VCores Avail")
-              .th(".nodeManagerVersion", "Version")._()._().tbody();
+              .th(".healthReport", "Health-report");
+
+      if (!this.opportunisticContainersEnabled) {
+        trbody.th(".containers", "Containers")
+            .th(".allocationTags", "Allocation Tags")
+            .th(".mem", "Mem Used")
+            .th(".mem", "Mem Avail")
+            .th(".mem", "Phys Mem Used %")
+            .th(".vcores", "VCores Used")
+            .th(".vcores", "VCores Avail")
+            .th(".vcores", "Phys VCores Used %")
+            .th(".gpus", "GPUs Used")
+            .th(".gpus", "GPUs Avail");
+      } else {
+        trbody.th(".containers", "Running Containers (G)")
+            .th(".allocationTags", "Allocation Tags")
+            .th(".mem", "Mem Used (G)")
+            .th(".mem", "Mem Avail (G)")
+            .th(".mem", "Phys Mem Used %")
+            .th(".vcores", "VCores Used (G)")
+            .th(".vcores", "VCores Avail (G)")
+            .th(".vcores", "Phys VCores Used %")
+            .th(".gpus", "GPUs Used (G)")
+            .th(".gpus", "GPUs Avail (G)")
+            .th(".containers", "Running Containers (O)")
+            .th(".mem", "Mem Used (O)")
+            .th(".vcores", "VCores Used (O)")
+            .th(".containers", "Queued Containers");
+      }
+
+      TBODY<TABLE<Hamlet>> tbody =
+          trbody.th(".nodeManagerVersion", "Version").__().__().tbody();
+
       NodeState stateFilter = null;
       if (type != null && !type.isEmpty()) {
         stateFilter = NodeState.valueOf(StringUtils.toUpperCase(type));
@@ -140,20 +175,58 @@ class NodesPage extends RmView {
           nodeTableData.append("\",\"<a ").append("href='" + "//" + httpAddress)
               .append("'>").append(httpAddress).append("</a>\",").append("\"");
         }
+        Integer gpuIndex = ResourceUtils.getResourceTypeIndex()
+            .get(ResourceInformation.GPU_URI);
+        long usedGPUs = 0;
+        long availableGPUs = 0;
+        if (gpuIndex != null && info.getUsedResource() != null
+            && info.getAvailableResource() != null) {
+          usedGPUs = info.getUsedResource().getResource()
+              .getResourceValue(ResourceInformation.GPU_URI);
+          availableGPUs = info.getAvailableResource().getResource()
+              .getResourceValue(ResourceInformation.GPU_URI);
+        }
         nodeTableData.append("<br title='")
             .append(String.valueOf(info.getLastHealthUpdate())).append("'>")
             .append(Times.format(info.getLastHealthUpdate())).append("\",\"")
-            .append(info.getHealthReport()).append("\",\"")
+            .append(StringEscapeUtils.escapeJava(info.getHealthReport())).append("\",\"")
             .append(String.valueOf(info.getNumContainers())).append("\",\"")
+            .append(info.getAllocationTagsSummary()).append("\",\"")
             .append("<br title='").append(String.valueOf(usedMemory))
             .append("'>").append(StringUtils.byteDesc(usedMemory * BYTES_IN_MB))
             .append("\",\"").append("<br title='")
             .append(String.valueOf(availableMemory)).append("'>")
             .append(StringUtils.byteDesc(availableMemory * BYTES_IN_MB))
-            .append("\",\"").append(String.valueOf(info.getUsedVirtualCores()))
+            .append("\",\"")
+            .append(String.valueOf((int) info.getMemUtilization()))
+            .append("\",\"")
+            .append(String.valueOf(info.getUsedVirtualCores()))
             .append("\",\"")
             .append(String.valueOf(info.getAvailableVirtualCores()))
-            .append("\",\"").append(ni.getNodeManagerVersion())
+            .append("\",\"")
+            .append(String.valueOf((int) info.getVcoreUtilization()))
+            .append("\",\"")
+            .append(String.valueOf(usedGPUs))
+            .append("\",\"")
+            .append(String.valueOf(availableGPUs))
+            .append("\",\"");
+
+        // If opportunistic containers are enabled, add extra fields.
+        if (this.opportunisticContainersEnabled) {
+          nodeTableData
+              .append(String.valueOf(info.getNumRunningOpportContainers()))
+              .append("\",\"").append("<br title='")
+              .append(String.valueOf(info.getUsedMemoryOpportGB())).append("'>")
+              .append(StringUtils.byteDesc(
+                  info.getUsedMemoryOpportGB() * BYTES_IN_GB))
+              .append("\",\"")
+              .append(String.valueOf(info.getUsedVirtualCoresOpport()))
+              .append("\",\"")
+              .append(String.valueOf(info.getNumQueuedContainers()))
+              .append("\",\"");
+        }
+
+        nodeTableData.append(ni.getNodeManagerVersion())
             .append("\"],\n");
       }
       if (nodeTableData.charAt(nodeTableData.length() - 2) == ',') {
@@ -162,13 +235,13 @@ class NodesPage extends RmView {
       }
       nodeTableData.append("]");
       html.script().$type("text/javascript")
-          ._("var nodeTableData=" + nodeTableData)._();
-      tbody._()._();
+          .__("var nodeTableData=" + nodeTableData).__();
+      tbody.__().__();
     }
   }
 
   @Override
-  protected void preHead(Page.HTML<_> html) {
+  protected void preHead(Page.HTML<__> html) {
     commonPreHead(html);
     String type = $(NODE_STATE);
     String title = "Nodes of the cluster";
@@ -190,12 +263,12 @@ class NodesPage extends RmView {
   private String nodesTableInit() {
     StringBuilder b = tableInit().append(", 'aaData': nodeTableData")
         .append(", bDeferRender: true").append(", bProcessing: true")
-        .append(", aoColumnDefs: [");
-    b.append("{'bSearchable': false, 'aTargets': [ 7 ]}");
-    b.append(", {'sType': 'title-numeric', 'bSearchable': false, "
-        + "'aTargets': [ 8, 9 ] }");
-    b.append(", {'sType': 'title-numeric', 'aTargets': [ 5 ]}");
-    b.append("]}");
+        .append(", aoColumnDefs: [")
+        .append("{'bSearchable': false, 'aTargets': [ 7 ]}")
+        .append(", {'sType': 'title-numeric', 'bSearchable': false, "
+            + "'aTargets': [ 9, 10 ] }")
+        .append(", {'sType': 'title-numeric', 'aTargets': [ 5 ]}")
+        .append("]}");
     return b.toString();
   }
 }

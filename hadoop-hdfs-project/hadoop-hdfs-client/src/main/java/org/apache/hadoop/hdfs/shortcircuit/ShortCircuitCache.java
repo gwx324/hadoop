@@ -22,18 +22,19 @@ import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.net.SocketException;
 import java.nio.MappedByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.TreeMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
-import org.apache.commons.lang.mutable.MutableBoolean;
+import org.apache.commons.collections.map.LinkedMap;
+import org.apache.commons.lang3.mutable.MutableBoolean;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.ExtendedBlockId;
 import org.apache.hadoop.hdfs.client.impl.DfsClientConf.ShortCircuitConf;
@@ -53,9 +54,9 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.Waitable;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -107,16 +108,15 @@ public class ShortCircuitCache implements Closeable {
 
         int numDemoted = demoteOldEvictableMmaped(curMs);
         int numPurged = 0;
-        Long evictionTimeNs = (long) 0;
-        while (true) {
-          Entry<Long, ShortCircuitReplica> entry =
-              evictable.ceilingEntry(evictionTimeNs);
-          if (entry == null) break;
-          evictionTimeNs = entry.getKey();
+        Long evictionTimeNs;
+        while (!evictable.isEmpty()) {
+          Object eldestKey = evictable.firstKey();
+          evictionTimeNs = (Long)eldestKey;
           long evictionTimeMs =
               TimeUnit.MILLISECONDS.convert(evictionTimeNs, TimeUnit.NANOSECONDS);
           if (evictionTimeMs + maxNonMmappedEvictableLifespanMs >= curMs) break;
-          ShortCircuitReplica replica = entry.getValue();
+          ShortCircuitReplica replica = (ShortCircuitReplica)evictable.get(
+              eldestKey);
           if (LOG.isTraceEnabled()) {
             LOG.trace("CacheCleaner: purging " + replica + ": " +
                 StringUtils.getStackTrace(Thread.currentThread()));
@@ -182,35 +182,65 @@ public class ShortCircuitCache implements Closeable {
 
     @Override
     public void run() {
+      if (slot == null) {
+        return;
+      }
       LOG.trace("{}: about to release {}", ShortCircuitCache.this, slot);
       final DfsClientShm shm = (DfsClientShm)slot.getShm();
       final DomainSocket shmSock = shm.getPeer().getDomainSocket();
       final String path = shmSock.getPath();
+      DataOutputStream out = null;
       boolean success = false;
-      try (DomainSocket sock = DomainSocket.connect(path);
-           DataOutputStream out = new DataOutputStream(
-               new BufferedOutputStream(sock.getOutputStream()))) {
-        new Sender(out).releaseShortCircuitFds(slot.getSlotId());
-        DataInputStream in = new DataInputStream(sock.getInputStream());
-        ReleaseShortCircuitAccessResponseProto resp =
-            ReleaseShortCircuitAccessResponseProto.parseFrom(
-                PBHelperClient.vintPrefixed(in));
-        if (resp.getStatus() != Status.SUCCESS) {
-          String error = resp.hasError() ? resp.getError() : "(unknown)";
-          throw new IOException(resp.getStatus().toString() + ": " + error);
+      int retries = 2;
+      try {
+        while (retries > 0) {
+          try {
+            if (domainSocket == null || !domainSocket.isOpen()) {
+              // we are running in single thread mode, no protection needed for
+              // domainSocket
+              domainSocket = DomainSocket.connect(path);
+            }
+
+            out = new DataOutputStream(
+                new BufferedOutputStream(domainSocket.getOutputStream()));
+            new Sender(out).releaseShortCircuitFds(slot.getSlotId());
+            DataInputStream in =
+                new DataInputStream(domainSocket.getInputStream());
+            ReleaseShortCircuitAccessResponseProto resp =
+                ReleaseShortCircuitAccessResponseProto
+                    .parseFrom(PBHelperClient.vintPrefixed(in));
+            if (resp.getStatus() != Status.SUCCESS) {
+              String error = resp.hasError() ? resp.getError() : "(unknown)";
+              throw new IOException(resp.getStatus().toString() + ": " + error);
+            }
+
+            LOG.trace("{}: released {}", this, slot);
+            success = true;
+            break;
+
+          } catch (SocketException se) {
+            // the domain socket on datanode may be timed out, we retry once
+            retries--;
+            domainSocket.close();
+            domainSocket = null;
+            if (retries == 0) {
+              throw new SocketException("Create domain socket failed");
+            }
+          }
         }
-        LOG.trace("{}: released {}", this, slot);
-        success = true;
       } catch (IOException e) {
-        LOG.error(ShortCircuitCache.this + ": failed to release " +
-            "short-circuit shared memory slot " + slot + " by sending " +
-            "ReleaseShortCircuitAccessRequestProto to " + path +
-            ".  Closing shared memory segment.", e);
+        LOG.warn(ShortCircuitCache.this + ": failed to release "
+            + "short-circuit shared memory slot " + slot + " by sending "
+            + "ReleaseShortCircuitAccessRequestProto to " + path
+            + ".  Closing shared memory segment. "
+            + "DataNode may have been stopped or restarted", e);
       } finally {
         if (success) {
           shmManager.freeSlot(slot);
         } else {
           shm.getEndpointShmManager().shutdown(shm);
+          IOUtilsClient.cleanupWithLogger(LOG, domainSocket, out);
+          domainSocket = null;
         }
       }
     }
@@ -263,17 +293,17 @@ public class ShortCircuitCache implements Closeable {
   private CacheCleaner cacheCleaner;
 
   /**
-   * Tree of evictable elements.
+   * LinkedMap of evictable elements.
    *
    * Maps (unique) insertion time in nanoseconds to the element.
    */
-  private final TreeMap<Long, ShortCircuitReplica> evictable = new TreeMap<>();
+  private final LinkedMap evictable = new LinkedMap();
 
   /**
    * Maximum total size of the cache, including both mmapped and
    * no$-mmapped elements.
    */
-  private final int maxTotalSize;
+  private int maxTotalSize;
 
   /**
    * Non-mmaped elements older than this will be closed.
@@ -281,12 +311,11 @@ public class ShortCircuitCache implements Closeable {
   private long maxNonMmappedEvictableLifespanMs;
 
   /**
-   * Tree of mmaped evictable elements.
+   * LinkedMap of mmaped evictable elements.
    *
    * Maps (unique) insertion time in nanoseconds to the element.
    */
-  private final TreeMap<Long, ShortCircuitReplica> evictableMmapped =
-      new TreeMap<>();
+  private final LinkedMap evictableMmapped = new LinkedMap();
 
   /**
    * Maximum number of mmaped evictable elements.
@@ -324,6 +353,8 @@ public class ShortCircuitCache implements Closeable {
    * Manages short-circuit shared memory segments for the client.
    */
   private final DfsClientShmManager shmManager;
+
+  private DomainSocket domainSocket = null;
 
   public static ShortCircuitCache fromConf(ShortCircuitConf conf) {
     return new ShortCircuitCache(
@@ -363,6 +394,11 @@ public class ShortCircuitCache implements Closeable {
 
   public long getStaleThresholdMs() {
     return staleThresholdMs;
+  }
+
+  @VisibleForTesting
+  public void setMaxTotalSize(int maxTotalSize) {
+    this.maxTotalSize = maxTotalSize;
   }
 
   /**
@@ -482,13 +518,11 @@ public class ShortCircuitCache implements Closeable {
   private int demoteOldEvictableMmaped(long now) {
     int numDemoted = 0;
     boolean needMoreSpace = false;
-    Long evictionTimeNs = (long) 0;
+    Long evictionTimeNs;
 
-    while (true) {
-      Entry<Long, ShortCircuitReplica> entry =
-          evictableMmapped.ceilingEntry(evictionTimeNs);
-      if (entry == null) break;
-      evictionTimeNs = entry.getKey();
+    while (!evictableMmapped.isEmpty()) {
+      Object eldestKey = evictableMmapped.firstKey();
+      evictionTimeNs = (Long)eldestKey;
       long evictionTimeMs =
           TimeUnit.MILLISECONDS.convert(evictionTimeNs, TimeUnit.NANOSECONDS);
       if (evictionTimeMs + maxEvictableMmapedLifespanMs >= now) {
@@ -497,7 +531,8 @@ public class ShortCircuitCache implements Closeable {
         }
         needMoreSpace = true;
       }
-      ShortCircuitReplica replica = entry.getValue();
+      ShortCircuitReplica replica = (ShortCircuitReplica)evictableMmapped.get(
+          eldestKey);
       if (LOG.isTraceEnabled()) {
         String rationale = needMoreSpace ? "because we need more space" :
             "because it's too old";
@@ -520,18 +555,15 @@ public class ShortCircuitCache implements Closeable {
     long now = Time.monotonicNow();
     demoteOldEvictableMmaped(now);
 
-    while (true) {
-      long evictableSize = evictable.size();
-      long evictableMmappedSize = evictableMmapped.size();
-      if (evictableSize + evictableMmappedSize <= maxTotalSize) {
-        return;
-      }
+    while (evictable.size() + evictableMmapped.size() > maxTotalSize) {
       ShortCircuitReplica replica;
-      if (evictableSize == 0) {
-        replica = evictableMmapped.firstEntry().getValue();
+      if (evictable.isEmpty()) {
+        replica = (ShortCircuitReplica) evictableMmapped
+            .get(evictableMmapped.firstKey());
       } else {
-        replica = evictable.firstEntry().getValue();
+        replica = (ShortCircuitReplica) evictable.get(evictable.firstKey());
       }
+
       if (LOG.isTraceEnabled()) {
         LOG.trace(this + ": trimEvictionMaps is purging " + replica +
             StringUtils.getStackTrace(Thread.currentThread()));
@@ -573,10 +605,11 @@ public class ShortCircuitCache implements Closeable {
    * @param map       The map to remove it from.
    */
   private void removeEvictable(ShortCircuitReplica replica,
-      TreeMap<Long, ShortCircuitReplica> map) {
+      LinkedMap map) {
     Long evictableTimeNs = replica.getEvictableTimeNs();
     Preconditions.checkNotNull(evictableTimeNs);
-    ShortCircuitReplica removed = map.remove(evictableTimeNs);
+    ShortCircuitReplica removed = (ShortCircuitReplica)map.remove(
+        evictableTimeNs);
     Preconditions.checkState(removed == replica,
         "failed to make %s unevictable", replica);
     replica.setEvictableTimeNs(null);
@@ -593,7 +626,7 @@ public class ShortCircuitCache implements Closeable {
    * @param map              The map to insert it into.
    */
   private void insertEvictable(Long evictionTimeNs,
-      ShortCircuitReplica replica, TreeMap<Long, ShortCircuitReplica> map) {
+      ShortCircuitReplica replica, LinkedMap map) {
     while (map.containsKey(evictionTimeNs)) {
       evictionTimeNs++;
     }
@@ -645,6 +678,7 @@ public class ShortCircuitCache implements Closeable {
     unref(replica);
   }
 
+  static final int FETCH_OR_CREATE_RETRY_TIMES = 3;
   /**
    * Fetch or create a replica.
    *
@@ -659,11 +693,11 @@ public class ShortCircuitCache implements Closeable {
    */
   public ShortCircuitReplicaInfo fetchOrCreate(ExtendedBlockId key,
       ShortCircuitReplicaCreator creator) {
-    Waitable<ShortCircuitReplicaInfo> newWaitable = null;
+    Waitable<ShortCircuitReplicaInfo> newWaitable;
     lock.lock();
     try {
       ShortCircuitReplicaInfo info = null;
-      do {
+      for (int i = 0; i < FETCH_OR_CREATE_RETRY_TIMES; i++){
         if (closed) {
           LOG.trace("{}: can't fethchOrCreate {} because the cache is closed.",
               this, key);
@@ -673,11 +707,12 @@ public class ShortCircuitCache implements Closeable {
         if (waitable != null) {
           try {
             info = fetch(key, waitable);
+            break;
           } catch (RetriableException e) {
             LOG.debug("{}: retrying {}", this, e.getMessage());
           }
         }
-      } while (false);
+      }
       if (info != null) return info;
       // We need to load the replica ourselves.
       newWaitable = new Waitable<>(lock.newCondition());
@@ -698,7 +733,8 @@ public class ShortCircuitCache implements Closeable {
    *
    * @throws RetriableException   If the caller needs to retry.
    */
-  private ShortCircuitReplicaInfo fetch(ExtendedBlockId key,
+  @VisibleForTesting // ONLY for testing
+  protected ShortCircuitReplicaInfo fetch(ExtendedBlockId key,
       Waitable<ShortCircuitReplicaInfo> waitable) throws RetriableException {
     // Another thread is already in the process of loading this
     // ShortCircuitReplica.  So we simply wait for it to complete.
@@ -858,17 +894,15 @@ public class ShortCircuitCache implements Closeable {
       maxNonMmappedEvictableLifespanMs = 0;
       maxEvictableMmapedSize = 0;
       // Close and join cacheCleaner thread.
-      IOUtilsClient.cleanup(LOG, cacheCleaner);
+      IOUtilsClient.cleanupWithLogger(LOG, cacheCleaner);
       // Purge all replicas.
-      while (true) {
-        Entry<Long, ShortCircuitReplica> entry = evictable.firstEntry();
-        if (entry == null) break;
-        purge(entry.getValue());
+      while (!evictable.isEmpty()) {
+        Object eldestKey = evictable.firstKey();
+        purge((ShortCircuitReplica) evictable.get(eldestKey));
       }
-      while (true) {
-        Entry<Long, ShortCircuitReplica> entry = evictableMmapped.firstEntry();
-        if (entry == null) break;
-        purge(entry.getValue());
+      while (!evictableMmapped.isEmpty()) {
+        Object eldestKey = evictableMmapped.firstKey();
+        purge((ShortCircuitReplica) evictableMmapped.get(eldestKey));
       }
     } finally {
       lock.unlock();
@@ -901,7 +935,7 @@ public class ShortCircuitCache implements Closeable {
       LOG.error("Interrupted while waiting for CleanerThreadPool "
           + "to terminate", e);
     }
-    IOUtilsClient.cleanup(LOG, shmManager);
+    IOUtilsClient.cleanupWithLogger(LOG, shmManager);
   }
 
   @VisibleForTesting // ONLY for testing
@@ -909,8 +943,8 @@ public class ShortCircuitCache implements Closeable {
     void visit(int numOutstandingMmaps,
         Map<ExtendedBlockId, ShortCircuitReplica> replicas,
         Map<ExtendedBlockId, InvalidToken> failedLoads,
-        Map<Long, ShortCircuitReplica> evictable,
-        Map<Long, ShortCircuitReplica> evictableMmapped);
+        LinkedMap evictable,
+        LinkedMap evictableMmapped);
   }
 
   @VisibleForTesting // ONLY for testing
@@ -995,6 +1029,9 @@ public class ShortCircuitCache implements Closeable {
    * @param slot           The slot to release.
    */
   public void scheduleSlotReleaser(Slot slot) {
+    if (slot == null) {
+      return;
+    }
     Preconditions.checkState(shmManager != null);
     releaserExecutor.execute(new SlotReleaser(slot));
   }
@@ -1002,5 +1039,14 @@ public class ShortCircuitCache implements Closeable {
   @VisibleForTesting
   public DfsClientShmManager getDfsClientShmManager() {
     return shmManager;
+  }
+
+  /**
+   * Can be used in testing to verify whether a read went through SCR, after
+   * the read is done and before the stream is closed.
+   */
+  @VisibleForTesting
+  public int getReplicaInfoMapSize() {
+    return replicaInfoMap.size();
   }
 }

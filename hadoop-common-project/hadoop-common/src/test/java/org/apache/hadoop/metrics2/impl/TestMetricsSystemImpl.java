@@ -23,28 +23,25 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
-
-import javax.annotation.Nullable;
-
+import java.util.stream.StreamSupport;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.invocation.InvocationOnMock;
-import org.mockito.runners.MockitoJUnitRunner;
+import org.mockito.junit.MockitoJUnitRunner;
 import org.mockito.stubbing.Answer;
 
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
-import com.google.common.base.Predicate;
-import com.google.common.collect.Iterables;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Iterables;
 
-import org.apache.commons.configuration.SubsetConfiguration;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.configuration2.SubsetConfiguration;
 import org.apache.hadoop.metrics2.MetricsException;
+import org.apache.hadoop.test.GenericTestUtils;
 import static org.apache.hadoop.test.MoreAsserts.*;
 
 import org.apache.hadoop.metrics2.AbstractMetric;
@@ -59,16 +56,18 @@ import org.apache.hadoop.metrics2.lib.MetricsRegistry;
 import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 import org.apache.hadoop.metrics2.lib.MutableRate;
 import org.apache.hadoop.metrics2.lib.MutableGaugeLong;
-import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Test the MetricsSystemImpl class
  */
 @RunWith(MockitoJUnitRunner.class)
 public class TestMetricsSystemImpl {
-  private static final Log LOG = LogFactory.getLog(TestMetricsSystemImpl.class);
-  
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestMetricsSystemImpl.class);
+
   static { DefaultMetricsSystem.setMiniClusterMode(true); }
   
   @Captor private ArgumentCaptor<MetricsRecord> r1;
@@ -77,14 +76,21 @@ public class TestMetricsSystemImpl {
 
   public static class TestSink implements MetricsSink {
 
+    private List<Iterable<AbstractMetric>> metricValues = new ArrayList<>();
+
     @Override public void putMetrics(MetricsRecord record) {
-      LOG.debug(record);
+      LOG.debug(record.toString());
+      metricValues.add(record.metrics());
     }
 
     @Override public void flush() {}
 
     @Override public void init(SubsetConfiguration conf) {
       LOG.debug(MetricsConfig.toString(conf));
+    }
+
+    List<Iterable<AbstractMetric>> getMetricValues() {
+      return metricValues;
     }
   }
 
@@ -236,13 +242,9 @@ public class TestMetricsSystemImpl {
     for (Thread t : threads)
       t.join();
     assertEquals(0L, ms.droppedPubAll.value());
-    assertTrue(StringUtils.join("\n", Arrays.asList(results)),
-      Iterables.all(Arrays.asList(results), new Predicate<String>() {
-        @Override
-        public boolean apply(@Nullable String input) {
-          return input.equalsIgnoreCase("Passed");
-        }
-      }));
+    assertTrue(String.join("\n", Arrays.asList(results)),
+        Arrays.asList(results).stream().allMatch(
+            input -> input.equalsIgnoreCase("Passed")));
     ms.stop();
     ms.shutdown();
   }
@@ -420,7 +422,7 @@ public class TestMetricsSystemImpl {
   }
 
   private void checkMetricsRecords(List<MetricsRecord> recs) {
-    LOG.debug(recs);
+    LOG.debug(recs.toString());
     MetricsRecord r = recs.get(0);
     assertEquals("name", "s1rec", r.name());
     assertEquals("tags", new MetricsTag[] {
@@ -472,14 +474,12 @@ public class TestMetricsSystemImpl {
       ms.onTimerEvent();
       verify(dataSink, timeout(500).times(2)).putMetrics(r1.capture());
       List<MetricsRecord> mr = r1.getAllValues();
-      Number qSize = Iterables.find(mr.get(1).metrics(),
-          new Predicate<AbstractMetric>() {
-            @Override
-            public boolean apply(@Nullable AbstractMetric input) {
-              assert input != null;
-              return input.name().equals("Sink_slowSinkQsize");
-            }
-      }).value();
+      Number qSize = StreamSupport.stream(mr.get(1).metrics().spliterator(),
+          false).filter(
+              input -> {
+                assert input != null;
+                return input.name().equals("Sink_slowSinkQsize");
+              }).findFirst().get().value();
       assertEquals(1, qSize);
     } finally {
       proceedSignal.countDown();
@@ -558,6 +558,46 @@ public class TestMetricsSystemImpl {
     ms.shutdown();
   }
 
+  @Test
+  public void testRegisterSinksMultiplePeriods() throws Exception {
+    new ConfigBuilder().add("test.sink.test1.period", 100000)
+        .add("test.sink.test1.class", TestSink.class.getName())
+        .add("test.sink.test2.period", 200000)
+        .add("test.sink.test2.class", TestSink.class.getName())
+        .save(TestMetricsConfig.getTestFilename("hadoop-metrics2-test"));
+    MetricsSystemImpl ms = new MetricsSystemImpl();
+    try {
+      ms.init("test");
+      TestSink sink1 = (TestSink) ms.getSinkAdapter("test1").sink();
+      TestSink sink2 = (TestSink) ms.getSinkAdapter("test2").sink();
+      assertEquals(0, sink1.getMetricValues().size());
+      assertEquals(0, sink2.getMetricValues().size());
+      ms.onTimerEvent();
+      // Give some time for the publish event to go through
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override
+        public Boolean get() {
+          return sink1.getMetricValues().size() > 0;
+        }
+      }, 10, 10000);
+      assertEquals(1, sink1.getMetricValues().size());
+      assertEquals(0, sink2.getMetricValues().size());
+      ms.onTimerEvent();
+      // Give some time for the publish event to go through
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override
+        public Boolean get() {
+          return sink1.getMetricValues().size() > 1 &&
+              sink2.getMetricValues().size() > 0;
+        }
+      }, 10, 10000);
+      assertEquals(2, sink1.getMetricValues().size());
+      assertEquals(1, sink2.getMetricValues().size());
+    } finally {
+      ms.shutdown();
+    }
+  }
+
   @Metrics(context="test")
   private static class TestSource {
     @Metric("C1 desc") MutableCounterLong c1;
@@ -588,5 +628,26 @@ public class TestMetricsSystemImpl {
 
   private static String getPluginUrlsAsString() {
     return "file:metrics2-test-plugin.jar";
+  }
+
+  @Test
+  public void testMetricSystemRestart() {
+    MetricsSystemImpl ms = new MetricsSystemImpl("msRestartTestSystem");
+    TestSink ts = new TestSink();
+    String sinkName = "restartTestSink";
+
+    try {
+      ms.start();
+      ms.register(sinkName, "", ts);
+      assertNotNull("no adapter exists for " + sinkName,
+              ms.getSinkAdapter(sinkName));
+      ms.stop();
+
+      ms.start();
+      assertNotNull("no adapter exists for " + sinkName,
+              ms.getSinkAdapter(sinkName));
+    } finally {
+      ms.stop();
+    }
   }
 }

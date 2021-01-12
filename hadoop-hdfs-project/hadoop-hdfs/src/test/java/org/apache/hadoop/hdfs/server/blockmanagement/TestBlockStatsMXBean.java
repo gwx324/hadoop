@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
+import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -30,17 +31,26 @@ import java.net.URL;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
-import org.mortbay.util.ajax.JSON;
+import org.eclipse.jetty.util.ajax.JSON;
+import org.junit.rules.Timeout;
 
 /**
  * Class for testing {@link BlockStatsMXBean} implementation
@@ -49,11 +59,16 @@ public class TestBlockStatsMXBean {
 
   private MiniDFSCluster cluster;
 
+  @Rule
+  public Timeout globalTimeout = new Timeout(300000);
+
   @Before
   public void setup() throws IOException {
     HdfsConfiguration conf = new HdfsConfiguration();
+    conf.setTimeDuration(DFSConfigKeys.DFS_DATANODE_DISK_CHECK_MIN_GAP_KEY,
+        0, TimeUnit.MILLISECONDS);
     cluster = null;
-    StorageType[][] types = new StorageType[6][];
+    StorageType[][] types = new StorageType[7][];
     for (int i=0; i<3; i++) {
       types[i] = new StorageType[] {StorageType.RAM_DISK, StorageType.DISK};
     }
@@ -62,8 +77,9 @@ public class TestBlockStatsMXBean {
     }
     types[5] = new StorageType[] {StorageType.RAM_DISK, StorageType.ARCHIVE,
         StorageType.ARCHIVE};
+    types[6] = new StorageType[]{StorageType.RAM_DISK, StorageType.NVDIMM};
 
-    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(6).
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(7).
         storageTypes(types).storagesPerDatanode(3).build();
     cluster.waitActive();
   }
@@ -83,16 +99,20 @@ public class TestBlockStatsMXBean {
     assertTrue(storageTypeStatsMap.containsKey(StorageType.RAM_DISK));
     assertTrue(storageTypeStatsMap.containsKey(StorageType.DISK));
     assertTrue(storageTypeStatsMap.containsKey(StorageType.ARCHIVE));
+    assertTrue(storageTypeStatsMap.containsKey(StorageType.NVDIMM));
 
     StorageTypeStats storageTypeStats =
         storageTypeStatsMap.get(StorageType.RAM_DISK);
-    assertEquals(6, storageTypeStats.getNodesInService());
+    assertEquals(7, storageTypeStats.getNodesInService());
 
     storageTypeStats = storageTypeStatsMap.get(StorageType.DISK);
     assertEquals(3, storageTypeStats.getNodesInService());
 
     storageTypeStats = storageTypeStatsMap.get(StorageType.ARCHIVE);
     assertEquals(3, storageTypeStats.getNodesInService());
+
+    storageTypeStats = storageTypeStatsMap.get(StorageType.NVDIMM);
+    assertEquals(1, storageTypeStats.getNodesInService());
   }
 
   protected static String readOutput(URL url) throws IOException {
@@ -126,7 +146,7 @@ public class TestBlockStatsMXBean {
     Object[] storageTypeStatsList =
         (Object[])blockStats.get("StorageTypeStats");
     assertNotNull(storageTypeStatsList);
-    assertEquals (3, storageTypeStatsList.length);
+    assertEquals(4, storageTypeStatsList.length);
 
     Set<String> typesPresent = new HashSet<> ();
     for (Object obj : storageTypeStatsList) {
@@ -134,12 +154,18 @@ public class TestBlockStatsMXBean {
       String storageType = (String)entry.get("key");
       Map<String,Object> storageTypeStats = (Map<String,Object>)entry.get("value");
       typesPresent.add(storageType);
-      if (storageType.equals("ARCHIVE") || storageType.equals("DISK") ) {
-        assertEquals(3l, storageTypeStats.get("nodesInService"));
-      } else if (storageType.equals("RAM_DISK")) {
-        assertEquals(6l, storageTypeStats.get("nodesInService"));
-      }
-      else {
+      switch (storageType) {
+      case "ARCHIVE":
+      case "DISK":
+        assertEquals(3L, storageTypeStats.get("nodesInService"));
+        break;
+      case "RAM_DISK":
+        assertEquals(7L, storageTypeStats.get("nodesInService"));
+        break;
+      case "NVDIMM":
+        assertEquals(1L, storageTypeStats.get("nodesInService"));
+        break;
+      default:
         fail();
       }
     }
@@ -147,10 +173,15 @@ public class TestBlockStatsMXBean {
     assertTrue(typesPresent.contains("ARCHIVE"));
     assertTrue(typesPresent.contains("DISK"));
     assertTrue(typesPresent.contains("RAM_DISK"));
+    assertTrue(typesPresent.contains("NVDIMM"));
   }
 
   @Test
   public void testStorageTypeStatsWhenStorageFailed() throws Exception {
+    // The test uses DataNodeTestUtils#injectDataDirFailure() to simulate
+    // volume failures which is currently not supported on Windows.
+    assumeNotWindows();
+
     DFSTestUtil.createFile(cluster.getFileSystem(),
         new Path("/blockStatsFile1"), 1024, (short) 1, 0L);
     Map<StorageType, StorageTypeStats> storageTypeStatsMap = cluster
@@ -158,27 +189,31 @@ public class TestBlockStatsMXBean {
 
     StorageTypeStats storageTypeStats = storageTypeStatsMap
         .get(StorageType.RAM_DISK);
-    assertEquals(6, storageTypeStats.getNodesInService());
+    assertEquals(7, storageTypeStats.getNodesInService());
 
     storageTypeStats = storageTypeStatsMap.get(StorageType.DISK);
     assertEquals(3, storageTypeStats.getNodesInService());
 
     storageTypeStats = storageTypeStatsMap.get(StorageType.ARCHIVE);
     assertEquals(3, storageTypeStats.getNodesInService());
-    String dataDir = cluster.getDataDirectory();
-    File dn1ArcVol1 = new File(dataDir, "data" + (3 * 0 + 2));
-    File dn2ArcVol1 = new File(dataDir, "data" + (3 * 1 + 2));
-    File dn3ArcVol1 = new File(dataDir, "data" + (3 * 2 + 2));
+
+    storageTypeStats = storageTypeStatsMap.get(StorageType.NVDIMM);
+    assertEquals(1, storageTypeStats.getNodesInService());
+    File dn1ArcVol1 = cluster.getInstanceStorageDir(0, 1);
+    File dn2ArcVol1 = cluster.getInstanceStorageDir(1, 1);
+    File dn3ArcVol1 = cluster.getInstanceStorageDir(2, 1);
+    File dn4ArcVol1 = cluster.getInstanceStorageDir(3, 1);
     DataNodeTestUtils.injectDataDirFailure(dn1ArcVol1);
     DataNodeTestUtils.injectDataDirFailure(dn2ArcVol1);
     DataNodeTestUtils.injectDataDirFailure(dn3ArcVol1);
+    DataNodeTestUtils.injectDataDirFailure(dn4ArcVol1);
     try {
       DFSTestUtil.createFile(cluster.getFileSystem(), new Path(
           "/blockStatsFile2"), 1024, (short) 1, 0L);
       fail("Should throw exception, becuase no DISK storage available");
     } catch (Exception e) {
       assertTrue(e.getMessage().contains(
-          "could only be replicated to 0 nodes instead"));
+          "could only be written to 0 of the 1 minReplication"));
     }
     // wait for heartbeat
     Thread.sleep(6000);
@@ -189,7 +224,8 @@ public class TestBlockStatsMXBean {
     DataNodeTestUtils.restoreDataDirFromFailure(dn1ArcVol1);
     DataNodeTestUtils.restoreDataDirFromFailure(dn2ArcVol1);
     DataNodeTestUtils.restoreDataDirFromFailure(dn3ArcVol1);
-    for (int i = 0; i < 3; i++) {
+    DataNodeTestUtils.restoreDataDirFromFailure(dn4ArcVol1);
+    for (int i = 0; i < 4; i++) {
       cluster.restartDataNode(0, true);
     }
     // wait for heartbeat
@@ -197,12 +233,62 @@ public class TestBlockStatsMXBean {
     storageTypeStatsMap = cluster.getNamesystem().getBlockManager()
         .getStorageTypeStats();
     storageTypeStats = storageTypeStatsMap.get(StorageType.RAM_DISK);
-    assertEquals(6, storageTypeStats.getNodesInService());
+    assertEquals(7, storageTypeStats.getNodesInService());
 
     storageTypeStats = storageTypeStatsMap.get(StorageType.DISK);
     assertEquals(3, storageTypeStats.getNodesInService());
 
     storageTypeStats = storageTypeStatsMap.get(StorageType.ARCHIVE);
     assertEquals(3, storageTypeStats.getNodesInService());
+
+    storageTypeStats = storageTypeStatsMap.get(StorageType.NVDIMM);
+    assertEquals(1, storageTypeStats.getNodesInService());
+  }
+
+  @Test
+  public void testStorageTypeLoad() throws Exception {
+    HeartbeatManager heartbeatManager =
+        cluster.getNamesystem().getBlockManager().getDatanodeManager()
+            .getHeartbeatManager();
+    Map<StorageType, StorageTypeStats> storageTypeStatsMap =
+        heartbeatManager.getStorageTypeStats();
+    DistributedFileSystem dfs = cluster.getFileSystem();
+
+    // Create a file with HOT storage policy.
+    Path hotSpDir = new Path("/HOT");
+    dfs.mkdir(hotSpDir, FsPermission.getDirDefault());
+    dfs.setStoragePolicy(hotSpDir, "HOT");
+    FSDataOutputStream hotSpFileStream =
+        dfs.create(new Path(hotSpDir, "hotFile"));
+    hotSpFileStream.write("Storage Policy Hot".getBytes());
+    hotSpFileStream.hflush();
+
+    // Create a file with COLD storage policy.
+    Path coldSpDir = new Path("/COLD");
+    dfs.mkdir(coldSpDir, FsPermission.getDirDefault());
+    dfs.setStoragePolicy(coldSpDir, "COLD");
+    FSDataOutputStream coldSpFileStream =
+        dfs.create(new Path(coldSpDir, "coldFile"));
+    coldSpFileStream.write("Writing to ARCHIVE storage type".getBytes());
+    coldSpFileStream.hflush();
+
+    // Trigger heartbeats manually to speed up the test.
+    cluster.triggerHeartbeats();
+
+    // The load would be 2*replication since both the
+    // write xceiver & packet responder threads are counted.
+    GenericTestUtils.waitFor(() -> storageTypeStatsMap.get(StorageType.DISK)
+        .getNodesInServiceXceiverCount() == 6, 100, 5000);
+
+    // The count for ARCHIVE should be independent of the value of DISK.
+    GenericTestUtils.waitFor(() -> storageTypeStatsMap.get(StorageType.ARCHIVE)
+        .getNodesInServiceXceiverCount() == 6, 100, 5000);
+
+    // The total count should stay unaffected, that is sum of load from all
+    // datanodes.
+    GenericTestUtils
+        .waitFor(() -> heartbeatManager.getInServiceXceiverCount() == 12, 100,
+            5000);
+    IOUtils.closeStreams(hotSpFileStream, coldSpFileStream);
   }
 }

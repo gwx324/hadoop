@@ -19,15 +19,16 @@ package org.apache.hadoop.hdfs.security.token.block;
 
 import java.io.IOException;
 import java.util.EnumSet;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier.AccessMode;
 import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.Token;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.fs.StorageType;
 
 /**
  * Manages a {@link BlockTokenSecretManager} per block pool. Routes the requests
@@ -36,29 +37,29 @@ import com.google.common.annotations.VisibleForTesting;
 public class BlockPoolTokenSecretManager extends
     SecretManager<BlockTokenIdentifier> {
   
-  private final Map<String, BlockTokenSecretManager> map = 
-    new HashMap<String, BlockTokenSecretManager>();
+  private final Map<String, BlockTokenSecretManager> map =
+      new ConcurrentHashMap<>();
 
   /**
    * Add a block pool Id and corresponding {@link BlockTokenSecretManager} to map
    * @param bpid block pool Id
    * @param secretMgr {@link BlockTokenSecretManager}
    */
-  public synchronized void addBlockPool(String bpid,
-      BlockTokenSecretManager secretMgr) {
+  public void addBlockPool(String bpid, BlockTokenSecretManager secretMgr) {
     map.put(bpid, secretMgr);
   }
 
-  synchronized BlockTokenSecretManager get(String bpid) {
+  @VisibleForTesting
+  public BlockTokenSecretManager get(String bpid) {
     BlockTokenSecretManager secretMgr = map.get(bpid);
     if (secretMgr == null) {
-      throw new IllegalArgumentException("Block pool " + bpid
-          + " is not found");
+      throw new IllegalArgumentException(
+          "Block pool " + bpid + " is not found");
     }
     return secretMgr;
   }
   
-  public synchronized boolean isBlockPoolRegistered(String bpid) {
+  public boolean isBlockPoolRegistered(String bpid) {
     return map.containsKey(bpid);
   }
 
@@ -80,25 +81,65 @@ public class BlockPoolTokenSecretManager extends
   }
 
   /**
-   * See {@link BlockTokenSecretManager#checkAccess(BlockTokenIdentifier, 
-   *                String, ExtendedBlock, BlockTokenIdentifier.AccessMode)}
+   * See {@link BlockTokenSecretManager#checkAccess(BlockTokenIdentifier,
+   *                String, ExtendedBlock, BlockTokenIdentifier.AccessMode,
+   *                StorageType[], String[])}
    */
   public void checkAccess(BlockTokenIdentifier id, String userId,
-      ExtendedBlock block, AccessMode mode) throws InvalidToken {
+      ExtendedBlock block, AccessMode mode,
+      StorageType[] storageTypes, String[] storageIds)
+      throws InvalidToken {
+    get(block.getBlockPoolId()).checkAccess(id, userId, block, mode,
+        storageTypes, storageIds);
+  }
+
+  /**
+   * See {@link BlockTokenSecretManager#checkAccess(BlockTokenIdentifier,
+   * String, ExtendedBlock, BlockTokenIdentifier.AccessMode,
+   * StorageType[])}
+   */
+  public void checkAccess(BlockTokenIdentifier id, String userId,
+      ExtendedBlock block, AccessMode mode, StorageType[] storageTypes)
+      throws InvalidToken {
+    get(block.getBlockPoolId()).checkAccess(id, userId, block, mode,
+        storageTypes);
+  }
+
+  /**
+   * See {@link BlockTokenSecretManager#checkAccess(BlockTokenIdentifier,
+   * String, ExtendedBlock, BlockTokenIdentifier.AccessMode)}.
+   */
+  public void checkAccess(BlockTokenIdentifier id, String userId,
+                          ExtendedBlock block, AccessMode mode)
+      throws InvalidToken {
     get(block.getBlockPoolId()).checkAccess(id, userId, block, mode);
   }
 
   /**
-   * See {@link BlockTokenSecretManager#checkAccess(Token, String, 
-   *                ExtendedBlock, BlockTokenIdentifier.AccessMode)}
+   * See {@link BlockTokenSecretManager#checkAccess(Token, String,
+   *                ExtendedBlock, BlockTokenIdentifier.AccessMode)}.
    */
   public void checkAccess(Token<BlockTokenIdentifier> token,
-      String userId, ExtendedBlock block, AccessMode mode) throws InvalidToken {
+      String userId, ExtendedBlock block, AccessMode mode)
+      throws InvalidToken {
     get(block.getBlockPoolId()).checkAccess(token, userId, block, mode);
   }
 
   /**
-   * See {@link BlockTokenSecretManager#addKeys(ExportedBlockKeys)}
+   * See {@link BlockTokenSecretManager#checkAccess(Token, String,
+   *                ExtendedBlock, BlockTokenIdentifier.AccessMode,
+   *                StorageType[], String[])}
+   */
+  public void checkAccess(Token<BlockTokenIdentifier> token,
+      String userId, ExtendedBlock block, AccessMode mode,
+      StorageType[] storageTypes, String[] storageIds)
+      throws InvalidToken {
+    get(block.getBlockPoolId()).checkAccess(token, userId, block, mode,
+        storageTypes, storageIds);
+  }
+
+  /**
+   * See {@link BlockTokenSecretManager#addKeys(ExportedBlockKeys)}.
    */
   public void addKeys(String bpid, ExportedBlockKeys exportedKeys)
       throws IOException {
@@ -106,11 +147,14 @@ public class BlockPoolTokenSecretManager extends
   }
 
   /**
-   * See {@link BlockTokenSecretManager#generateToken(ExtendedBlock, EnumSet)}
+   * See {@link BlockTokenSecretManager#generateToken(ExtendedBlock, EnumSet,
+   *  StorageType[], String[])}.
    */
   public Token<BlockTokenIdentifier> generateToken(ExtendedBlock b,
-      EnumSet<AccessMode> of) throws IOException {
-    return get(b.getBlockPoolId()).generateToken(b, of);
+      EnumSet<AccessMode> of, StorageType[] storageTypes, String[] storageIds)
+      throws IOException {
+    return get(b.getBlockPoolId()).generateToken(b, of, storageTypes,
+        storageIds);
   }
   
   @VisibleForTesting

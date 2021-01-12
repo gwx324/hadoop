@@ -87,6 +87,7 @@
   <h2><a name="gettingstarted">Getting started</a></h2>
   <h3>Implementing metrics sources</h3>
   <table width="99%" border="1" cellspacing="0" cellpadding="4">
+    <caption></caption>
     <tbody>
       <tr>
         <th>Using annotations</th><th>Using MetricsSource interface</th>
@@ -289,6 +290,7 @@
     backend that can handle multiple contexts (file, gangalia etc.):
   </p>
   <table width="99%" border="1" cellspacing="0" cellpadding="4">
+    <caption></caption>
     <tbody>
       <tr>
         <th width="40%">Before</th><th>After</th>
@@ -310,6 +312,7 @@
     using the context option in the sink options like the following:
   </p>
   <table width="99%" border="1" cellspacing="0" cellpadding="4">
+    <caption></caption>
     <tbody>
       <tr>
         <th width="40%">Before</th><th>After</th>
@@ -327,7 +330,7 @@
         <td><pre>
   myprefix.sink.*.class=org.apache.hadoop.metrics2.sink.FileSink
   myprefix.sink.file0.context=context0
-  myprefix.sink.file0.filename=context1.out
+  myprefix.sink.file0.filename=context0.out
   myprefix.sink.file1.context=context1
   myprefix.sink.file1.filename=context1.out
   ...

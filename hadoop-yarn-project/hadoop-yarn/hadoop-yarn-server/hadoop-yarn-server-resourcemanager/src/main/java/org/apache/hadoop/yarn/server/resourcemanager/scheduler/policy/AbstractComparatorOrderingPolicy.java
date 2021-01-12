@@ -19,12 +19,13 @@
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy;
 
 import java.util.*;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.util.concurrent.ConcurrentSkipListSet;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.*;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
-import com.google.common.annotations.VisibleForTesting;
 
 
 /**
@@ -33,9 +34,10 @@ import com.google.common.annotations.VisibleForTesting;
  */
 public abstract class AbstractComparatorOrderingPolicy<S extends SchedulableEntity> implements OrderingPolicy<S> {
   
-  private static final Log LOG = LogFactory.getLog(OrderingPolicy.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(OrderingPolicy.class);
                                             
-  protected TreeSet<S> schedulableEntities;
+  protected ConcurrentSkipListSet<S> schedulableEntities;
   protected Comparator<SchedulableEntity> comparator;
   protected Map<String, S> entitiesToReorder = new HashMap<String, S>();
   
@@ -45,13 +47,13 @@ public abstract class AbstractComparatorOrderingPolicy<S extends SchedulableEnti
   public Collection<S> getSchedulableEntities() {
     return schedulableEntities;
   }
-  
+
   @Override
-  public Iterator<S> getAssignmentIterator() {
+  public Iterator<S> getAssignmentIterator(IteratorSelector sel) {
     reorderScheduleEntities();
     return schedulableEntities.iterator();
   }
-  
+
   @Override
   public Iterator<S> getPreemptionIterator() {
     reorderScheduleEntities();
@@ -87,7 +89,6 @@ public abstract class AbstractComparatorOrderingPolicy<S extends SchedulableEnti
     }
   }
 
-  @VisibleForTesting
   public Comparator<SchedulableEntity> getComparator() {
     return comparator; 
   }
@@ -137,5 +138,8 @@ public abstract class AbstractComparatorOrderingPolicy<S extends SchedulableEnti
 
   @Override
   public abstract String getInfo();
-  
+
+  @Override
+  public abstract String getConfigName();
+
 }

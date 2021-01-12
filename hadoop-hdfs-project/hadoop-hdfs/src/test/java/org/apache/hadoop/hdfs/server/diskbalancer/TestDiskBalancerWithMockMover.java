@@ -19,11 +19,11 @@
 
 package org.apache.hadoop.hdfs.server.diskbalancer;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import java.util.function.Supplier;
 import org.apache.commons.codec.digest.DigestUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
@@ -63,7 +63,8 @@ import static org.junit.Assert.assertTrue;
  * Tests diskbalancer with a mock mover.
  */
 public class TestDiskBalancerWithMockMover {
-  static final Log LOG = LogFactory.getLog(TestDiskBalancerWithMockMover.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(TestDiskBalancerWithMockMover.class);
 
   @Rule
   public ExpectedException thrown = ExpectedException.none();
@@ -125,7 +126,7 @@ public class TestDiskBalancerWithMockMover {
   private void executeSubmitPlan(NodePlan plan, DiskBalancer balancer,
                                  int version) throws IOException {
     String planJson = plan.toJson();
-    String planID = DigestUtils.sha512Hex(planJson);
+    String planID = DigestUtils.sha1Hex(planJson);
     balancer.submitPlan(planID, version, PLAN_FILE, planJson, false);
   }
 
@@ -214,7 +215,7 @@ public class TestDiskBalancerWithMockMover {
     NodePlan plan = mockMoverHelper.getPlan();
     DiskBalancer balancer = mockMoverHelper.getBalancer();
     String planJson = plan.toJson();
-    String planID = DigestUtils.sha512Hex(planJson);
+    String planID = DigestUtils.sha1Hex(planJson);
 
     thrown.expect(DiskBalancerException.class);
     thrown.expect(new DiskBalancerResultVerifier(DiskBalancerException
@@ -231,7 +232,7 @@ public class TestDiskBalancerWithMockMover {
 
 
     String planJson = plan.toJson();
-    String planID = DigestUtils.sha512Hex(planJson);
+    String planID = DigestUtils.sha1Hex(planJson);
     char repChar = planID.charAt(0);
     repChar++;
 
@@ -261,7 +262,7 @@ public class TestDiskBalancerWithMockMover {
 
 
     String planJson = plan.toJson();
-    String planID = DigestUtils.sha512Hex(planJson);
+    String planID = DigestUtils.sha1Hex(planJson);
     balancer.cancelPlan(planID);
 
     DiskBalancerWorkStatus status = balancer.queryWorkStatus();
@@ -331,8 +332,8 @@ public class TestDiskBalancerWithMockMover {
         .getFsVolumeReferences();
 
     nodeID = dataNode.getDatanodeUuid();
-    sourceName = references.get(0).getBasePath();
-    destName = references.get(1).getBasePath();
+    sourceName = references.get(0).getBaseURI().getPath();
+    destName = references.get(1).getBaseURI().getPath();
     sourceUUID = references.get(0).getStorageID();
     destUUID = references.get(1).getStorageID();
     references.close();
@@ -358,14 +359,13 @@ public class TestDiskBalancerWithMockMover {
 
     private AtomicBoolean shouldRun;
     private FsDatasetSpi dataset;
-    private Integer runCount;
+    private int runCount;
     private volatile boolean sleepInCopyBlocks;
     private long delay;
 
     public TestMover(FsDatasetSpi dataset) {
       this.dataset = dataset;
       this.shouldRun = new AtomicBoolean(false);
-      this.runCount = new Integer(0);
     }
 
     public void setSleep() {
@@ -401,7 +401,7 @@ public class TestDiskBalancerWithMockMover {
         if (delay > 0) {
           Thread.sleep(delay);
         }
-        synchronized (runCount) {
+        synchronized (this) {
           if (shouldRun()) {
             runCount++;
           }
@@ -461,9 +461,9 @@ public class TestDiskBalancerWithMockMover {
     }
 
     public int getRunCount() {
-      synchronized (runCount) {
-        LOG.info("Run count : " + runCount.intValue());
-        return runCount.intValue();
+      synchronized (this) {
+        LOG.info("Run count : " + runCount);
+        return runCount;
       }
     }
   }
@@ -510,7 +510,7 @@ public class TestDiskBalancerWithMockMover {
     }
   }
 
-  private class DiskBalancerBuilder {
+  private static class DiskBalancerBuilder {
     private TestMover blockMover;
     private Configuration conf;
     private String nodeID;
@@ -546,7 +546,7 @@ public class TestDiskBalancerWithMockMover {
     }
   }
 
-  private class DiskBalancerClusterBuilder {
+  private static class DiskBalancerClusterBuilder {
     private String jsonFilePath;
     private Configuration conf;
 
@@ -573,7 +573,7 @@ public class TestDiskBalancerWithMockMover {
     }
   }
 
-  private class PlanBuilder {
+  private static class PlanBuilder {
     private String sourcePath;
     private String destPath;
     private String sourceUUID;

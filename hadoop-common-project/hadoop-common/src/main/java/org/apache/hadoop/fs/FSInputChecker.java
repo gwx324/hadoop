@@ -22,11 +22,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.zip.Checksum;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 
@@ -37,8 +38,8 @@ import java.nio.IntBuffer;
 @InterfaceAudience.LimitedPrivate({"HDFS"})
 @InterfaceStability.Unstable
 abstract public class FSInputChecker extends FSInputStream {
-  public static final Log LOG 
-  = LogFactory.getLog(FSInputChecker.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(FSInputChecker.class);
   
   /** The file name from which data is read from */
   protected Path file;
@@ -100,7 +101,7 @@ abstract public class FSInputChecker extends FSInputStream {
    *     Implementors should simply pass through to the underlying data stream.
    * or
    *  (b) needChecksum() will return true:
-   *    - len >= maxChunkSize
+   *    - len {@literal >=} maxChunkSize
    *    - checksum.length is a multiple of CHECKSUM_SIZE
    *    Implementors should read an integer number of data chunks into
    *    buf. The amount read should be bounded by len or by 

@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.webapp;
 
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import com.google.inject.servlet.RequestScoped;
 
 import java.util.Iterator;
@@ -75,12 +75,12 @@ public class ResponseInfo implements Iterable<ResponseInfo.Item> {
     return about;
   }
 
-  public ResponseInfo _(String key, Object value) {
+  public ResponseInfo __(String key, Object value) {
     items.add(Item.of(key, value, false));
     return this;
   }
 
-  public ResponseInfo _(String key, String url, Object anchor) {
+  public ResponseInfo __(String key, String url, Object anchor) {
     if (url == null) {
       items.add(Item.of(key, anchor, false));
     } else {

@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.examples.terasort;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 
 import org.apache.hadoop.conf.Configuration;
@@ -29,18 +30,19 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.FileAlreadyExistsException;
 import org.apache.hadoop.mapred.InvalidJobConfException;
 import org.apache.hadoop.mapreduce.JobContext;
-import org.apache.hadoop.mapreduce.OutputCommitter;
 import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.hadoop.mapreduce.lib.output.FileOutputCommitter;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.mapreduce.security.TokenCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * An output format that writes the key and value appended together.
  */
 public class TeraOutputFormat extends FileOutputFormat<Text,Text> {
-  private OutputCommitter committer = null;
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TeraOutputFormat.class);
 
   /**
    * Set the requirement for a final sync before the stream is closed.
@@ -74,10 +76,22 @@ public class TeraOutputFormat extends FileOutputFormat<Text,Text> {
       out.write(key.getBytes(), 0, key.getLength());
       out.write(value.getBytes(), 0, value.getLength());
     }
-    
+
     public void close(TaskAttemptContext context) throws IOException {
       if (finalSync) {
-        out.hsync();
+        try {
+          out.hsync();
+        } catch (UnsupportedOperationException e) {
+          /*
+           * Currently, hsync operation on striping file with erasure code
+           * policy is not supported yet. So this is a workaround to make
+           * teragen and terasort to support directory with striping files. In
+           * future, if the hsync operation is supported on striping file, this
+           * workaround should be removed.
+           */
+          LOG.info("Operation hsync is not supported so far on path with " +
+                  "erasure code policy set");
+        }
       }
       out.close();
     }
@@ -100,7 +114,7 @@ public class TeraOutputFormat extends FileOutputFormat<Text,Text> {
 
     final FileSystem fs = outDir.getFileSystem(jobConf);
 
-    if (fs.exists(outDir)) {
+    try {
       // existing output dir is considered empty iff its only content is the
       // partition file.
       //
@@ -116,6 +130,7 @@ public class TeraOutputFormat extends FileOutputFormat<Text,Text> {
         throw new FileAlreadyExistsException("Output directory " + outDir
             + " already exists");
       }
+    } catch (FileNotFoundException ignored) {
     }
   }
 
@@ -127,13 +142,4 @@ public class TeraOutputFormat extends FileOutputFormat<Text,Text> {
     return new TeraRecordWriter(fileOut, job);
   }
   
-  public OutputCommitter getOutputCommitter(TaskAttemptContext context) 
-      throws IOException {
-    if (committer == null) {
-      Path output = getOutputPath(context);
-      committer = new FileOutputCommitter(output, context);
-    }
-    return committer;
-  }
-
 }

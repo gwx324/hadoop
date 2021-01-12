@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+syntax = "proto2";
 option java_package = "org.apache.hadoop.yarn.proto";
 option java_outer_classname = "YarnServerNodemanagerRecoveryProtos";
 option java_generic_services = true;
@@ -31,6 +32,7 @@ message ContainerManagerApplicationProto {
   repeated ApplicationACLMapProto acls = 4;
   optional LogAggregationContextProto log_aggregation_context = 5;
   optional int64 appLogAggregationInitedTime = 6 [ default = -1 ];
+  optional FlowContextProto flowContext = 7;
 }
 
 message DeletionServiceDeleteTaskProto {
@@ -40,6 +42,8 @@ message DeletionServiceDeleteTaskProto {
   optional int64 deletionTime = 4;
   repeated string basedirs = 5;
   repeated int32 successorIds = 6;
+  optional string taskType = 7;
+  optional string dockerContainerId = 8;
 }
 
 message LocalizedResourceProto {
@@ -51,4 +55,10 @@ message LocalizedResourceProto {
 message LogDeleterProto {
   optional string user = 1;
   optional int64 deletionTime = 2;
+}
+
+message FlowContextProto {
+  optional string flowName = 1;
+  optional string flowVersion = 2;
+  optional int64 flowRunId = 3;
 }

@@ -22,8 +22,10 @@ import static org.apache.hadoop.yarn.util.StringHelper.pajoin;
 
 import java.net.InetSocketAddress;
 
+import org.apache.hadoop.conf.Configuration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
-import org.apache.hadoop.yarn.api.ApplicationBaseProtocol;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.util.RMHAUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
@@ -39,8 +41,11 @@ import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
  */
 public class RMWebApp extends WebApp implements YarnWebParams {
 
+  private static final Logger LOG =
+      LoggerFactory.getLogger(RMWebApp.class.getName());
   private final ResourceManager rm;
   private boolean standby = false;
+  private Configuration conf;
 
   public RMWebApp(ResourceManager rm) {
     this.rm = rm;
@@ -48,15 +53,17 @@ public class RMWebApp extends WebApp implements YarnWebParams {
 
   @Override
   public void setup() {
+    conf = rm.getConfig();
     bind(JAXBContextResolver.class);
-    bind(RMWebServices.class);
+    Class webService = conf.getClass(
+        YarnConfiguration.YARN_WEBAPP_CUSTOM_WEBSERVICE_CLASS,
+        RMWebServices.class);
+    bind(webService);
     bind(GenericExceptionHandler.class);
     bind(RMWebApp.class).toInstance(this);
+    bindExternalClasses();
+    bind(ResourceManager.class).toInstance(rm);
 
-    if (rm != null) {
-      bind(ResourceManager.class).toInstance(rm);
-      bind(ApplicationBaseProtocol.class).toInstance(rm.getClientRMService());
-    }
     route("/", RmController.class);
     route(pajoin("/nodes", NODE_STATE), RmController.class, "nodes");
     route(pajoin("/apps", APP_STATE), RmController.class);
@@ -71,6 +78,7 @@ public class RMWebApp extends WebApp implements YarnWebParams {
     route("/errors-and-warnings", RmController.class, "errorsAndWarnings");
     route(pajoin("/logaggregationstatus", APPLICATION_ID),
       RmController.class, "logaggregationstatus");
+    route(pajoin("/failure", APPLICATION_ID), RmController.class, "failure");
   }
 
   @Override
@@ -94,10 +102,19 @@ public class RMWebApp extends WebApp implements YarnWebParams {
       return super.getRedirectPath();
   }
 
+  private void bindExternalClasses() {
+    Class<?>[] externalClasses = conf
+        .getClasses(YarnConfiguration.YARN_HTTP_WEBAPP_EXTERNAL_CLASSES);
+    for (Class<?> c : externalClasses) {
+      bind(c);
+    }
+  }
+
+
   private String buildRedirectPath() {
     // make a copy of the original configuration so not to mutate it. Also use
     // an YarnConfiguration to force loading of yarn-site.xml.
-    YarnConfiguration yarnConf = new YarnConfiguration(rm.getConfig());
+    YarnConfiguration yarnConf = new YarnConfiguration(conf);
     String activeRMHAId = RMHAUtils.findActiveRMHAId(yarnConf);
     String path = "";
     if (activeRMHAId != null) {
@@ -120,8 +137,7 @@ public class RMWebApp extends WebApp implements YarnWebParams {
   }
 
   public String getHAZookeeperConnectionState() {
-    return rm.getRMContext().getRMAdminService()
-      .getHAZookeeperConnectionState();
+    return getRMContext().getHAZookeeperConnectionState();
   }
 
   public RMContext getRMContext() {

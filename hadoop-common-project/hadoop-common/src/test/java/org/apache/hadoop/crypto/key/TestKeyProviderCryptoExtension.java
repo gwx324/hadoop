@@ -22,6 +22,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -33,12 +34,16 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.EncryptedKeyVersion;
 import org.junit.Assert;
 import org.junit.BeforeClass;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.Timeout;
 
 import static org.apache.hadoop.crypto.key.KeyProvider.KeyVersion;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class TestKeyProviderCryptoExtension {
@@ -51,6 +56,9 @@ public class TestKeyProviderCryptoExtension {
   private static KeyProviderCryptoExtension kpExt;
   private static KeyProvider.Options options;
   private static KeyVersion encryptionKey;
+
+  @Rule
+  public Timeout testTimeout = new Timeout(180000);
 
   @BeforeClass
   public static void setup() throws Exception {
@@ -85,13 +93,7 @@ public class TestKeyProviderCryptoExtension {
     KeyVersion k1 = kpExt.decryptEncryptedKey(ek1);
     assertEquals(KeyProviderCryptoExtension.EK, k1.getVersionName());
     assertEquals(encryptionKey.getMaterial().length, k1.getMaterial().length);
-    if (Arrays.equals(k1.getMaterial(), encryptionKey.getMaterial())) {
-      fail("Encrypted key material should not equal encryption key material");
-    }
-    if (Arrays.equals(ek1.getEncryptedKeyVersion().getMaterial(),
-        encryptionKey.getMaterial())) {
-      fail("Encrypted key material should not equal decrypted key material");
-    }
+
     // Decrypt it again and it should be the same
     KeyVersion k1a = kpExt.decryptEncryptedKey(ek1);
     assertArrayEquals(k1.getMaterial(), k1a.getMaterial());
@@ -136,6 +138,159 @@ public class TestKeyProviderCryptoExtension {
 
     assertArrayEquals("Wrong key material from decryptEncryptedKey",
         manualMaterial, apiMaterial);
+  }
+
+  @Test
+  public void testReencryptEncryptedKey() throws Exception {
+    // Generate a new EEK
+    final KeyProviderCryptoExtension.EncryptedKeyVersion ek1 =
+        kpExt.generateEncryptedKey(encryptionKey.getName());
+
+    // Decrypt EEK into an EK and check it
+    final KeyVersion k1 = kpExt.decryptEncryptedKey(ek1);
+    assertEquals(KeyProviderCryptoExtension.EK, k1.getVersionName());
+    assertEquals(encryptionKey.getMaterial().length, k1.getMaterial().length);
+
+    // Roll the EK
+    kpExt.rollNewVersion(ek1.getEncryptionKeyName());
+
+    // Reencrypt ek1
+    final KeyProviderCryptoExtension.EncryptedKeyVersion ek2 =
+        kpExt.reencryptEncryptedKey(ek1);
+    assertEquals("Version name of EEK should be EEK",
+        KeyProviderCryptoExtension.EEK,
+        ek2.getEncryptedKeyVersion().getVersionName());
+    assertEquals("Name of EEK should be encryption key name",
+        ENCRYPTION_KEY_NAME, ek2.getEncryptionKeyName());
+    assertNotNull("Expected encrypted key material",
+        ek2.getEncryptedKeyVersion().getMaterial());
+    assertEquals("Length of encryption key material and EEK material should "
+            + "be the same", encryptionKey.getMaterial().length,
+        ek2.getEncryptedKeyVersion().getMaterial().length);
+
+    if (Arrays.equals(ek2.getEncryptedKeyVersion().getMaterial(),
+        ek1.getEncryptedKeyVersion().getMaterial())) {
+      fail("Re-encrypted EEK should have different material");
+    }
+
+    // Decrypt the new EEK into an EK and check it
+    final KeyVersion k2 = kpExt.decryptEncryptedKey(ek2);
+    assertEquals(KeyProviderCryptoExtension.EK, k2.getVersionName());
+    assertEquals(encryptionKey.getMaterial().length, k2.getMaterial().length);
+
+    // Re-encrypting the same EEK with the same EK should be deterministic
+    final KeyProviderCryptoExtension.EncryptedKeyVersion ek2a =
+        kpExt.reencryptEncryptedKey(ek1);
+    assertEquals("Version name of EEK should be EEK",
+        KeyProviderCryptoExtension.EEK,
+        ek2a.getEncryptedKeyVersion().getVersionName());
+    assertEquals("Name of EEK should be encryption key name",
+        ENCRYPTION_KEY_NAME, ek2a.getEncryptionKeyName());
+    assertNotNull("Expected encrypted key material",
+        ek2a.getEncryptedKeyVersion().getMaterial());
+    assertEquals("Length of encryption key material and EEK material should "
+            + "be the same", encryptionKey.getMaterial().length,
+        ek2a.getEncryptedKeyVersion().getMaterial().length);
+
+    if (Arrays.equals(ek2a.getEncryptedKeyVersion().getMaterial(),
+        ek1.getEncryptedKeyVersion().getMaterial())) {
+      fail("Re-encrypted EEK should have different material");
+    }
+    assertArrayEquals(ek2.getEncryptedKeyVersion().getMaterial(),
+        ek2a.getEncryptedKeyVersion().getMaterial());
+
+    // Re-encrypting an EEK with the same version EK should be no-op
+    final KeyProviderCryptoExtension.EncryptedKeyVersion ek3 =
+        kpExt.reencryptEncryptedKey(ek2);
+    assertEquals("Version name of EEK should be EEK",
+        KeyProviderCryptoExtension.EEK,
+        ek3.getEncryptedKeyVersion().getVersionName());
+    assertEquals("Name of EEK should be encryption key name",
+        ENCRYPTION_KEY_NAME, ek3.getEncryptionKeyName());
+    assertNotNull("Expected encrypted key material",
+        ek3.getEncryptedKeyVersion().getMaterial());
+    assertEquals("Length of encryption key material and EEK material should "
+            + "be the same", encryptionKey.getMaterial().length,
+        ek3.getEncryptedKeyVersion().getMaterial().length);
+
+    if (Arrays.equals(ek3.getEncryptedKeyVersion().getMaterial(),
+        ek1.getEncryptedKeyVersion().getMaterial())) {
+      fail("Re-encrypted EEK should have different material");
+    }
+    assertArrayEquals(ek2.getEncryptedKeyVersion().getMaterial(),
+        ek3.getEncryptedKeyVersion().getMaterial());
+  }
+
+  @Test
+  public void testReencryptEncryptedKeys() throws Exception {
+    List<EncryptedKeyVersion> ekvs = new ArrayList<>(4);
+    // Generate 2 new EEKs @v0 and add to the list
+    ekvs.add(kpExt.generateEncryptedKey(encryptionKey.getName()));
+    ekvs.add(kpExt.generateEncryptedKey(encryptionKey.getName()));
+
+    // Roll the EK
+    kpExt.rollNewVersion(ekvs.get(0).getEncryptionKeyName());
+    // Generate 1 new EEK @v1 add to the list.
+    ekvs.add(kpExt.generateEncryptedKey(encryptionKey.getName()));
+
+    // Roll the EK again
+    kpExt.rollNewVersion(ekvs.get(0).getEncryptionKeyName());
+    // Generate 1 new EEK @v2 add to the list.
+    ekvs.add(kpExt.generateEncryptedKey(encryptionKey.getName()));
+
+    // leave a deep copy of the original, for verification purpose.
+    List<EncryptedKeyVersion> ekvsOrig = new ArrayList<>(ekvs.size());
+    for (EncryptedKeyVersion ekv : ekvs) {
+      ekvsOrig.add(new EncryptedKeyVersion(ekv.getEncryptionKeyName(),
+          ekv.getEncryptionKeyVersionName(), ekv.getEncryptedKeyIv(),
+          ekv.getEncryptedKeyVersion()));
+    }
+
+    // Reencrypt ekvs
+    kpExt.reencryptEncryptedKeys(ekvs);
+
+    // Verify each ekv
+    for (int i = 0; i < ekvs.size(); ++i) {
+      final EncryptedKeyVersion ekv = ekvs.get(i);
+      final EncryptedKeyVersion orig = ekvsOrig.get(i);
+      assertEquals("Version name should be EEK",
+          KeyProviderCryptoExtension.EEK,
+          ekv.getEncryptedKeyVersion().getVersionName());
+      assertEquals("Encryption key name should be " + ENCRYPTION_KEY_NAME,
+          ENCRYPTION_KEY_NAME, ekv.getEncryptionKeyName());
+      assertNotNull("Expected encrypted key material",
+          ekv.getEncryptedKeyVersion().getMaterial());
+      assertEquals("Length of encryption key material and EEK material should "
+              + "be the same", encryptionKey.getMaterial().length,
+          ekv.getEncryptedKeyVersion().getMaterial().length);
+      assertFalse(
+          "Encrypted key material should not equal encryption key material",
+          Arrays.equals(ekv.getEncryptedKeyVersion().getMaterial(),
+              encryptionKey.getMaterial()));
+
+      if (i < 3) {
+        assertFalse("Re-encrypted EEK should have different material",
+            Arrays.equals(ekv.getEncryptedKeyVersion().getMaterial(),
+                orig.getEncryptedKeyVersion().getMaterial()));
+      } else {
+        assertTrue("Re-encrypted EEK should have same material",
+            Arrays.equals(ekv.getEncryptedKeyVersion().getMaterial(),
+                orig.getEncryptedKeyVersion().getMaterial()));
+      }
+
+      // Decrypt the new EEK into an EK and check it
+      final KeyVersion kv = kpExt.decryptEncryptedKey(ekv);
+      assertEquals(KeyProviderCryptoExtension.EK, kv.getVersionName());
+
+      // Decrypt it again and it should be the same
+      KeyVersion kv1 = kpExt.decryptEncryptedKey(ekv);
+      assertArrayEquals(kv.getMaterial(), kv1.getMaterial());
+
+      // Verify decrypting the new EEK and orig EEK gives the same material.
+      final KeyVersion origKv = kpExt.decryptEncryptedKey(orig);
+      assertTrue("Returned EEK and original EEK should both decrypt to the "
+          + "same kv.", Arrays.equals(origKv.getMaterial(), kv.getMaterial()));
+    }
   }
 
   @Test
@@ -231,6 +386,17 @@ public class TestKeyProviderCryptoExtension {
     public EncryptedKeyVersion generateEncryptedKey(String encryptionKeyName)
             throws IOException, GeneralSecurityException {
       return this.ekv;
+    }
+
+    @Override
+    public EncryptedKeyVersion reencryptEncryptedKey(EncryptedKeyVersion ekv)
+        throws IOException, GeneralSecurityException {
+      return ekv;
+    }
+
+    @Override
+    public void reencryptEncryptedKeys(List<EncryptedKeyVersion> ekvs)
+        throws IOException, GeneralSecurityException {
     }
 
     @Override
@@ -338,6 +504,17 @@ public class TestKeyProviderCryptoExtension {
             EncryptedKeyVersion encryptedKeyVersion)
             throws IOException, GeneralSecurityException {
       return kv;
+    }
+
+    @Override
+    public EncryptedKeyVersion reencryptEncryptedKey(EncryptedKeyVersion ekv)
+        throws IOException, GeneralSecurityException {
+      return ekv;
+    }
+
+    @Override
+    public void reencryptEncryptedKeys(List<EncryptedKeyVersion> ekvs)
+        throws IOException, GeneralSecurityException {
     }
   }
 }

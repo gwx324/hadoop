@@ -1,5 +1,3 @@
-package org.apache.hadoop.tools;
-
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -18,10 +16,21 @@ package org.apache.hadoop.tools;
  * limitations under the License.
  */
 
+package org.apache.hadoop.tools;
+
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.fs.Path;
+
 /**
  * Utility class to hold commonly used constants.
  */
-public class DistCpConstants {
+@InterfaceAudience.LimitedPrivate("Distcp support tools")
+@InterfaceStability.Evolving
+public final class DistCpConstants {
+
+  private DistCpConstants() {
+  }
 
   /* Default number of threads to use for building file listing */
   public static final int DEFAULT_LISTSTATUS_THREADS = 1;
@@ -43,12 +52,15 @@ public class DistCpConstants {
   public static final String CONF_LABEL_ATOMIC_COPY = "distcp.atomic.copy";
   public static final String CONF_LABEL_WORK_PATH = "distcp.work.path";
   public static final String CONF_LABEL_LOG_PATH = "distcp.log.path";
+  public static final String CONF_LABEL_VERBOSE_LOG = "distcp.verbose.log";
   public static final String CONF_LABEL_IGNORE_FAILURES = "distcp.ignore.failures";
   public static final String CONF_LABEL_PRESERVE_STATUS = "distcp.preserve.status";
   public static final String CONF_LABEL_PRESERVE_RAWXATTRS =
       "distcp.preserve.rawxattrs";
   public static final String CONF_LABEL_SYNC_FOLDERS = "distcp.sync.folders";
   public static final String CONF_LABEL_DELETE_MISSING = "distcp.delete.missing.source";
+  public static final String CONF_LABEL_TRACK_MISSING =
+      "distcp.track.missing.source";
   public static final String CONF_LABEL_LISTSTATUS_THREADS = "distcp.liststatus.threads";
   public static final String CONF_LABEL_MAX_MAPS = "distcp.max.maps";
   public static final String CONF_LABEL_SOURCE_LISTING = "distcp.source.listing";
@@ -57,7 +69,12 @@ public class DistCpConstants {
   public static final String CONF_LABEL_OVERWRITE = "distcp.copy.overwrite";
   public static final String CONF_LABEL_APPEND = "distcp.copy.append";
   public static final String CONF_LABEL_DIFF = "distcp.copy.diff";
+  public static final String CONF_LABEL_RDIFF = "distcp.copy.rdiff";
   public static final String CONF_LABEL_BANDWIDTH_MB = "distcp.map.bandwidth.mb";
+  public static final String CONF_LABEL_SIMPLE_LISTING_FILESTATUS_SIZE =
+      "distcp.simplelisting.file.status.size";
+  public static final String CONF_LABEL_SIMPLE_LISTING_RANDOMIZE_FILES =
+      "distcp.simplelisting.randomize.files";
   public static final String CONF_LABEL_FILTERS_FILE =
       "distcp.filters.file";
   public static final String CONF_LABEL_MAX_CHUNKS_TOLERABLE =
@@ -68,7 +85,8 @@ public class DistCpConstants {
       "distcp.dynamic.min.records_per_chunk";
   public static final String CONF_LABEL_SPLIT_RATIO =
       "distcp.dynamic.split.ratio";
-  
+  public static final String CONF_LABEL_DIRECT_WRITE = "distcp.direct.write";
+
   /* Total bytes to be copied. Updated by copylisting. Unfiltered count */
   public static final String CONF_LABEL_TOTAL_BYTES_TO_BE_COPIED = "mapred.total.bytes.expected";
 
@@ -103,6 +121,25 @@ public class DistCpConstants {
   public static final String CONF_LABEL_COPY_LISTING_CLASS = "distcp.copy.listing.class";
 
   /**
+   *  DistCp Filter class override param.
+   */
+  public static final String CONF_LABEL_FILTERS_CLASS = "distcp.filters.class";
+
+  /**
+   *  Distcp exclude file regex override param.
+   */
+  public static final String DISTCP_EXCLUDE_FILE_REGEX =
+          "distcp.exclude-file-regex";
+
+  /* DistCp Copy Buffer Size */
+  public static final String CONF_LABEL_COPY_BUFFER_SIZE =
+      "distcp.copy.buffer.size";
+
+  /** DistCp Blocks Per Chunk: {@value}. */
+  public static final String CONF_LABEL_BLOCKS_PER_CHUNK =
+      "distcp.blocks.per.chunk";
+
+  /**
    * Constants for DistCp return code to shell / consumer of ToolRunner's run
    */
   public static final int SUCCESS = 0;
@@ -121,9 +158,37 @@ public class DistCpConstants {
   public static final int SPLIT_RATIO_DEFAULT  = 2;
 
   /**
+   * Constants for NONE file deletion
+   */
+  public static final String NONE_PATH_NAME = "/NONE";
+  public static final Path NONE_PATH = new Path(NONE_PATH_NAME);
+  public static final Path RAW_NONE_PATH = new Path(
+      DistCpConstants.HDFS_RESERVED_RAW_DIRECTORY_NAME + NONE_PATH_NAME);
+
+  /**
    * Value of reserved raw HDFS directory when copying raw.* xattrs.
    */
-  static final String HDFS_RESERVED_RAW_DIRECTORY_NAME = "/.reserved/raw";
+  public static final String HDFS_RESERVED_RAW_DIRECTORY_NAME = "/.reserved/raw";
 
   static final String HDFS_DISTCP_DIFF_DIRECTORY_NAME = ".distcp.diff.tmp";
+
+  public static final int COPY_BUFFER_SIZE_DEFAULT = 8 * 1024;
+
+  /** Filename of sorted files in when tracking saves them. */
+  public static final String SOURCE_SORTED_FILE = "source_sorted.seq";
+
+  /** Filename of unsorted target listing. */
+  public static final String TARGET_LISTING_FILE = "target_listing.seq";
+
+  /** Filename of sorted target listing. */
+  public static final String TARGET_SORTED_FILE = "target_sorted.seq";
+
+  public static final String LENGTH_MISMATCH_ERROR_MSG =
+          "Mismatch in length of source:";
+
+  public static final String CHECKSUM_MISMATCH_ERROR_MSG =
+          "Checksum mismatch between ";
+
+  public static final String CLASS_INSTANTIATION_ERROR_MSG =
+          "Unable to instantiate ";
 }

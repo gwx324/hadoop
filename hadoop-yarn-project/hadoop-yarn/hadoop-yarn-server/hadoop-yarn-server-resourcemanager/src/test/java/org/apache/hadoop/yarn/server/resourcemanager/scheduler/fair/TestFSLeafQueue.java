@@ -18,16 +18,13 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
-import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -36,6 +33,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.util.concurrent.HadoopExecutors;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.Resource;
@@ -44,19 +42,28 @@ import org.apache.hadoop.yarn.server.resourcemanager.MockNodes;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetricsCustomResource;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateSchedulerEvent;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.allocationfile.AllocationFileQueue;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.allocationfile.AllocationFileWriter;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
+import java.util.Map;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 
 public class TestFSLeafQueue extends FairSchedulerTestBase {
   private final static String ALLOC_FILE = new File(TEST_DIR,
       TestFSLeafQueue.class.getName() + ".xml").getAbsolutePath();
   private Resource maxResource = Resources.createResource(1024 * 8);
+  private static final float MAX_AM_SHARE = 0.5f;
+  private static final String CUSTOM_RESOURCE = "test1";
 
   @Before
   public void setup() throws IOException {
@@ -80,25 +87,21 @@ public class TestFSLeafQueue extends FairSchedulerTestBase {
     resourceManager = new MockRM(conf);
     resourceManager.start();
     scheduler = (FairScheduler) resourceManager.getResourceScheduler();
-    scheduler.allocConf = mock(AllocationConfiguration.class);
 
     String queueName = "root.queue1";
-    when(scheduler.allocConf.getMaxResources(queueName)).thenReturn(maxResource);
-    when(scheduler.allocConf.getMinResources(queueName)).thenReturn(Resources.none());
-    when(scheduler.allocConf.getQueueMaxApps(queueName)).
-        thenReturn(Integer.MAX_VALUE);
-    when(scheduler.allocConf.getSchedulingPolicy(queueName))
-        .thenReturn(SchedulingPolicy.DEFAULT_POLICY);
     FSLeafQueue schedulable = new FSLeafQueue(queueName, scheduler, null);
-    assertEquals(schedulable.getMetrics().getMaxApps(), Integer.MAX_VALUE);
-    assertEquals(schedulable.getMetrics().getSchedulingPolicy(),
+    schedulable.setMaxShare(new ConfigurableResource(maxResource));
+    assertThat(schedulable.getMetrics().getMaxApps()).
+        isEqualTo(Integer.MAX_VALUE);
+    assertThat(schedulable.getMetrics().getSchedulingPolicy()).isEqualTo(
         SchedulingPolicy.DEFAULT_POLICY.getName());
 
     FSAppAttempt app = mock(FSAppAttempt.class);
     Mockito.when(app.getDemand()).thenReturn(maxResource);
+    Mockito.when(app.getResourceUsage()).thenReturn(Resources.none());
 
-    schedulable.addAppSchedulable(app);
-    schedulable.addAppSchedulable(app);
+    schedulable.addApp(app, true);
+    schedulable.addApp(app, true);
 
     schedulable.updateDemand();
 
@@ -107,26 +110,21 @@ public class TestFSLeafQueue extends FairSchedulerTestBase {
   }
 
   @Test (timeout = 5000)
-  public void test() throws Exception {
+  public void test() {
     conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
-    PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
-    out.println("<?xml version=\"1.0\"?>");
-    out.println("<allocations>");
-    out.println("<queue name=\"queueA\">");
-    out.println("<minResources>2048mb,0vcores</minResources>");
-    out.println("</queue>");
-    out.println("<queue name=\"queueB\">");
-    out.println("<minResources>2048mb,0vcores</minResources>");
-    out.println("</queue>");
-    out.println("</allocations>");
-    out.close();
+
+    AllocationFileWriter.create()
+        .queueMaxAMShareDefault(MAX_AM_SHARE)
+        .addQueue(new AllocationFileQueue.Builder("queueA").build())
+        .addQueue(new AllocationFileQueue.Builder("queueB").build())
+        .writeToFile(ALLOC_FILE);
 
     resourceManager = new MockRM(conf);
     resourceManager.start();
     scheduler = (FairScheduler) resourceManager.getResourceScheduler();
     for(FSQueue queue: scheduler.getQueueManager().getQueues()) {
-      assertEquals(queue.getMetrics().getMaxApps(), Integer.MAX_VALUE);
-      assertEquals(queue.getMetrics().getSchedulingPolicy(),
+      assertThat(queue.getMetrics().getMaxApps()).isEqualTo(Integer.MAX_VALUE);
+      assertThat(queue.getMetrics().getSchedulingPolicy()).isEqualTo(
           SchedulingPolicy.DEFAULT_POLICY.getName());
     }
 
@@ -150,162 +148,6 @@ public class TestFSLeafQueue extends FairSchedulerTestBase {
     scheduler.update();
     Collection<FSLeafQueue> queues = scheduler.getQueueManager().getLeafQueues();
     assertEquals(3, queues.size());
-
-    // Queue A should be above min share, B below.
-    FSLeafQueue queueA =
-        scheduler.getQueueManager().getLeafQueue("queueA", false);
-    FSLeafQueue queueB =
-        scheduler.getQueueManager().getLeafQueue("queueB", false);
-    assertFalse(queueA.isStarvedForMinShare());
-    assertTrue(queueB.isStarvedForMinShare());
-
-    // Node checks in again, should allocate for B
-    scheduler.handle(nodeEvent2);
-    // Now B should have min share ( = demand here)
-    assertFalse(queueB.isStarvedForMinShare());
-  }
-
-  @Test (timeout = 5000)
-  public void testIsStarvedForFairShare() throws Exception {
-    conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
-    PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
-    out.println("<?xml version=\"1.0\"?>");
-    out.println("<allocations>");
-    out.println("<queue name=\"queueA\">");
-    out.println("<weight>.2</weight>");
-    out.println("</queue>");
-    out.println("<queue name=\"queueB\">");
-    out.println("<weight>.8</weight>");
-    out.println("<fairSharePreemptionThreshold>.4</fairSharePreemptionThreshold>");
-    out.println("<queue name=\"queueB1\">");
-    out.println("</queue>");
-    out.println("<queue name=\"queueB2\">");
-    out.println("<fairSharePreemptionThreshold>.6</fairSharePreemptionThreshold>");
-    out.println("</queue>");
-    out.println("</queue>");
-    out.println("<defaultFairSharePreemptionThreshold>.5</defaultFairSharePreemptionThreshold>");
-    out.println("</allocations>");
-    out.close();
-
-    resourceManager = new MockRM(conf);
-    resourceManager.start();
-    scheduler = (FairScheduler) resourceManager.getResourceScheduler();
-
-    // Add one big node (only care about aggregate capacity)
-    RMNode node1 =
-        MockNodes.newNodeInfo(1, Resources.createResource(10 * 1024, 10), 1,
-            "127.0.0.1");
-    NodeAddedSchedulerEvent nodeEvent1 = new NodeAddedSchedulerEvent(node1);
-    scheduler.handle(nodeEvent1);
-
-    scheduler.update();
-
-    // Queue A wants 4 * 1024. Node update gives this all to A
-    createSchedulingRequest(1 * 1024, "queueA", "user1", 4);
-    scheduler.update();
-    NodeUpdateSchedulerEvent nodeEvent2 = new NodeUpdateSchedulerEvent(node1);
-    for (int i = 0; i < 4; i ++) {
-      scheduler.handle(nodeEvent2);
-    }
-
-    QueueManager queueMgr = scheduler.getQueueManager();
-    FSLeafQueue queueA = queueMgr.getLeafQueue("queueA", false);
-    assertEquals(4 * 1024, queueA.getResourceUsage().getMemorySize());
-
-    // Both queue B1 and queue B2 want 3 * 1024
-    createSchedulingRequest(1 * 1024, "queueB.queueB1", "user1", 3);
-    createSchedulingRequest(1 * 1024, "queueB.queueB2", "user1", 3);
-    scheduler.update();
-    for (int i = 0; i < 4; i ++) {
-      scheduler.handle(nodeEvent2);
-    }
-
-    FSLeafQueue queueB1 = queueMgr.getLeafQueue("queueB.queueB1", false);
-    FSLeafQueue queueB2 = queueMgr.getLeafQueue("queueB.queueB2", false);
-    assertEquals(2 * 1024, queueB1.getResourceUsage().getMemorySize());
-    assertEquals(2 * 1024, queueB2.getResourceUsage().getMemorySize());
-
-    // For queue B1, the fairSharePreemptionThreshold is 0.4, and the fair share
-    // threshold is 1.6 * 1024
-    assertFalse(queueB1.isStarvedForFairShare());
-
-    // For queue B2, the fairSharePreemptionThreshold is 0.6, and the fair share
-    // threshold is 2.4 * 1024
-    assertTrue(queueB2.isStarvedForFairShare());
-
-    // Node checks in again
-    scheduler.handle(nodeEvent2);
-    scheduler.handle(nodeEvent2);
-    assertEquals(3 * 1024, queueB1.getResourceUsage().getMemorySize());
-    assertEquals(3 * 1024, queueB2.getResourceUsage().getMemorySize());
-
-    // Both queue B1 and queue B2 usages go to 3 * 1024
-    assertFalse(queueB1.isStarvedForFairShare());
-    assertFalse(queueB2.isStarvedForFairShare());
-  }
-
-  @Test (timeout = 5000)
-  public void testIsStarvedForFairShareDRF() throws Exception {
-    conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
-    PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
-    out.println("<?xml version=\"1.0\"?>");
-    out.println("<allocations>");
-    out.println("<queue name=\"queueA\">");
-    out.println("<weight>.5</weight>");
-    out.println("</queue>");
-    out.println("<queue name=\"queueB\">");
-    out.println("<weight>.5</weight>");
-    out.println("</queue>");
-    out.println("<defaultFairSharePreemptionThreshold>1</defaultFairSharePreemptionThreshold>");
-    out.println("<defaultQueueSchedulingPolicy>drf</defaultQueueSchedulingPolicy>");
-    out.println("</allocations>");
-    out.close();
-
-    resourceManager = new MockRM(conf);
-    resourceManager.start();
-    scheduler = (FairScheduler) resourceManager.getResourceScheduler();
-
-    // Add one big node (only care about aggregate capacity)
-    RMNode node1 =
-            MockNodes.newNodeInfo(1, Resources.createResource(10 * 1024, 10), 1,
-                    "127.0.0.1");
-    NodeAddedSchedulerEvent nodeEvent1 = new NodeAddedSchedulerEvent(node1);
-    scheduler.handle(nodeEvent1);
-
-    scheduler.update();
-
-    // Queue A wants 7 * 1024, 1. Node update gives this all to A
-    createSchedulingRequest(7 * 1024, 1, "queueA", "user1", 1);
-    scheduler.update();
-    NodeUpdateSchedulerEvent nodeEvent2 = new NodeUpdateSchedulerEvent(node1);
-    scheduler.handle(nodeEvent2);
-
-    QueueManager queueMgr = scheduler.getQueueManager();
-    FSLeafQueue queueA = queueMgr.getLeafQueue("queueA", false);
-    assertEquals(7 * 1024, queueA.getResourceUsage().getMemorySize());
-    assertEquals(1, queueA.getResourceUsage().getVirtualCores());
-
-    // Queue B has 3 reqs :
-    // 1) 2 * 1024, 5 .. which will be granted
-    // 2) 1 * 1024, 1 .. which will be granted
-    // 3) 1 * 1024, 1 .. which wont
-    createSchedulingRequest(2 * 1024, 5, "queueB", "user1", 1);
-    createSchedulingRequest(1 * 1024, 2, "queueB", "user1", 2);
-    scheduler.update();
-    for (int i = 0; i < 3; i ++) {
-      scheduler.handle(nodeEvent2);
-    }
-
-    FSLeafQueue queueB = queueMgr.getLeafQueue("queueB", false);
-    assertEquals(3 * 1024, queueB.getResourceUsage().getMemorySize());
-    assertEquals(6, queueB.getResourceUsage().getVirtualCores());
-
-    scheduler.update();
-
-    // Verify that Queue us not starved for fair share..
-    // Since the Starvation logic now uses DRF when the policy = drf, The
-    // Queue should not be starved
-    assertFalse(queueB.isStarvedForFairShare());
   }
 
   @Test
@@ -333,7 +175,7 @@ public class TestFSLeafQueue extends FairSchedulerTestBase {
       @Override
       public void run() {
         for (int i=0; i < 500; i++) {
-          schedulable.addAppSchedulable(app);
+          schedulable.addApp(app, true);
         }
       }
     });
@@ -387,5 +229,129 @@ public class TestFSLeafQueue extends FairSchedulerTestBase {
     }
     assertTrue("Test failed with exception(s)" + exceptions,
         exceptions.isEmpty());
+  }
+
+  @Test
+  public void testCanRunAppAMReturnsTrue() {
+    conf.set(YarnConfiguration.RESOURCE_TYPES, CUSTOM_RESOURCE);
+    ResourceUtils.resetResourceTypes(conf);
+
+    resourceManager = new MockRM(conf);
+    resourceManager.start();
+    scheduler = (FairScheduler) resourceManager.getResourceScheduler();
+
+    Resource maxShare = Resource.newInstance(1024 * 8, 4,
+        ImmutableMap.of(CUSTOM_RESOURCE, 10L));
+
+    // Add a node to increase available memory and vcores in scheduler's
+    // root queue metrics
+    addNodeToScheduler(Resource.newInstance(4096, 10,
+        ImmutableMap.of(CUSTOM_RESOURCE, 25L)));
+
+    FSLeafQueue queue = setupQueue(maxShare);
+
+    //Min(availableMemory, maxShareMemory (maxResourceOverridden))
+    // --> Min(4096, 8192) = 4096
+    //Min(availableVCores, maxShareVCores (maxResourceOverridden))
+    // --> Min(10, 4) = 4
+    //Min(available test1, maxShare test1 (maxResourceOverridden))
+    // --> Min(25, 10) = 10
+    //MaxAMResource: (4096 MB memory, 4 vcores, 10 test1) * MAX_AM_SHARE
+    // --> 2048 MB memory, 2 vcores, 5 test1
+    Resource expectedAMShare = Resource.newInstance(2048, 2,
+        ImmutableMap.of(CUSTOM_RESOURCE, 5L));
+
+    Resource appAMResource = Resource.newInstance(2048, 2,
+        ImmutableMap.of(CUSTOM_RESOURCE, 3L));
+
+    Map<String, Long> customResourceValues =
+        verifyQueueMetricsForCustomResources(queue);
+
+    boolean result = queue.canRunAppAM(appAMResource);
+    assertTrue("AM should have been allocated!", result);
+
+    verifyAMShare(queue, expectedAMShare, customResourceValues);
+  }
+
+  private FSLeafQueue setupQueue(Resource maxShare) {
+    String queueName = "root.queue1";
+    FSLeafQueue schedulable = new FSLeafQueue(queueName, scheduler, null);
+    schedulable.setMaxShare(new ConfigurableResource(maxShare));
+    schedulable.setMaxAMShare(MAX_AM_SHARE);
+    return schedulable;
+  }
+
+  @Test
+  public void testCanRunAppAMReturnsFalse() {
+    conf.set(YarnConfiguration.RESOURCE_TYPES, CUSTOM_RESOURCE);
+    ResourceUtils.resetResourceTypes(conf);
+
+    resourceManager = new MockRM(conf);
+    resourceManager.start();
+    scheduler = (FairScheduler) resourceManager.getResourceScheduler();
+
+    Resource maxShare = Resource.newInstance(1024 * 8, 4,
+        ImmutableMap.of(CUSTOM_RESOURCE, 10L));
+
+    // Add a node to increase available memory and vcores in scheduler's
+    // root queue metrics
+    addNodeToScheduler(Resource.newInstance(4096, 10,
+        ImmutableMap.of(CUSTOM_RESOURCE, 25L)));
+
+    FSLeafQueue queue = setupQueue(maxShare);
+
+    //Min(availableMemory, maxShareMemory (maxResourceOverridden))
+    // --> Min(4096, 8192) = 4096
+    //Min(availableVCores, maxShareVCores (maxResourceOverridden))
+    // --> Min(10, 4) = 4
+    //Min(available test1, maxShare test1 (maxResourceOverridden))
+    // --> Min(25, 10) = 10
+    //MaxAMResource: (4096 MB memory, 4 vcores, 10 test1) * MAX_AM_SHARE
+    // --> 2048 MB memory, 2 vcores, 5 test1
+    Resource expectedAMShare = Resource.newInstance(2048, 2,
+        ImmutableMap.of(CUSTOM_RESOURCE, 5L));
+
+    Resource appAMResource = Resource.newInstance(2048, 2,
+        ImmutableMap.of(CUSTOM_RESOURCE, 6L));
+
+    Map<String, Long> customResourceValues =
+        verifyQueueMetricsForCustomResources(queue);
+
+    boolean result = queue.canRunAppAM(appAMResource);
+    assertFalse("AM should not have been allocated!", result);
+
+    verifyAMShare(queue, expectedAMShare, customResourceValues);
+  }
+
+  private void addNodeToScheduler(Resource node1Resource) {
+    RMNode node1 = MockNodes.newNodeInfo(0, node1Resource, 1, "127.0.0.2");
+    scheduler.handle(new NodeAddedSchedulerEvent(node1));
+  }
+
+  private void verifyAMShare(FSLeafQueue schedulable,
+      Resource expectedAMShare, Map<String, Long> customResourceValues) {
+    Resource actualAMShare = Resource.newInstance(
+        schedulable.getMetrics().getMaxAMShareMB(),
+        schedulable.getMetrics().getMaxAMShareVCores(), customResourceValues);
+    long customResourceValue =
+        actualAMShare.getResourceValue(CUSTOM_RESOURCE);
+
+    //make sure to verify custom resource value explicitly!
+    assertEquals(5L, customResourceValue);
+    assertEquals("AM share is not the expected!", expectedAMShare,
+        actualAMShare);
+  }
+
+  private Map<String, Long> verifyQueueMetricsForCustomResources(
+      FSLeafQueue schedulable) {
+    QueueMetricsCustomResource maxAMShareCustomResources =
+        schedulable.getMetrics().getCustomResources().getMaxAMShare();
+    Map<String, Long> customResourceValues = maxAMShareCustomResources
+        .getValues();
+    assertNotNull("Queue metrics for custom resources should not be null!",
+        maxAMShareCustomResources);
+    assertNotNull("Queue metrics for custom resources resource values " +
+        "should not be null!", customResourceValues);
+    return customResourceValues;
   }
 }

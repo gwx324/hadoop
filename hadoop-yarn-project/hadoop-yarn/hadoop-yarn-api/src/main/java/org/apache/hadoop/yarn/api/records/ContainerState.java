@@ -32,10 +32,7 @@ public enum ContainerState {
   
   /** Running container */
   RUNNING, 
-  
-  /** Completed container */
-  COMPLETE,
 
-  /** Queued at the NM. */
-  QUEUED
+  /** Completed container */
+  COMPLETE
 }

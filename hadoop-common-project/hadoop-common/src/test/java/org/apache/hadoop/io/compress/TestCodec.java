@@ -49,8 +49,6 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileStatus;
@@ -79,12 +77,13 @@ import org.apache.hadoop.util.NativeCodeLoader;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.junit.After;
 import org.junit.Assert;
-import org.junit.Assume;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestCodec {
 
-  private static final Log LOG= LogFactory.getLog(TestCodec.class);
+  private static final Logger LOG= LoggerFactory.getLogger(TestCodec.class);
 
   private Configuration conf = new Configuration();
   private int count = 10000;
@@ -135,30 +134,22 @@ public class TestCodec {
   
   @Test
   public void testSnappyCodec() throws IOException {
-    if (SnappyCodec.isNativeCodeLoaded()) {
-      codecTest(conf, seed, 0, "org.apache.hadoop.io.compress.SnappyCodec");
-      codecTest(conf, seed, count, "org.apache.hadoop.io.compress.SnappyCodec");
-    }
+    codecTest(conf, seed, 0, "org.apache.hadoop.io.compress.SnappyCodec");
+    codecTest(conf, seed, count, "org.apache.hadoop.io.compress.SnappyCodec");
   }
   
   @Test
   public void testLz4Codec() throws IOException {
-    if (NativeCodeLoader.isNativeCodeLoaded()) {
-      if (Lz4Codec.isNativeCodeLoaded()) {
-        conf.setBoolean(
-            CommonConfigurationKeys.IO_COMPRESSION_CODEC_LZ4_USELZ4HC_KEY,
-            false);
-        codecTest(conf, seed, 0, "org.apache.hadoop.io.compress.Lz4Codec");
-        codecTest(conf, seed, count, "org.apache.hadoop.io.compress.Lz4Codec");
-        conf.setBoolean(
-            CommonConfigurationKeys.IO_COMPRESSION_CODEC_LZ4_USELZ4HC_KEY,
-            true);
-        codecTest(conf, seed, 0, "org.apache.hadoop.io.compress.Lz4Codec");
-        codecTest(conf, seed, count, "org.apache.hadoop.io.compress.Lz4Codec");
-      } else {
-        Assert.fail("Native hadoop library available but lz4 not");
-      }
-    }
+    conf.setBoolean(
+        CommonConfigurationKeys.IO_COMPRESSION_CODEC_LZ4_USELZ4HC_KEY,
+        false);
+    codecTest(conf, seed, 0, "org.apache.hadoop.io.compress.Lz4Codec");
+    codecTest(conf, seed, count, "org.apache.hadoop.io.compress.Lz4Codec");
+    conf.setBoolean(
+        CommonConfigurationKeys.IO_COMPRESSION_CODEC_LZ4_USELZ4HC_KEY,
+        true);
+    codecTest(conf, seed, 0, "org.apache.hadoop.io.compress.Lz4Codec");
+    codecTest(conf, seed, count, "org.apache.hadoop.io.compress.Lz4Codec");
   }
 
   @Test
@@ -205,66 +196,83 @@ public class TestCodec {
     
     // Compress data
     DataOutputBuffer compressedDataBuffer = new DataOutputBuffer();
-    CompressionOutputStream deflateFilter = 
+    int leasedCompressorsBefore = codec.getCompressorType() == null ? -1
+        : CodecPool.getLeasedCompressorsCount(codec);
+    try (CompressionOutputStream deflateFilter =
       codec.createOutputStream(compressedDataBuffer);
-    DataOutputStream deflateOut = 
-      new DataOutputStream(new BufferedOutputStream(deflateFilter));
-    deflateOut.write(data.getData(), 0, data.getLength());
-    deflateOut.flush();
-    deflateFilter.finish();
+      DataOutputStream deflateOut =
+        new DataOutputStream(new BufferedOutputStream(deflateFilter))) {
+      deflateOut.write(data.getData(), 0, data.getLength());
+      deflateOut.flush();
+      deflateFilter.finish();
+    }
+    if (leasedCompressorsBefore > -1) {
+      assertEquals("leased compressor not returned to the codec pool",
+          leasedCompressorsBefore, CodecPool.getLeasedCompressorsCount(codec));
+    }
     LOG.info("Finished compressing data");
     
     // De-compress data
     DataInputBuffer deCompressedDataBuffer = new DataInputBuffer();
     deCompressedDataBuffer.reset(compressedDataBuffer.getData(), 0, 
                                  compressedDataBuffer.getLength());
-    CompressionInputStream inflateFilter = 
-      codec.createInputStream(deCompressedDataBuffer);
-    DataInputStream inflateIn = 
-      new DataInputStream(new BufferedInputStream(inflateFilter));
-
-    // Check
     DataInputBuffer originalData = new DataInputBuffer();
-    originalData.reset(data.getData(), 0, data.getLength());
-    DataInputStream originalIn = new DataInputStream(new BufferedInputStream(originalData));
-    for(int i=0; i < count; ++i) {
-      RandomDatum k1 = new RandomDatum();
-      RandomDatum v1 = new RandomDatum();
-      k1.readFields(originalIn);
-      v1.readFields(originalIn);
+    int leasedDecompressorsBefore =
+        CodecPool.getLeasedDecompressorsCount(codec);
+    try (CompressionInputStream inflateFilter =
+      codec.createInputStream(deCompressedDataBuffer);
+      DataInputStream inflateIn =
+        new DataInputStream(new BufferedInputStream(inflateFilter))) {
+
+      // Check
+      originalData.reset(data.getData(), 0, data.getLength());
+      DataInputStream originalIn =
+          new DataInputStream(new BufferedInputStream(originalData));
+      for(int i=0; i < count; ++i) {
+        RandomDatum k1 = new RandomDatum();
+        RandomDatum v1 = new RandomDatum();
+        k1.readFields(originalIn);
+        v1.readFields(originalIn);
       
-      RandomDatum k2 = new RandomDatum();
-      RandomDatum v2 = new RandomDatum();
-      k2.readFields(inflateIn);
-      v2.readFields(inflateIn);
-      assertTrue("original and compressed-then-decompressed-output not equal",
-                 k1.equals(k2) && v1.equals(v2));
+        RandomDatum k2 = new RandomDatum();
+        RandomDatum v2 = new RandomDatum();
+        k2.readFields(inflateIn);
+        v2.readFields(inflateIn);
+        assertTrue("original and compressed-then-decompressed-output not equal",
+                   k1.equals(k2) && v1.equals(v2));
       
-      // original and compressed-then-decompressed-output have the same hashCode
-      Map<RandomDatum, String> m = new HashMap<RandomDatum, String>();
-      m.put(k1, k1.toString());
-      m.put(v1, v1.toString());
-      String result = m.get(k2);
-      assertEquals("k1 and k2 hashcode not equal", result, k1.toString());
-      result = m.get(v2);
-      assertEquals("v1 and v2 hashcode not equal", result, v1.toString());
+        // original and compressed-then-decompressed-output have the same
+        // hashCode
+        Map<RandomDatum, String> m = new HashMap<RandomDatum, String>();
+        m.put(k1, k1.toString());
+        m.put(v1, v1.toString());
+        String result = m.get(k2);
+        assertEquals("k1 and k2 hashcode not equal", result, k1.toString());
+        result = m.get(v2);
+        assertEquals("v1 and v2 hashcode not equal", result, v1.toString());
+      }
     }
+    assertEquals("leased decompressor not returned to the codec pool",
+        leasedDecompressorsBefore,
+        CodecPool.getLeasedDecompressorsCount(codec));
 
     // De-compress data byte-at-a-time
     originalData.reset(data.getData(), 0, data.getLength());
     deCompressedDataBuffer.reset(compressedDataBuffer.getData(), 0, 
                                  compressedDataBuffer.getLength());
-    inflateFilter = 
+    try (CompressionInputStream inflateFilter =
       codec.createInputStream(deCompressedDataBuffer);
+      DataInputStream originalIn =
+        new DataInputStream(new BufferedInputStream(originalData))) {
 
-    // Check
-    originalIn = new DataInputStream(new BufferedInputStream(originalData));
-    int expected;
-    do {
-      expected = originalIn.read();
-      assertEquals("Inflated stream read by byte does not match",
-        expected, inflateFilter.read());
-    } while (expected != -1);
+      // Check
+      int expected;
+      do {
+        expected = originalIn.read();
+        assertEquals("Inflated stream read by byte does not match",
+            expected, inflateFilter.read());
+      } while (expected != -1);
+    }
 
     LOG.info("SUCCESS! Completed checking " + count + " records");
   }
@@ -345,11 +353,10 @@ public class TestCodec {
     final Path file = new Path(wd, "test" + codec.getDefaultExtension());
     final byte[] b = new byte[REC_SIZE];
     final Base64 b64 = new Base64(0, null);
-    DataOutputStream fout = null;
     Compressor cmp = CodecPool.getCompressor(codec);
-    try {
-      fout = new DataOutputStream(codec.createOutputStream(
-            fs.create(file, true), cmp));
+    try (DataOutputStream fout =
+             new DataOutputStream(codec.createOutputStream(fs.create(file,
+                 true), cmp))) {
       final DataOutputBuffer dob = new DataOutputBuffer(REC_SIZE * 4 / 3 + 4);
       int seq = 0;
       while (infLen > 0) {
@@ -365,7 +372,6 @@ public class TestCodec {
       }
       LOG.info("Wrote " + seq + " records to " + file);
     } finally {
-      IOUtils.cleanup(LOG, fout);
       CodecPool.returnCompressor(cmp);
     }
     return file;
@@ -505,6 +511,18 @@ public class TestCodec {
   }
 
   @Test(timeout=20000)
+  public void testSequenceFileZStandardCodec() throws Exception {
+    assumeTrue(ZStandardCodec.isNativeCodeLoaded());
+    Configuration conf = new Configuration();
+    sequenceFileCodecTest(conf, 0,
+        "org.apache.hadoop.io.compress.ZStandardCodec", 100);
+    sequenceFileCodecTest(conf, 100,
+        "org.apache.hadoop.io.compress.ZStandardCodec", 100);
+    sequenceFileCodecTest(conf, 200000,
+        "org.apache.hadoop.io.compress.ZStandardCodec", 1000000);
+  }
+
+  @Test(timeout=20000)
   public void testSequenceFileBZip2NativeCodec() throws IOException, 
                         ClassNotFoundException, InstantiationException, 
                         IllegalAccessException {
@@ -587,7 +605,6 @@ public class TestCodec {
    */
   @Test
   public void testSnappyMapFile() throws Exception {
-    Assume.assumeTrue(SnappyCodec.isNativeCodeLoaded());
     codecTestMapFile(SnappyCodec.class, CompressionType.BLOCK, 100);
   }
   

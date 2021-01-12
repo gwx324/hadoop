@@ -18,6 +18,10 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
+import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.PartitionInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ResourceInfo;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -26,7 +30,10 @@ import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlElement;
 import javax.xml.bind.annotation.XmlRootElement;
 
-@XmlRootElement(name = "labelsToNodesInfo")
+/**
+ * XML element uses to represent NodeIds' list.
+ */
+@XmlRootElement(name = "nodeIDsInfo")
 @XmlAccessorType(XmlAccessType.FIELD)
 public class NodeIDsInfo {
 
@@ -36,6 +43,9 @@ public class NodeIDsInfo {
   @XmlElement(name="nodes")
   protected ArrayList<String> nodeIDsList = new ArrayList<String>();
 
+  @XmlElement(name = "partitionInfo")
+  private PartitionInfo partitionInfo;
+
   public NodeIDsInfo() {
   } // JAXB needs this
 
@@ -43,7 +53,16 @@ public class NodeIDsInfo {
     this.nodeIDsList.addAll(nodeIdsList);
   }
 
+  public NodeIDsInfo(List<String> nodeIdsList, Resource resource) {
+    this(nodeIdsList);
+    this.partitionInfo = new PartitionInfo(new ResourceInfo(resource));
+  }
+
   public ArrayList<String> getNodeIDs() {
     return nodeIDsList;
+  }
+
+  public PartitionInfo getPartitionInfo() {
+    return partitionInfo;
   }
 }

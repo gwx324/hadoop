@@ -24,8 +24,6 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.commons.collections.map.LRUMap;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -40,7 +38,9 @@ import org.apache.hadoop.yarn.server.timeline.EntityIdentifier;
 import org.apache.hadoop.yarn.server.timeline.TimelineStore;
 import org.apache.hadoop.yarn.util.StringHelper;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * <code>TimelineACLsManager</code> check the entity level timeline data access.
@@ -48,7 +48,8 @@ import com.google.common.annotations.VisibleForTesting;
 @Private
 public class TimelineACLsManager {
 
-  private static final Log LOG = LogFactory.getLog(TimelineACLsManager.class);
+  private static final Logger LOG = LoggerFactory.
+      getLogger(TimelineACLsManager.class);
   private static final int DOMAIN_ACCESS_ENTRY_CACHE_SIZE = 100;
 
   private AdminACLsManager adminAclsManager;
@@ -126,12 +127,9 @@ public class TimelineACLsManager {
     String owner = aclExt.owner;
     AccessControlList domainACL = aclExt.acls.get(applicationAccessType);
     if (domainACL == null) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("ACL not found for access-type " + applicationAccessType
-            + " for domain " + entity.getDomainId() + " owned by "
-            + owner + ". Using default ["
-            + YarnConfiguration.DEFAULT_YARN_APP_ACL + "]");
-      }
+      LOG.debug("ACL not found for access-type {} for domain {} owned by {}."
+          + " Using default [{}]", applicationAccessType,
+          entity.getDomainId(), owner, YarnConfiguration.DEFAULT_YARN_APP_ACL);
       domainACL =
           new AccessControlList(YarnConfiguration.DEFAULT_YARN_APP_ACL);
     }

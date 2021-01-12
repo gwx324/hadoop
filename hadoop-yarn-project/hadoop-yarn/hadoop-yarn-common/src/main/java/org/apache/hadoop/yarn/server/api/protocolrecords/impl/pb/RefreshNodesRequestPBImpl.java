@@ -26,12 +26,11 @@ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.Refre
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.RefreshNodesRequestProtoOrBuilder;
 import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshNodesRequest;
 
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 
 @Private
 @Unstable
 public class RefreshNodesRequestPBImpl extends RefreshNodesRequest {
-
   RefreshNodesRequestProto proto = RefreshNodesRequestProto.getDefaultInstance();
   RefreshNodesRequestProto.Builder builder = null;
   boolean viaProto = false;
@@ -106,6 +105,22 @@ public class RefreshNodesRequestPBImpl extends RefreshNodesRequest {
   public synchronized DecommissionType getDecommissionType() {
     RefreshNodesRequestProtoOrBuilder p = viaProto ? proto : builder;
     return convertFromProtoFormat(p.getDecommissionType());
+  }
+
+  @Override
+  public synchronized void setDecommissionTimeout(Integer timeout) {
+    maybeInitBuilder();
+    if (timeout != null) {
+      builder.setDecommissionTimeout(timeout);
+    } else {
+      builder.clearDecommissionTimeout();
+    }
+  }
+
+  @Override
+  public synchronized Integer getDecommissionTimeout() {
+    RefreshNodesRequestProtoOrBuilder p = viaProto ? proto : builder;
+    return p.hasDecommissionTimeout()? p.getDecommissionTimeout() : null;
   }
 
   private DecommissionType convertFromProtoFormat(DecommissionTypeProto p) {

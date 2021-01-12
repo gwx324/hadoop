@@ -18,17 +18,18 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.webapp;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.server.webapp.WebPageUtils;
 import org.apache.hadoop.yarn.util.Log4jWarningErrorMetricsAppender;
 import org.apache.hadoop.yarn.webapp.YarnWebParams;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
 
 import com.google.inject.Inject;
+
+import static org.apache.hadoop.util.GenericsUtil.isLog4jLogger;
 
 public class NavBlock extends HtmlBlock implements YarnWebParams {
 
@@ -43,8 +44,7 @@ public class NavBlock extends HtmlBlock implements YarnWebParams {
   protected void render(Block html) {
 
     boolean addErrorsAndWarningsLink = false;
-    Log log = LogFactory.getLog(NMErrorsAndWarningsPage.class);
-    if (log instanceof Log4JLogger) {
+    if (isLog4jLogger(NMErrorsAndWarningsPage.class)) {
       Log4jWarningErrorMetricsAppender appender = Log4jWarningErrorMetricsAppender.findAppender();
       if (appender != null) {
         addErrorsAndWarningsLink = true;
@@ -53,31 +53,31 @@ public class NavBlock extends HtmlBlock implements YarnWebParams {
 	
     String RMWebAppURL =
         WebAppUtils.getResolvedRMWebAppURLWithScheme(this.conf);
-	  Hamlet.UL<Hamlet.DIV<Hamlet>> ul = html
+	  Hamlet.DIV<Hamlet> ul = html
       .div("#nav")
-      .h3()._("ResourceManager")._()
+      .h3().__("ResourceManager").__()
         .ul()
-          .li().a(RMWebAppURL, "RM Home")._()._()
-      .h3()._("NodeManager")._() // TODO: Problem if no header like this
+          .li().a(RMWebAppURL, "RM Home").__().__()
+      .h3().__("NodeManager").__() // TODO: Problem if no header like this
         .ul()
           .li()
-            .a(url("node"), "Node Information")._()
+            .a(url("node"), "Node Information").__()
           .li()
             .a(url("allApplications"), "List of Applications")
-            ._()
+            .__()
           .li()
-            .a(url("allContainers"), "List of Containers")._()
-        ._()
-      .h3("Tools")
-        .ul()
-          .li().a("/conf", "Configuration")._()
-          .li().a("/logs", "Local logs")._()
-          .li().a("/stacks", "Server stacks")._()
-          .li().a("/jmx?qry=Hadoop:*", "Server metrics")._();
-    if (addErrorsAndWarningsLink) {
-      ul.li().a(url("errors-and-warnings"), "Errors/Warnings")._();
+            .a(url("allContainers"), "List of Containers").__()
+        .__();
+
+    Hamlet.UL<Hamlet.DIV<Hamlet>> tools = WebPageUtils.appendToolSection(ul, conf);
+
+    if (tools == null) {
+      return;
     }
-    ul._()._();
+    if (addErrorsAndWarningsLink) {
+      tools.li().a(url("errors-and-warnings"), "Errors/Warnings").__();
+    }
+    tools.__().__();
   }
 
 }

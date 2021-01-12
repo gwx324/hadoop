@@ -17,7 +17,7 @@
 
 package org.apache.hadoop.hdfs.server.diskbalancer.connectors;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -143,8 +143,6 @@ class DBNameNodeConnector implements ClusterConnector {
       // TODO : Should we do BlockPool level balancing at all ?
       // Does it make sense ? Balancer does do that. Right now
       // we only deal with volumes and not blockPools
-
-      volume.setUsed(report.getDfsUsed());
 
       volume.setUuid(storage.getStorageID());
 

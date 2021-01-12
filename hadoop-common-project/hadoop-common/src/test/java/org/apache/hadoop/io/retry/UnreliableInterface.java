@@ -20,9 +20,24 @@ package org.apache.hadoop.io.retry;
 
 import java.io.IOException;
 
+import javax.security.sasl.SaslException;
+
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.ipc.StandbyException;
+import org.apache.hadoop.security.AccessControlException;
 
+/**
+ * The methods of UnreliableInterface could throw exceptions in a
+ * predefined way. It is currently used for testing {@link RetryPolicy}
+ * and {@link FailoverProxyProvider} classes, but can be potentially used
+ * to test any class's behaviour where an underlying interface or class
+ * may throw exceptions.
+ *
+ * Some methods may be annotated with the {@link Idempotent} annotation.
+ * In order to test those some methods of UnreliableInterface are annotated,
+ * but they are not actually Idempotent functions.
+ *
+ */
 public interface UnreliableInterface {
   
   public static class UnreliableException extends Exception {
@@ -61,7 +76,17 @@ public interface UnreliableInterface {
   boolean failsOnceThenSucceedsWithReturnValue() throws UnreliableException;
 
   void failsTenTimesThenSucceeds() throws UnreliableException;
-  
+
+  void failsWithSASLExceptionTenTimes() throws SaslException;
+
+  @Idempotent
+  void failsWithAccessControlExceptionEightTimes()
+      throws AccessControlException;
+
+  @Idempotent
+  void failsWithWrappedAccessControlException()
+      throws IOException;
+
   public String succeedsOnceThenFailsReturningString()
       throws UnreliableException, StandbyException, IOException;
   @Idempotent

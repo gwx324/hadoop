@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
+import static org.junit.Assert.fail;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Map;
@@ -30,13 +32,18 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerState;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.ResourceBlacklistRequest;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmissionData;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmitter;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NullRMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
@@ -47,9 +54,9 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 
 public class TestCapacitySchedulerNodeLabelUpdate {
   private final int GB = 1024;
@@ -86,7 +93,53 @@ public class TestCapacitySchedulerNodeLabelUpdate {
     
     return conf;
   }
-  
+
+  private Configuration getConfigurationWithSubQueueLabels(
+      Configuration config) {
+    CapacitySchedulerConfiguration conf2 =
+        new CapacitySchedulerConfiguration(config);
+
+    // Define top-level queues
+    conf2.setQueues(CapacitySchedulerConfiguration.ROOT,
+        new String[] {"a", "b"});
+    conf2.setCapacityByLabel(CapacitySchedulerConfiguration.ROOT, "x", 100);
+    conf2.setCapacityByLabel(CapacitySchedulerConfiguration.ROOT, "y", 100);
+
+    final String a = CapacitySchedulerConfiguration.ROOT + ".a";
+    final String b = CapacitySchedulerConfiguration.ROOT + ".b";
+    final String aa1 = a + ".a1";
+    final String aa2 = a + ".a2";
+    final String aa3 = a + ".a3";
+    final String aa4 = a + ".a4";
+    conf2.setQueues(a, new String[] {"a1", "a2", "a3", "a4"});
+    conf2.setCapacity(a, 50);
+    conf2.setCapacity(b, 50);
+    conf2.setCapacity(aa1, 40);
+    conf2.setCapacity(aa2, 20);
+    conf2.setCapacity(aa3, 20);
+    conf2.setCapacity(aa4, 20);
+    conf2.setAccessibleNodeLabels(a, ImmutableSet.of("x", "y", "z"));
+    conf2.setAccessibleNodeLabels(aa1, ImmutableSet.of("x", "y"));
+    conf2.setAccessibleNodeLabels(aa2, ImmutableSet.of("y"));
+    conf2.setAccessibleNodeLabels(aa3, ImmutableSet.of("x", "y", "z"));
+    conf2.setAccessibleNodeLabels(aa4, ImmutableSet.of("x", "y"));
+    conf2.setCapacityByLabel(a, "x", 50);
+    conf2.setCapacityByLabel(a, "y", 50);
+    conf2.setCapacityByLabel(a, "z", 50);
+    conf2.setCapacityByLabel(b, "x", 50);
+    conf2.setCapacityByLabel(b, "y", 50);
+    conf2.setCapacityByLabel(b, "z", 50);
+    conf2.setCapacityByLabel(aa1, "x", 50);
+    conf2.setCapacityByLabel(aa3, "x", 25);
+    conf2.setCapacityByLabel(aa4, "x", 25);
+    conf2.setCapacityByLabel(aa1, "y", 25);
+    conf2.setCapacityByLabel(aa2, "y", 25);
+    conf2.setCapacityByLabel(aa4, "y", 50);
+    conf2.setCapacityByLabel(aa3, "z", 50);
+    conf2.setCapacityByLabel(aa4, "z", 50);
+    return conf2;
+  }
+
   private Set<String> toSet(String... elements) {
     Set<String> set = Sets.newHashSet(elements);
     return set;
@@ -135,7 +188,7 @@ public class TestCapacitySchedulerNodeLabelUpdate {
       String userName, String partition, int memory) {
     CapacityScheduler scheduler = (CapacityScheduler) rm.getResourceScheduler();
     LeafQueue queue = (LeafQueue) scheduler.getQueue(queueName);
-    LeafQueue.User user = queue.getUser(userName);
+    UsersManager.User user = queue.getUser(userName);
     Assert.assertEquals(memory,
         user.getResourceUsage().getUsed(partition).getMemorySize());
   }
@@ -169,7 +222,15 @@ public class TestCapacitySchedulerNodeLabelUpdate {
     ContainerId containerId;
     // launch an app to queue a1 (label = x), and check all container will
     // be allocated in h1
-    RMApp app1 = rm.submitApp(GB, "app", "user", null, "a");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(GB, rm)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm, nm3);
     ApplicationResourceUsageReport appResourceUsageReport =
         rm.getResourceScheduler().getAppResourceUsageReport(
@@ -192,7 +253,7 @@ public class TestCapacitySchedulerNodeLabelUpdate {
     LeafQueue queue =
         (LeafQueue) ((CapacityScheduler) rm.getResourceScheduler())
             .getQueue("a");
-    ArrayList<UserInfo> users = queue.getUsers();
+    ArrayList<UserInfo> users = queue.getUsersManager().getUsersInfo();
     for (UserInfo userInfo : users) {
       if (userInfo.getUsername().equals("user")) {
         ResourceInfo resourcesUsed = userInfo.getResourcesUsed();
@@ -234,7 +295,15 @@ public class TestCapacitySchedulerNodeLabelUpdate {
 
     // launch an app to queue a1 (label = x), and check all container will
     // be allocated in h1
-    RMApp app1 = rm.submitApp(GB, "app", "user", null, "a");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(GB, rm)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm, nm3);
 
     // request a container.
@@ -364,6 +433,80 @@ public class TestCapacitySchedulerNodeLabelUpdate {
     rm.close();
   }
 
+  @Test(timeout = 300000)
+  public void testMoveApplicationWithLabel() throws Exception {
+    // set node -> label
+    mgr.addToCluserNodeLabelsWithDefaultExclusivity(
+        ImmutableSet.of("x", "y", "z"));
+    // set mapping:
+    // h1 -> x
+    // h2 -> y
+    mgr.addLabelsToNode(
+        ImmutableMap.of(NodeId.newInstance("h1", 0), toSet("x")));
+    mgr.addLabelsToNode(
+        ImmutableMap.of(NodeId.newInstance("h2", 0), toSet("y")));
+    mgr.addLabelsToNode(
+        ImmutableMap.of(NodeId.newInstance("h4", 0), toSet("z")));
+    // inject node label manager
+    MockRM rm = new MockRM(getConfigurationWithSubQueueLabels(conf)) {
+      @Override
+      public RMNodeLabelsManager createNodeLabelManager() {
+        return mgr;
+      }
+    };
+    rm.getRMContext().getContainerTokenSecretManager().rollMasterKey();
+    rm.getRMContext().getNMTokenSecretManager().rollMasterKey();
+    rm.getRMContext().setNodeLabelManager(mgr);
+    rm.start();
+    MockNM nm1 = rm.registerNode("h1:1234", 4096 * 2);
+    MockNM nm2 = rm.registerNode("h2:1234", 4096 * 2);
+    MockNM nm3 = rm.registerNode("h3:1234", 4096 * 2);
+    MockNM nm4 = rm.registerNode("h4:1234", 4096 * 2);
+    // launch an app to queue a1 (label = x), and check all container will
+    // be allocated in h1
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(GB, rm)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a1")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm, data);
+    MockAM am1 = MockRM.launchAndRegisterAM(app1, rm, nm3);
+    am1.allocate("*", GB, 1, new ArrayList<ContainerId>(), "x");
+    ContainerId container1 =
+        ContainerId.newContainerId(am1.getApplicationAttemptId(), 2);
+    rm.waitForState(nm1, container1, RMContainerState.ALLOCATED, 10 * 1000);
+    am1.allocate("*", GB, 1, new ArrayList<ContainerId>(), "y");
+    ContainerId container2 =
+        ContainerId.newContainerId(am1.getApplicationAttemptId(), 3);
+    rm.waitForState(nm2, container2, RMContainerState.ALLOCATED, 10 * 1000);
+    CapacityScheduler scheduler =
+        ((CapacityScheduler) rm.getResourceScheduler());
+    try {
+      scheduler.preValidateMoveApplication(app1.getApplicationId(), "a2");
+      scheduler.moveApplication(app1.getApplicationId(), "a2");
+      fail("Should throw exception since target queue doesnt have "
+          + "required labels");
+    } catch (Exception e) {
+      Assert.assertTrue("Yarn Exception should be thrown",
+          e instanceof YarnException);
+      Assert.assertEquals("Specified queue=root.a.a2 can't satisfy "
+          + "following apps label expressions =[x] accessible "
+          + "node labels =[y]", e.getMessage());
+    }
+    try {
+      scheduler.moveApplication(app1.getApplicationId(), "a3");
+      scheduler.moveApplication(app1.getApplicationId(), "a4");
+      // Check move to queue with accessible label ANY
+      scheduler.moveApplication(app1.getApplicationId(), "b");
+    } catch (Exception e) {
+      fail("Should not throw exception since target queue has "
+          + "required labels");
+    }
+    rm.stop();
+  }
 
   @Test (timeout = 60000)
   public void testComplexResourceUsageWhenNodeUpdatesPartition()
@@ -407,7 +550,15 @@ public class TestCapacitySchedulerNodeLabelUpdate {
     MockNM nm2 = rm.registerNode("h2:1234", 80000);
 
     // app1
-    RMApp app1 = rm.submitApp(GB, "app", "u1", null, "a");
+    MockRMAppSubmissionData data1 =
+        MockRMAppSubmissionData.Builder.createWithMemory(GB, rm)
+            .withAppName("app")
+            .withUser("u1")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm, data1);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm, nm2);
 
     // c2 on n1, c3 on n2
@@ -423,7 +574,15 @@ public class TestCapacitySchedulerNodeLabelUpdate {
         RMContainerState.ALLOCATED));
     
     // app2
-    RMApp app2 = rm.submitApp(GB, "app", "u2", null, "a");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(GB, rm)
+            .withAppName("app")
+            .withUser("u2")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app2 = MockRMAppSubmitter.submit(rm, data);
     MockAM am2 = MockRM.launchAndRegisterAM(app2, rm, nm2);
 
     // c2/c3 on n1
@@ -475,7 +634,49 @@ public class TestCapacitySchedulerNodeLabelUpdate {
     rm.close();
   }
 
-  @Test (timeout = 60000)
+  @Test
+  public void testAMResourceLimitNodeUpdatePartition() throws Exception {
+    conf.setInt("yarn.scheduler.minimum-allocation-mb", 64);
+    // inject node label manager
+    MockRM rm = new MockRM(getConfigurationWithQueueLabels(conf)) {
+      @Override
+      public RMNodeLabelsManager createNodeLabelManager() {
+        return mgr;
+      }
+    };
+    rm.getRMContext().setNodeLabelManager(mgr);
+    rm.start();
+    rm.registerNode("h1:1234", 6400);
+    mgr.addToCluserNodeLabelsWithDefaultExclusivity(
+        ImmutableSet.of("x", "y", "z"));
+
+    // .1 percentage of 6400 will be for am
+    checkAMResourceLimit(rm, "a", 640, "");
+    checkAMResourceLimit(rm, "a", 0, "x");
+    checkAMResourceLimit(rm, "a", 0, "y");
+    checkAMResourceLimit(rm, "a", 0, "z");
+
+    mgr.replaceLabelsOnNode(
+        ImmutableMap.of(NodeId.newInstance("h1", 0), toSet("x")));
+    rm.drainEvents();
+
+    checkAMResourceLimit(rm, "a", 640, "x");
+    checkAMResourceLimit(rm, "a", 0, "y");
+    checkAMResourceLimit(rm, "a", 0, "z");
+    checkAMResourceLimit(rm, "a", 0, "");
+
+    // Switch
+    mgr.replaceLabelsOnNode(
+        ImmutableMap.of(NodeId.newInstance("h1", 0), toSet("y")));
+    rm.drainEvents();
+
+    checkAMResourceLimit(rm, "a", 0, "x");
+    checkAMResourceLimit(rm, "a", 640, "y");
+    checkAMResourceLimit(rm, "a", 0, "z");
+    checkAMResourceLimit(rm, "a", 0, "");
+  }
+
+  @Test(timeout = 60000)
   public void testAMResourceUsageWhenNodeUpdatesPartition()
       throws Exception {
     // set node -> label
@@ -505,7 +706,15 @@ public class TestCapacitySchedulerNodeLabelUpdate {
 
     // launch an app to queue a1 (label = x), and check all container will
     // be allocated in h1
-    RMApp app1 = rm.submitApp(GB, "app", "user", null, "a", "x");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(GB, rm)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withAmLabel("x")
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm, nm1);
 
     // request a container.
@@ -524,8 +733,8 @@ public class TestCapacitySchedulerNodeLabelUpdate {
     FiCaSchedulerApp app = cs.getApplicationAttempt(am1.getApplicationAttemptId());
 
     // change h1's label to z
-    cs.handle(new NodeLabelsUpdateSchedulerEvent(ImmutableMap.of(nm1.getNodeId(),
-        toSet("z"))));
+    cs.handle(new NodeLabelsUpdateSchedulerEvent(
+        ImmutableMap.of(nm1.getNodeId(), toSet("z"))));
 
     // Now the resources also should change from x to z. Verify AM and normal
     // used resource are successfully changed.
@@ -562,5 +771,186 @@ public class TestCapacitySchedulerNodeLabelUpdate {
         app.getAppAttemptResourceUsage().getAMUsed("").getMemorySize());
 
     rm.close();
+  }
+
+  @Test(timeout = 30000)
+  public void testBlacklistAMDisableLabel() throws Exception {
+    conf.setBoolean(YarnConfiguration.AM_SCHEDULING_NODE_BLACKLISTING_ENABLED,
+        true);
+    conf.setFloat(
+        YarnConfiguration.AM_SCHEDULING_NODE_BLACKLISTING_DISABLE_THRESHOLD,
+        0.5f);
+    mgr.addToCluserNodeLabelsWithDefaultExclusivity(ImmutableSet.of("x", "y"));
+    mgr.addLabelsToNode(ImmutableMap.of(NodeId.newInstance("h2", 0), toSet("x"),
+        NodeId.newInstance("h3", 0), toSet("x"), NodeId.newInstance("h6", 0),
+        toSet("x")));
+    mgr.addLabelsToNode(ImmutableMap.of(NodeId.newInstance("h4", 0), toSet("y"),
+        NodeId.newInstance("h5", 0), toSet("y"), NodeId.newInstance("h7", 0),
+        toSet("y")));
+
+    MockRM rm = new MockRM(getConfigurationWithQueueLabels(conf)) {
+      @Override
+      public RMNodeLabelsManager createNodeLabelManager() {
+        return mgr;
+      }
+    };
+    rm.getRMContext().setNodeLabelManager(mgr);
+    rm.start();
+    // Nodes in label default h1,h8,h9
+    // Nodes in label x h2,h3,h6
+    // Nodes in label y h4,h5,h7
+    MockNM nm1 = rm.registerNode("h1:1234", 2048);
+    MockNM nm2 = rm.registerNode("h2:1234", 2048);
+    rm.registerNode("h3:1234", 2048);
+    rm.registerNode("h4:1234", 2048);
+    rm.registerNode("h5:1234", 2048);
+    rm.registerNode("h6:1234", 2048);
+    rm.registerNode("h7:1234", 2048);
+    rm.registerNode("h8:1234", 2048);
+    rm.registerNode("h9:1234", 2048);
+
+    // Submit app with AM container launched on default partition i.e. h1.
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(GB, rm)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app = MockRMAppSubmitter.submit(rm, data);
+    MockRM.launchAndRegisterAM(app, rm, nm1);
+    RMAppAttempt appAttempt = app.getCurrentAppAttempt();
+    // Add default node blacklist from default
+    appAttempt.getAMBlacklistManager().addNode("h1");
+    ResourceBlacklistRequest blacklistUpdates =
+        appAttempt.getAMBlacklistManager().getBlacklistUpdates();
+    Assert.assertEquals(1, blacklistUpdates.getBlacklistAdditions().size());
+    Assert.assertEquals(0, blacklistUpdates.getBlacklistRemovals().size());
+    // Adding second node from default parition
+    appAttempt.getAMBlacklistManager().addNode("h8");
+    blacklistUpdates = appAttempt.getAMBlacklistManager().getBlacklistUpdates();
+    Assert.assertEquals(0, blacklistUpdates.getBlacklistAdditions().size());
+    Assert.assertEquals(2, blacklistUpdates.getBlacklistRemovals().size());
+
+    // Submission in label x
+    MockRMAppSubmissionData data1 =
+        MockRMAppSubmissionData.Builder.createWithMemory(GB, rm)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withAmLabel("x")
+            .build();
+    RMApp applabel = MockRMAppSubmitter.submit(rm, data1);
+    MockRM.launchAndRegisterAM(applabel, rm, nm2);
+    RMAppAttempt appAttemptlabelx = applabel.getCurrentAppAttempt();
+    appAttemptlabelx.getAMBlacklistManager().addNode("h2");
+    ResourceBlacklistRequest blacklistUpdatesOnx =
+        appAttemptlabelx.getAMBlacklistManager().getBlacklistUpdates();
+    Assert.assertEquals(1, blacklistUpdatesOnx.getBlacklistAdditions().size());
+    Assert.assertEquals(0, blacklistUpdatesOnx.getBlacklistRemovals().size());
+    // Adding second node from default parition
+    appAttemptlabelx.getAMBlacklistManager().addNode("h3");
+    blacklistUpdatesOnx =
+        appAttempt.getAMBlacklistManager().getBlacklistUpdates();
+    Assert.assertEquals(0, blacklistUpdatesOnx.getBlacklistAdditions().size());
+    Assert.assertEquals(2, blacklistUpdatesOnx.getBlacklistRemovals().size());
+
+    rm.close();
+  }
+
+  private void checkAMResourceLimit(MockRM rm, String queuename, int memory,
+      String label) throws InterruptedException {
+    Assert.assertEquals(memory,
+        waitForResourceUpdate(rm, queuename, memory, label, 3000L));
+  }
+
+  private long waitForResourceUpdate(MockRM rm, String queuename, long memory,
+      String label, long timeout) throws InterruptedException {
+    long start = System.currentTimeMillis();
+    long memorySize = 0;
+    while (System.currentTimeMillis() - start < timeout) {
+      CapacityScheduler scheduler =
+          (CapacityScheduler) rm.getResourceScheduler();
+      CSQueue queue = scheduler.getQueue(queuename);
+      memorySize =
+          queue.getQueueResourceUsage().getAMLimit(label).getMemorySize();
+      if (memory == memorySize) {
+        return memorySize;
+      }
+      Thread.sleep(100);
+    }
+    return memorySize;
+  }
+
+  private long waitForNodeLabelSchedulerEventUpdate(MockRM rm, String partition,
+      long expectedNodeCount, long timeout) throws InterruptedException {
+    long start = System.currentTimeMillis();
+    long size = 0;
+    while (System.currentTimeMillis() - start < timeout) {
+      CapacityScheduler scheduler = (CapacityScheduler) rm
+          .getResourceScheduler();
+      size = scheduler.getNodeTracker().getNodesPerPartition(partition).size();
+      if (size == expectedNodeCount) {
+        return size;
+      }
+      Thread.sleep(100);
+    }
+    return size;
+  }
+
+  @Test
+  public void testNodeCountBasedOnNodeLabelsFromClusterNodeTracker()
+      throws Exception {
+    // set node -> label
+    mgr.addToCluserNodeLabelsWithDefaultExclusivity(
+        ImmutableSet.of("x", "y", "z"));
+
+    // set mapping:
+    // h1 -> x
+    // h2 -> y
+    mgr.addLabelsToNode(
+        ImmutableMap.of(NodeId.newInstance("h1", 1234), toSet("x")));
+    mgr.addLabelsToNode(
+        ImmutableMap.of(NodeId.newInstance("h2", 1234), toSet("x")));
+
+    // inject node label manager
+    MockRM rm = new MockRM(getConfigurationWithQueueLabels(conf)) {
+      @Override
+      public RMNodeLabelsManager createNodeLabelManager() {
+        return mgr;
+      }
+    };
+
+    rm.getRMContext().setNodeLabelManager(mgr);
+    rm.start();
+    MockNM nm1 = rm.registerNode("h1:1234", 8000);
+    rm.registerNode("h2:1234", 8000);
+    rm.registerNode("h3:1234", 8000);
+
+    CapacityScheduler cs = (CapacityScheduler) rm.getResourceScheduler();
+
+    // Ensure that cluster node tracker is updated with correct set of node
+    // after Node registration.
+    Assert.assertEquals(2,
+        cs.getNodeTracker().getNodesPerPartition("x").size());
+    Assert.assertEquals(1, cs.getNodeTracker().getNodesPerPartition("").size());
+
+    rm.unRegisterNode(nm1);
+    rm.registerNode("h4:1234", 8000);
+
+    // Ensure that cluster node tracker is updated with correct set of node
+    // after new Node registration and old node label change.
+    Assert.assertEquals(1,
+        cs.getNodeTracker().getNodesPerPartition("x").size());
+    Assert.assertEquals(2, cs.getNodeTracker().getNodesPerPartition("").size());
+
+    mgr.replaceLabelsOnNode(
+        ImmutableMap.of(NodeId.newInstance("h2", 1234), toSet("")));
+
+    // Last node with label x is replaced by CLI or REST.
+    Assert.assertEquals(0,
+        waitForNodeLabelSchedulerEventUpdate(rm, "x", 0, 3000L));
   }
 }

@@ -22,7 +22,7 @@ import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
 
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -86,9 +86,9 @@ class AclCommands extends FsCommand {
           (perm.getOtherAction().implies(FsAction.EXECUTE) ? "t" : "T"));
       }
 
-      AclStatus aclStatus = null;
-      List<AclEntry> entries = null;
-      if (perm.getAclBit()) {
+      final AclStatus aclStatus;
+      final List<AclEntry> entries;
+      if (item.stat.hasAcl()) {
         aclStatus = item.fs.getAclStatus(item.path);
         entries = aclStatus.getEntries();
       } else {
@@ -117,7 +117,7 @@ class AclCommands extends FsCommand {
       }
       if (AclUtil.isMinimalAcl(entries)) {
         for (AclEntry entry: entries) {
-          out.println(entry);
+          out.println(entry.toStringStable());
         }
       } else {
         for (AclEntry entry: entries) {
@@ -145,10 +145,10 @@ class AclCommands extends FsCommand {
           out.println(String.format("%s\t#effective:%s", entry,
             effectivePerm.SYMBOL));
         } else {
-          out.println(entry);
+          out.println(entry.toStringStable());
         }
       } else {
-        out.println(entry);
+        out.println(entry.toStringStable());
       }
     }
   }
@@ -173,7 +173,11 @@ class AclCommands extends FsCommand {
         + "  -x :Remove specified ACL entries. Other ACL entries are retained.\n"
         + "  --set :Fully replace the ACL, discarding all existing entries."
         + " The <acl_spec> must include entries for user, group, and others"
-        + " for compatibility with permission bits.\n"
+        + " for compatibility with permission bits. If the ACL spec contains"
+        + " only access entries, then the existing default entries are retained"
+        + ". If the ACL spec contains only default entries, then the existing"
+        + " access entries are retained. If the ACL spec contains both access"
+        + " and default entries, then both are replaced.\n"
         + "  <acl_spec>: Comma separated list of ACL entries.\n"
         + "  <path>: File or directory to modify.\n";
 

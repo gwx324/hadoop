@@ -19,14 +19,16 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.fail;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -41,16 +43,19 @@ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
 import org.apache.hadoop.hdfs.server.namenode.ha.TestDNFencing.RandomDeleterPolicy;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Test;
 
-import com.google.common.collect.Lists;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Test when RBW block is removed. Invalidation of the corrupted block happens
  * and then the under replicated block gets replicated to the datanode.
  */
 public class TestRBWBlockInvalidation {
-  private static final Log LOG = LogFactory.getLog(TestRBWBlockInvalidation.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestRBWBlockInvalidation.class);
   
   private static NumberReplicas countReplicas(final FSNamesystem namesystem,
       ExtendedBlock block) {
@@ -141,7 +146,7 @@ public class TestRBWBlockInvalidation {
    * were RWR replicas with out-of-date genstamps, the NN could accidentally
    * delete good replicas instead of the bad replicas.
    */
-  @Test(timeout=60000)
+  @Test(timeout=120000)
   public void testRWRInvalidation() throws Exception {
     Configuration conf = new HdfsConfiguration();
 
@@ -156,10 +161,11 @@ public class TestRBWBlockInvalidation {
     // Speed up the test a bit with faster heartbeats.
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
 
+    int numFiles = 10;
     // Test with a bunch of separate files, since otherwise the test may
     // fail just due to "good luck", even if a bug is present.
     List<Path> testPaths = Lists.newArrayList();
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < numFiles; i++) {
       testPaths.add(new Path("/test" + i));
     }
     
@@ -176,8 +182,11 @@ public class TestRBWBlockInvalidation {
           out.writeBytes("old gs data\n");
           out.hflush();
         }
-        
-        
+
+        for (Path path : testPaths) {
+          DFSTestUtil.waitReplication(cluster.getFileSystem(), path, (short)2);
+        }
+
         // Shutdown one of the nodes in the pipeline
         DataNodeProperties oldGenstampNode = cluster.stopDataNode(0);
 
@@ -195,7 +204,11 @@ public class TestRBWBlockInvalidation {
           cluster.getFileSystem().setReplication(path, (short)1);
           out.close();
         }
-        
+
+        for (Path path : testPaths) {
+          DFSTestUtil.waitReplication(cluster.getFileSystem(), path, (short)1);
+        }
+
         // Upon restart, there will be two replicas, one with an old genstamp
         // and one current copy. This test wants to ensure that the old genstamp
         // copy is the one that is deleted.
@@ -218,18 +231,77 @@ public class TestRBWBlockInvalidation {
         cluster.triggerHeartbeats();
         HATestUtil.waitForDNDeletions(cluster);
         cluster.triggerDeletionReports();
-        
+
+        waitForNumTotalBlocks(cluster, numFiles);
         // Make sure we can still read the blocks.
         for (Path path : testPaths) {
           String ret = DFSTestUtil.readFile(cluster.getFileSystem(), path);
           assertEquals("old gs data\n" + "new gs data\n", ret);
         }
       } finally {
-        IOUtils.cleanup(LOG, streams.toArray(new Closeable[0]));
+        IOUtils.cleanupWithLogger(LOG, streams.toArray(new Closeable[0]));
       }
     } finally {
       cluster.shutdown();
     }
 
+  }
+
+  @Test
+  public void testRWRShouldNotAddedOnDNRestart() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    conf.set("dfs.client.block.write.replace-datanode-on-failure.enable",
+        "false");
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(2).build()) {
+      Path path = new Path("/testRBW");
+      FSDataOutputStream out = cluster.getFileSystem().create(path, (short) 2);
+      out.writeBytes("old gs data\n");
+      out.hflush();
+      // stop one datanode
+      DataNodeProperties dnProp = cluster.stopDataNode(0);
+      String dnAddress = dnProp.getDatanode().getXferAddress().toString();
+      if (dnAddress.startsWith("/")) {
+        dnAddress = dnAddress.substring(1);
+      }
+      //Write some more data after DN stopped.
+      out.writeBytes("old gs data\n");
+      out.hflush();
+      cluster.restartDataNode(dnProp, true);
+      // wait till the block report comes
+      Thread.sleep(3000);
+      // check the block locations, this should not contain restarted datanode
+      BlockLocation[] locations = cluster.getFileSystem()
+          .getFileBlockLocations(path, 0, Long.MAX_VALUE);
+      String[] names = locations[0].getNames();
+      for (String node : names) {
+        if (node.equals(dnAddress)) {
+          fail("Old GS DN should not be present in latest block locations.");
+        }
+      }
+      out.close();
+    }
+  }
+
+  private void waitForNumTotalBlocks(final MiniDFSCluster cluster,
+      final int numTotalBlocks) throws Exception {
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+
+      @Override
+      public Boolean get() {
+        try {
+          cluster.triggerBlockReports();
+
+          // Wait total blocks
+          if (cluster.getNamesystem().getBlocksTotal() == numTotalBlocks) {
+            return true;
+          }
+        } catch (Exception ignored) {
+          // Ignore the exception
+        }
+
+        return false;
+      }
+    }, 1000, 60000);
   }
 }

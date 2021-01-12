@@ -29,7 +29,7 @@ import org.apache.hadoop.classification.InterfaceStability;
  * CreateFlag specifies the file create semantic. Users can combine flags like: <br>
  * <code>
  * EnumSet.of(CreateFlag.CREATE, CreateFlag.APPEND)
- * <code>
+ * </code>
  * <p>
  * 
  * Use the CreateFlag as follows:
@@ -110,7 +110,26 @@ public enum CreateFlag {
    * 'local' means the same host as the client is being run on.
    */
   @InterfaceAudience.LimitedPrivate({"HBase"})
-  NO_LOCAL_WRITE((short) 0x40);
+  NO_LOCAL_WRITE((short) 0x40),
+
+  /**
+   * Enforce the file to be a replicated file, no matter what its parent
+   * directory's replication or erasure coding policy is.
+   */
+  SHOULD_REPLICATE((short) 0x80),
+
+  /**
+   * Advise that the first block replica NOT take into account DataNode
+   * locality. The first block replica should be placed randomly within the
+   * cluster. Subsequent block replicas should follow DataNode locality rules.
+   */
+  IGNORE_CLIENT_LOCALITY((short) 0x100),
+
+  /**
+   * Advise that a block replica NOT be written to the local rack DataNode where
+   * 'local' means the same rack as the client is being run on.
+   */
+  NO_LOCAL_RACK((short) 0x120);
 
   private final short mode;
 

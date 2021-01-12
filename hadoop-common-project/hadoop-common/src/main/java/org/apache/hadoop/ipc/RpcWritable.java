@@ -24,16 +24,16 @@ import java.io.DataInputStream;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Writable;
 
-import com.google.protobuf.CodedInputStream;
-import com.google.protobuf.CodedOutputStream;
-import com.google.protobuf.Message;
+import org.apache.hadoop.thirdparty.protobuf.CodedInputStream;
+import org.apache.hadoop.thirdparty.protobuf.CodedOutputStream;
+import org.apache.hadoop.thirdparty.protobuf.Message;
 
+// note anything marked public is solely for access by SaslRpcClient
 @InterfaceAudience.Private
 public abstract class RpcWritable implements Writable {
 
@@ -42,6 +42,8 @@ public abstract class RpcWritable implements Writable {
       return (RpcWritable)o;
     } else if (o instanceof Message) {
       return new ProtobufWrapper((Message)o);
+    } else if (o instanceof com.google.protobuf.Message) {
+      return new ProtobufWrapperLegacy((com.google.protobuf.Message) o);
     } else if (o instanceof Writable) {
       return new WritableWrapper((Writable)o);
     }
@@ -99,10 +101,14 @@ public abstract class RpcWritable implements Writable {
       this.message = message;
     }
 
+    Message getMessage() {
+      return message;
+    }
+
     @Override
     void writeTo(ResponseBuffer out) throws IOException {
       int length = message.getSerializedSize();
-      length += CodedOutputStream.computeRawVarint32Size(length);
+      length += CodedOutputStream.computeUInt32SizeNoTag(length);
       out.ensureCapacity(length);
       message.writeDelimitedTo(out);
     }
@@ -128,11 +134,56 @@ public abstract class RpcWritable implements Writable {
     }
   }
 
-  // adapter to allow decoding of writables and protobufs from a byte buffer.
-  static class Buffer extends RpcWritable {
+  // adapter for Protobufs.
+  static class ProtobufWrapperLegacy extends RpcWritable {
+    private com.google.protobuf.Message message;
+
+    ProtobufWrapperLegacy(com.google.protobuf.Message message) {
+      this.message = message;
+    }
+
+    com.google.protobuf.Message getMessage() {
+      return message;
+    }
+
+    @Override
+    void writeTo(ResponseBuffer out) throws IOException {
+      int length = message.getSerializedSize();
+      length += com.google.protobuf.CodedOutputStream.
+          computeUInt32SizeNoTag(length);
+      out.ensureCapacity(length);
+      message.writeDelimitedTo(out);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Override
+    <T> T readFrom(ByteBuffer bb) throws IOException {
+      // using the parser with a byte[]-backed coded input stream is the
+      // most efficient way to deserialize a protobuf.  it has a direct
+      // path to the PB ctor that doesn't create multi-layered streams
+      // that internally buffer.
+      com.google.protobuf.CodedInputStream cis =
+          com.google.protobuf.CodedInputStream.newInstance(
+              bb.array(), bb.position() + bb.arrayOffset(), bb.remaining());
+      try {
+        cis.pushLimit(cis.readRawVarint32());
+        message = message.getParserForType().parseFrom(cis);
+        cis.checkLastTagWas(0);
+      } finally {
+        // advance over the bytes read.
+        bb.position(bb.position() + cis.getTotalBytesRead());
+      }
+      return (T)message;
+    }
+  }
+
+  /**
+   * adapter to allow decoding of writables and protobufs from a byte buffer.
+   */
+  public static class Buffer extends RpcWritable {
     private ByteBuffer bb;
 
-    static Buffer wrap(ByteBuffer bb) {
+    public static Buffer wrap(ByteBuffer bb) {
       return new Buffer(bb);
     }
 
@@ -140,6 +191,10 @@ public abstract class RpcWritable implements Writable {
 
     Buffer(ByteBuffer bb) {
       this.bb = bb;
+    }
+
+    ByteBuffer getByteBuffer() {
+      return bb;
     }
 
     @Override
@@ -177,7 +232,7 @@ public abstract class RpcWritable implements Writable {
       return RpcWritable.wrap(value).readFrom(bb);
     }
 
-    int remaining() {
+    public int remaining() {
       return bb.remaining();
     }
   }

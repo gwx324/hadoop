@@ -25,19 +25,31 @@ import java.util.List;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
 import org.apache.hadoop.yarn.api.ContainerManagementProtocol;
 import org.apache.hadoop.yarn.api.ContainerManagementProtocolPB;
+import org.apache.hadoop.yarn.api.protocolrecords.CommitResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ReInitializeContainerRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ReInitializeContainerResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ResourceLocalizationRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ResourceLocalizationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.RestartContainerResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.RollbackResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.StartContainerRequest;
@@ -63,12 +75,13 @@ import org.apache.hadoop.yarn.ipc.HadoopYarnProtoRPC;
 import org.apache.hadoop.yarn.ipc.RPCUtil;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
 import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
+import org.apache.hadoop.yarn.security.client.TimelineDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.api.CollectorNodemanagerProtocol;
 import org.apache.hadoop.yarn.server.api.protocolrecords.GetTimelineCollectorContextRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.GetTimelineCollectorContextResponse;
 import org.apache.hadoop.yarn.server.api.protocolrecords.ReportNewCollectorInfoRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.ReportNewCollectorInfoResponse;
-import org.apache.hadoop.yarn.server.api.records.AppCollectorsMap;
+import org.apache.hadoop.yarn.server.api.records.AppCollectorData;
 import org.apache.hadoop.yarn.util.Records;
 import org.junit.Assert;
 import org.junit.Test;
@@ -84,6 +97,21 @@ public class TestRPC {
       "collectors' number in ReportNewCollectorInfoRequest is not ONE.";
 
   public static final String DEFAULT_COLLECTOR_ADDR = "localhost:0";
+  private static final Token DEFAULT_COLLECTOR_TOKEN;
+  static {
+    TimelineDelegationTokenIdentifier identifier =
+        new TimelineDelegationTokenIdentifier();
+    identifier.setOwner(new Text("user"));
+    identifier.setRenewer(new Text("user"));
+    identifier.setRealUser(new Text("user"));
+    long now = Time.now();
+    identifier.setIssueDate(now);
+    identifier.setMaxDate(now + 1000L);
+    identifier.setMasterKeyId(500);
+    identifier.setSequenceNumber(5);
+    DEFAULT_COLLECTOR_TOKEN = Token.newInstance(identifier.getBytes(),
+        identifier.getKind().toString(), identifier.getBytes(), "localhost:0");
+  }
 
   public static final ApplicationId DEFAULT_APP_ID =
       ApplicationId.newInstance(0, 0);
@@ -164,7 +192,16 @@ public class TestRPC {
     try {
       ReportNewCollectorInfoRequest request =
           ReportNewCollectorInfoRequest.newInstance(
-              DEFAULT_APP_ID, DEFAULT_COLLECTOR_ADDR);
+              DEFAULT_APP_ID, DEFAULT_COLLECTOR_ADDR, null);
+      proxy.reportNewCollectorInfo(request);
+    } catch (YarnException e) {
+      Assert.fail("RPC call failured is not expected here.");
+    }
+
+    try {
+      ReportNewCollectorInfoRequest request =
+          ReportNewCollectorInfoRequest.newInstance(
+              DEFAULT_APP_ID, DEFAULT_COLLECTOR_ADDR, DEFAULT_COLLECTOR_TOKEN);
       proxy.reportNewCollectorInfo(request);
     } catch (YarnException e) {
       Assert.fail("RPC call failured is not expected here.");
@@ -225,7 +262,7 @@ public class TestRPC {
             new DummyContainerManager(), addr, conf, null, 1);
     server.start();
     RPC.setProtocolEngine(conf, ContainerManagementProtocolPB.class,
-        ProtobufRpcEngine.class);
+        ProtobufRpcEngine2.class);
     ContainerManagementProtocol proxy = (ContainerManagementProtocol)
         rpc.getProxy(ContainerManagementProtocol.class,
             NetUtils.getConnectAddress(server), conf);
@@ -334,6 +371,7 @@ public class TestRPC {
     }
 
     @Override
+    @Deprecated
     public IncreaseContainersResourceResponse increaseContainersResource(
         IncreaseContainersResourceRequest request)
             throws YarnException, IOException {
@@ -346,6 +384,50 @@ public class TestRPC {
       final Exception e = new Exception(EXCEPTION_MSG,
           new Exception(EXCEPTION_CAUSE));
       throw new YarnException(e);
+    }
+
+    @Override
+    public ResourceLocalizationResponse localize(
+        ResourceLocalizationRequest request) throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public ReInitializeContainerResponse reInitializeContainer(
+        ReInitializeContainerRequest request) throws YarnException,
+        IOException {
+      return null;
+    }
+
+    @Override
+    public RestartContainerResponse restartContainer(ContainerId containerId)
+        throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public RollbackResponse rollbackLastReInitialization(
+        ContainerId containerId) throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public CommitResponse commitLastReInitialization(ContainerId containerId)
+        throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public ContainerUpdateResponse updateContainer(ContainerUpdateRequest
+        request) throws YarnException, IOException {
+      return null;
+    }
+
+    @Override
+    public GetLocalizationStatusesResponse getLocalizationStatuses(
+        GetLocalizationStatusesRequest request) throws YarnException,
+        IOException {
+      return null;
     }
   }
 
@@ -382,14 +464,16 @@ public class TestRPC {
     public ReportNewCollectorInfoResponse reportNewCollectorInfo(
         ReportNewCollectorInfoRequest request)
         throws YarnException, IOException {
-      List<AppCollectorsMap> appCollectors = request.getAppCollectorsList();
+      List<AppCollectorData> appCollectors = request.getAppCollectorsList();
       if (appCollectors.size() == 1) {
         // check default appID and collectorAddr
-        AppCollectorsMap appCollector = appCollectors.get(0);
+        AppCollectorData appCollector = appCollectors.get(0);
         Assert.assertEquals(appCollector.getApplicationId(),
             DEFAULT_APP_ID);
         Assert.assertEquals(appCollector.getCollectorAddr(),
             DEFAULT_COLLECTOR_ADDR);
+        Assert.assertTrue(appCollector.getCollectorToken() == null ||
+            appCollector.getCollectorToken().equals(DEFAULT_COLLECTOR_TOKEN));
       } else {
         throw new YarnException(ILLEGAL_NUMBER_MESSAGE);
       }

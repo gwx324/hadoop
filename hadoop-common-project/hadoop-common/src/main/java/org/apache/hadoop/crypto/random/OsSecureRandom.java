@@ -18,17 +18,19 @@
 package org.apache.hadoop.crypto.random;
 
 import java.io.Closeable;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.IOUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_SECURE_RANDOM_DEVICE_FILE_PATH_KEY;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_SECURE_RANDOM_DEVICE_FILE_PATH_DEFAULT;
@@ -39,7 +41,8 @@ import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY
  */
 @InterfaceAudience.Private
 public class OsSecureRandom extends Random implements Closeable, Configurable {
-  public static final Log LOG = LogFactory.getLog(OsSecureRandom.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(OsSecureRandom.class);
   
   private static final long serialVersionUID = 6391500337172057900L;
 
@@ -49,7 +52,7 @@ public class OsSecureRandom extends Random implements Closeable, Configurable {
 
   private String randomDevPath;
 
-  private transient FileInputStream stream;
+  private transient InputStream stream;
 
   private final byte[] reservoir = new byte[RESERVOIR_LENGTH];
 
@@ -59,7 +62,7 @@ public class OsSecureRandom extends Random implements Closeable, Configurable {
     if (pos >= reservoir.length - min) {
       try {
         if (stream == null) {
-          stream = new FileInputStream(new File(randomDevPath));
+          stream = Files.newInputStream(Paths.get(randomDevPath));
         }
         IOUtils.readFully(stream, reservoir, 0, reservoir.length);
       } catch (IOException e) {
@@ -71,7 +74,12 @@ public class OsSecureRandom extends Random implements Closeable, Configurable {
 
   public OsSecureRandom() {
   }
-  
+
+  @VisibleForTesting
+  public boolean isClosed() {
+    return stream == null;
+  }
+
   @Override
   synchronized public void setConf(Configuration conf) {
     this.conf = conf;
@@ -112,8 +120,13 @@ public class OsSecureRandom extends Random implements Closeable, Configurable {
   @Override
   synchronized public void close() {
     if (stream != null) {
-      IOUtils.cleanup(LOG, stream);
+      IOUtils.cleanupWithLogger(LOG, stream);
       stream = null;
     }
+  }
+
+  @Override
+  protected void finalize() throws Throwable {
+    close();
   }
 }

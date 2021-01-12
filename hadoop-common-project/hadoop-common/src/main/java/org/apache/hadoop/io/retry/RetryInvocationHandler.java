@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.io.retry;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.io.retry.FailoverProxyProvider.ProxyInfo;
 import org.apache.hadoop.io.retry.RetryPolicy.RetryAction;
@@ -35,6 +35,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Map;
 
 /**
@@ -130,7 +131,9 @@ public class RetryInvocationHandler<T> implements RpcInvocationHandler {
           Thread.sleep(retryInfo.delay);
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
-          LOG.warn("Interrupted while waiting to retry", e);
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Interrupted while waiting to retry", e);
+          }
           InterruptedIOException intIOE = new InterruptedIOException(
               "Retry interrupted");
           intIOE.initCause(e);
@@ -238,12 +241,15 @@ public class RetryInvocationHandler<T> implements RpcInvocationHandler {
     private final long delay;
     private final RetryAction action;
     private final long expectedFailoverCount;
+    private final Exception failException;
 
-    RetryInfo(long delay, RetryAction action, long expectedFailoverCount) {
+    RetryInfo(long delay, RetryAction action, long expectedFailoverCount,
+        Exception failException) {
       this.delay = delay;
       this.retryTime = Time.monotonicNow() + delay;
       this.action = action;
       this.expectedFailoverCount = expectedFailoverCount;
+      this.failException = failException;
     }
 
     boolean isFailover() {
@@ -256,11 +262,16 @@ public class RetryInvocationHandler<T> implements RpcInvocationHandler {
           && action.action ==  RetryAction.RetryDecision.FAIL;
     }
 
+    Exception getFailException() {
+      return failException;
+    }
+
     static RetryInfo newRetryInfo(RetryPolicy policy, Exception e,
         Counters counters, boolean idempotentOrAtMostOnce,
         long expectedFailoverCount) throws Exception {
       RetryAction max = null;
       long maxRetryDelay = 0;
+      Exception ex = null;
 
       final Iterable<Exception> exceptions = e instanceof MultiException ?
           ((MultiException) e).getExceptions().values()
@@ -277,16 +288,32 @@ public class RetryInvocationHandler<T> implements RpcInvocationHandler {
 
         if (max == null || max.action.compareTo(a.action) < 0) {
           max = a;
+          if (a.action == RetryAction.RetryDecision.FAIL) {
+            ex = exception;
+          }
         }
       }
 
-      return new RetryInfo(maxRetryDelay, max, expectedFailoverCount);
+      return new RetryInfo(maxRetryDelay, max, expectedFailoverCount, ex);
+    }
+
+    @Override
+    public String toString() {
+      return "RetryInfo{" +
+              "retryTime=" + retryTime +
+              ", delay=" + delay +
+              ", action=" + action +
+              ", expectedFailoverCount=" + expectedFailoverCount +
+              ", failException=" + failException +
+              '}';
     }
   }
 
   private final ProxyDescriptor<T> proxyDescriptor;
 
   private volatile boolean hasSuccessfulCall = false;
+
+  private HashSet<String> failedAtLeastOnce = new HashSet<>();
 
   private final RetryPolicy defaultPolicy;
   private final Map<String,RetryPolicy> methodNameToPolicyMap;
@@ -351,11 +378,13 @@ public class RetryInvocationHandler<T> implements RpcInvocationHandler {
     if (retryInfo.isFail()) {
       // fail.
       if (retryInfo.action.reason != null) {
-        LOG.warn("Exception while invoking call #" + callId + " "
-            + proxyDescriptor.getProxyInfo().getString(method.getName())
-            + ". Not retrying because " + retryInfo.action.reason, e);
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Exception while invoking call #" + callId + " "
+              + proxyDescriptor.getProxyInfo().getString(method.getName())
+              + ". Not retrying because " + retryInfo.action.reason, e);
+        }
       }
-      throw e;
+      throw retryInfo.getFailException();
     }
 
     log(method, retryInfo.isFailover(), counters.failovers, retryInfo.delay, e);
@@ -364,16 +393,22 @@ public class RetryInvocationHandler<T> implements RpcInvocationHandler {
 
   private void log(final Method method, final boolean isFailover,
       final int failovers, final long delay, final Exception ex) {
-    // log info if this has made some successful calls or
-    // this is not the first failover
-    final boolean info = hasSuccessfulCall || failovers != 0
-        || asyncCallHandler.hasSuccessfulCall();
-    if (!info && !LOG.isDebugEnabled()) {
-      return;
+    boolean info = true;
+    // If this is the first failover to this proxy, skip logging at INFO level
+    if (!failedAtLeastOnce.contains(proxyDescriptor.getProxyInfo().toString()))
+    {
+      failedAtLeastOnce.add(proxyDescriptor.getProxyInfo().toString());
+
+      // If successful calls were made to this proxy, log info even for first
+      // failover
+      info = hasSuccessfulCall || asyncCallHandler.hasSuccessfulCall();
+      if (!info && !LOG.isDebugEnabled()) {
+        return;
+      }
     }
 
     final StringBuilder b = new StringBuilder()
-        .append("Exception while invoking ")
+        .append(ex + ", while invoking ")
         .append(proxyDescriptor.getProxyInfo().getString(method.getName()));
     if (failovers > 0) {
       b.append(" after ").append(failovers).append(" failover attempts");
@@ -382,7 +417,7 @@ public class RetryInvocationHandler<T> implements RpcInvocationHandler {
     b.append(delay > 0? "after sleeping for " + delay + "ms.": "immediately.");
 
     if (info) {
-      LOG.info(b.toString(), ex);
+      LOG.info(b.toString());
     } else {
       LOG.debug(b.toString(), ex);
     }
@@ -421,5 +456,10 @@ public class RetryInvocationHandler<T> implements RpcInvocationHandler {
   @Override //RpcInvocationHandler
   public ConnectionId getConnectionId() {
     return RPC.getConnectionIdForProxy(proxyDescriptor.getProxy());
+  }
+
+  @VisibleForTesting
+  public FailoverProxyProvider<T> getProxyProvider() {
+    return proxyDescriptor.fpp;
   }
 }

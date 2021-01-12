@@ -18,22 +18,47 @@
 
 package org.apache.hadoop.ipc;
 
+import static org.apache.hadoop.test.MetricsAsserts.assertGauge;
+import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
+import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
 
-import junit.framework.TestCase;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.junit.Before;
+import org.junit.Test;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.fail;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
+
+import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
-
 import org.apache.hadoop.security.UserGroupInformation;
+import org.mockito.Mockito;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.ipc.CallQueueManager.CallQueueOverflowException;
+import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcStatusProto;
 
-public class TestFairCallQueue extends TestCase {
+import static org.assertj.core.api.Assertions.assertThat;
+
+public class TestFairCallQueue {
   private FairCallQueue<Schedulable> fcq;
 
   private Schedulable mockCall(String id, int priority) {
@@ -43,6 +68,7 @@ public class TestFairCallQueue extends TestCase {
     when(ugi.getUserName()).thenReturn(id);
     when(mockCall.getUserGroupInformation()).thenReturn(ugi);
     when(mockCall.getPriorityLevel()).thenReturn(priority);
+    when(mockCall.toString()).thenReturn("id=" + id + " priority=" + priority);
 
     return mockCall;
   }
@@ -52,6 +78,7 @@ public class TestFairCallQueue extends TestCase {
   }
 
   @SuppressWarnings("deprecation")
+  @Before
   public void setUp() {
     Configuration conf = new Configuration();
     conf.setInt("ns." + FairCallQueue.IPC_CALLQUEUE_PRIORITY_LEVELS_KEY, 2);
@@ -61,30 +88,353 @@ public class TestFairCallQueue extends TestCase {
 
   // Validate that the total capacity of all subqueues equals
   // the maxQueueSize for different values of maxQueueSize
+  @Test
   public void testTotalCapacityOfSubQueues() {
     Configuration conf = new Configuration();
     FairCallQueue<Schedulable> fairCallQueue;
     fairCallQueue = new FairCallQueue<Schedulable>(1, 1000, "ns", conf);
-    assertEquals(fairCallQueue.remainingCapacity(), 1000);
+    assertThat(fairCallQueue.remainingCapacity()).isEqualTo(1000);
     fairCallQueue = new FairCallQueue<Schedulable>(4, 1000, "ns", conf);
-    assertEquals(fairCallQueue.remainingCapacity(), 1000);
+    assertThat(fairCallQueue.remainingCapacity()).isEqualTo(1000);
     fairCallQueue = new FairCallQueue<Schedulable>(7, 1000, "ns", conf);
-    assertEquals(fairCallQueue.remainingCapacity(), 1000);
+    assertThat(fairCallQueue.remainingCapacity()).isEqualTo(1000);
     fairCallQueue = new FairCallQueue<Schedulable>(1, 1025, "ns", conf);
-    assertEquals(fairCallQueue.remainingCapacity(), 1025);
+    assertThat(fairCallQueue.remainingCapacity()).isEqualTo(1025);
     fairCallQueue = new FairCallQueue<Schedulable>(4, 1025, "ns", conf);
-    assertEquals(fairCallQueue.remainingCapacity(), 1025);
+    assertThat(fairCallQueue.remainingCapacity()).isEqualTo(1025);
     fairCallQueue = new FairCallQueue<Schedulable>(7, 1025, "ns", conf);
-    assertEquals(fairCallQueue.remainingCapacity(), 1025);
+    assertThat(fairCallQueue.remainingCapacity()).isEqualTo(1025);
+    fairCallQueue = new FairCallQueue<Schedulable>(7, 1025, "ns",
+        new int[]{7, 6, 5, 4, 3, 2, 1}, conf);
+    assertThat(fairCallQueue.remainingCapacity()).isEqualTo(1025);
+  }
+
+  @Test
+  public void testPrioritization() {
+    int numQueues = 10;
+    Configuration conf = new Configuration();
+    fcq = new FairCallQueue<Schedulable>(numQueues, numQueues, "ns", conf);
+
+    //Schedulable[] calls = new Schedulable[numCalls];
+    List<Schedulable> calls = new ArrayList<>();
+    for (int i=0; i < numQueues; i++) {
+      Schedulable call = mockCall("u", i);
+      calls.add(call);
+      fcq.add(call);
+    }
+
+    final AtomicInteger currentIndex = new AtomicInteger();
+    fcq.setMultiplexer(new RpcMultiplexer(){
+      @Override
+      public int getAndAdvanceCurrentIndex() {
+        return currentIndex.get();
+      }
+    });
+
+    // if there is no call at a given index, return the next highest
+    // priority call available.
+    //   v
+    //0123456789
+    currentIndex.set(3);
+    assertSame(calls.get(3), fcq.poll());
+    assertSame(calls.get(0), fcq.poll());
+    assertSame(calls.get(1), fcq.poll());
+    //      v
+    //--2-456789
+    currentIndex.set(6);
+    assertSame(calls.get(6), fcq.poll());
+    assertSame(calls.get(2), fcq.poll());
+    assertSame(calls.get(4), fcq.poll());
+    //        v
+    //-----5-789
+    currentIndex.set(8);
+    assertSame(calls.get(8), fcq.poll());
+    //         v
+    //-----5-7-9
+    currentIndex.set(9);
+    assertSame(calls.get(9), fcq.poll());
+    assertSame(calls.get(5), fcq.poll());
+    assertSame(calls.get(7), fcq.poll());
+    //----------
+    assertNull(fcq.poll());
+    assertNull(fcq.poll());
+  }
+
+  @Test
+  public void testQueueCapacity() {
+    int numQueues = 2;
+    int capacity = 4;
+    Configuration conf = new Configuration();
+    List<Schedulable> calls = new ArrayList<>();
+
+    // default weights i.e. all queues share capacity
+    fcq = new FairCallQueue<Schedulable>(numQueues, 4, "ns", conf);
+    FairCallQueue<Schedulable> fcq1 = new FairCallQueue<Schedulable>(
+        numQueues, capacity, "ns", new int[]{1, 3}, conf);
+
+    for (int i=0; i < capacity; i++) {
+      Schedulable call = mockCall("u", i%2);
+      calls.add(call);
+      fcq.add(call);
+      fcq1.add(call);
+    }
+
+    final AtomicInteger currentIndex = new AtomicInteger();
+    fcq.setMultiplexer(new RpcMultiplexer(){
+      @Override
+      public int getAndAdvanceCurrentIndex() {
+        return currentIndex.get();
+      }
+    });
+    fcq1.setMultiplexer(new RpcMultiplexer(){
+      @Override
+      public int getAndAdvanceCurrentIndex() {
+        return currentIndex.get();
+      }
+    });
+
+    // either queue will have two calls
+    //    v
+    // 0  1
+    // 2  3
+    currentIndex.set(1);
+    assertSame(calls.get(1), fcq.poll());
+    assertSame(calls.get(3), fcq.poll());
+    assertSame(calls.get(0), fcq.poll());
+    assertSame(calls.get(2), fcq.poll());
+
+    // queues with different number of calls
+    //    v
+    // 0  1
+    //    2
+    //    3
+    currentIndex.set(1);
+    assertSame(calls.get(1), fcq1.poll());
+    assertSame(calls.get(2), fcq1.poll());
+    assertSame(calls.get(3), fcq1.poll());
+    assertSame(calls.get(0), fcq1.poll());
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void testInsertionWithFailover() {
+    Configuration conf = new Configuration();
+    // Config for server to throw StandbyException instead of the
+    // regular RetriableException if call queue is full.
+    conf.setBoolean(
+        "ns." + CommonConfigurationKeys.IPC_CALLQUEUE_SERVER_FAILOVER_ENABLE,
+        true);
+    // 3 queues, 2 slots each.
+    fcq = Mockito.spy(new FairCallQueue<>(3, 6, "ns", conf));
+
+    Schedulable p0 = mockCall("a", 0);
+    Schedulable p1 = mockCall("b", 1);
+
+    // add to first queue.
+    addToQueueAndVerify(p0, 1, 0, 0);
+    // 0:x- 1:-- 2:--
+
+    // add to second queue.
+    addToQueueAndVerify(p1, 0, 1, 0);
+    // 0:x- 1:x- 2:--
+
+    // add to first queue.
+    addToQueueAndVerify(p0, 1, 0, 0);
+    // 0:xx 1:x- 2:--
+
+    // add to first full queue spills over to second.
+    addToQueueAndVerify(p0, 1, 1, 0);
+    // 0:xx 1:xx 2:--
+
+    // add to second full queue spills over to third.
+    addToQueueAndVerify(p1, 0, 1, 1);
+    // 0:xx 1:xx 2:x-
+
+    // add to first and second full queue spills over to third.
+    addToQueueAndVerify(p0, 1, 1, 1);
+    // 0:xx 1:xx 2:xx
+
+    // adding non-lowest priority with all queues full throws a
+    // standby exception for client to try another server.
+    Mockito.reset(fcq);
+    try {
+      fcq.add(p0);
+      fail("didn't fail");
+    } catch (IllegalStateException ise) {
+      checkOverflowException(ise, RpcStatusProto.FATAL, true);
+    }
+  }
+
+  private void addToQueueAndVerify(Schedulable call, int expectedQueue0,
+      int expectedQueue1, int expectedQueue2) {
+    Mockito.reset(fcq);
+    fcq.add(call);
+    Mockito.verify(fcq, times(expectedQueue0)).offerQueue(0, call);
+    Mockito.verify(fcq, times(expectedQueue1)).offerQueue(1, call);
+    Mockito.verify(fcq, times(expectedQueue2)).offerQueue(2, call);
+  }
+
+  @SuppressWarnings("unchecked") // for mock reset.
+  @Test
+  public void testInsertion() throws Exception {
+    Configuration conf = new Configuration();
+    // 3 queues, 2 slots each.
+    fcq = Mockito.spy(new FairCallQueue<Schedulable>(3, 6, "ns", conf));
+
+    Schedulable p0 = mockCall("a", 0);
+    Schedulable p1 = mockCall("b", 1);
+    Schedulable p2 = mockCall("c", 2);
+
+    // add to first queue.
+    Mockito.reset(fcq);
+    fcq.add(p0);
+    Mockito.verify(fcq, times(1)).offerQueue(0, p0);
+    Mockito.verify(fcq, times(0)).offerQueue(1, p0);
+    Mockito.verify(fcq, times(0)).offerQueue(2, p0);
+    Mockito.reset(fcq);
+    // 0:x- 1:-- 2:--
+
+    // add to second queue.
+    Mockito.reset(fcq);
+    fcq.add(p1);
+    Mockito.verify(fcq, times(0)).offerQueue(0, p1);
+    Mockito.verify(fcq, times(1)).offerQueue(1, p1);
+    Mockito.verify(fcq, times(0)).offerQueue(2, p1);
+    // 0:x- 1:x- 2:--
+
+    // add to first queue.
+    Mockito.reset(fcq);
+    fcq.add(p0);
+    Mockito.verify(fcq, times(1)).offerQueue(0, p0);
+    Mockito.verify(fcq, times(0)).offerQueue(1, p0);
+    Mockito.verify(fcq, times(0)).offerQueue(2, p0);
+    // 0:xx 1:x- 2:--
+
+    // add to first full queue spills over to second.
+    Mockito.reset(fcq);
+    fcq.add(p0);
+    Mockito.verify(fcq, times(1)).offerQueue(0, p0);
+    Mockito.verify(fcq, times(1)).offerQueue(1, p0);
+    Mockito.verify(fcq, times(0)).offerQueue(2, p0);
+    // 0:xx 1:xx 2:--
+
+    // add to second full queue spills over to third.
+    Mockito.reset(fcq);
+    fcq.add(p1);
+    Mockito.verify(fcq, times(0)).offerQueue(0, p1);
+    Mockito.verify(fcq, times(1)).offerQueue(1, p1);
+    Mockito.verify(fcq, times(1)).offerQueue(2, p1);
+    // 0:xx 1:xx 2:x-
+
+    // add to first and second full queue spills over to third.
+    Mockito.reset(fcq);
+    fcq.add(p0);
+    Mockito.verify(fcq, times(1)).offerQueue(0, p0);
+    Mockito.verify(fcq, times(1)).offerQueue(1, p0);
+    Mockito.verify(fcq, times(1)).offerQueue(2, p0);
+    // 0:xx 1:xx 2:xx
+
+    // adding non-lowest priority with all queues full throws a
+    // non-disconnecting rpc server exception.
+    Mockito.reset(fcq);
+    try {
+      fcq.add(p0);
+      fail("didn't fail");
+    } catch (IllegalStateException ise) {
+      checkOverflowException(ise, RpcStatusProto.ERROR, false);
+    }
+    Mockito.verify(fcq, times(1)).offerQueue(0, p0);
+    Mockito.verify(fcq, times(1)).offerQueue(1, p0);
+    Mockito.verify(fcq, times(1)).offerQueue(2, p0);
+
+    // adding non-lowest priority with all queues full throws a
+    // non-disconnecting rpc server exception.
+    Mockito.reset(fcq);
+    try {
+      fcq.add(p1);
+      fail("didn't fail");
+    } catch (IllegalStateException ise) {
+      checkOverflowException(ise, RpcStatusProto.ERROR, false);
+    }
+    Mockito.verify(fcq, times(0)).offerQueue(0, p1);
+    Mockito.verify(fcq, times(1)).offerQueue(1, p1);
+    Mockito.verify(fcq, times(1)).offerQueue(2, p1);
+
+    // adding lowest priority with all queues full throws a
+    // fatal disconnecting rpc server exception.
+    Mockito.reset(fcq);
+    try {
+      fcq.add(p2);
+      fail("didn't fail");
+    } catch (IllegalStateException ise) {
+      checkOverflowException(ise, RpcStatusProto.FATAL, false);
+    }
+    Mockito.verify(fcq, times(0)).offerQueue(0, p2);
+    Mockito.verify(fcq, times(0)).offerQueue(1, p2);
+    Mockito.verify(fcq, times(1)).offerQueue(2, p2);
+    Mockito.reset(fcq);
+
+    // used to abort what would be a blocking operation.
+    Exception stopPuts = new RuntimeException();
+
+    // put should offer to all but last subqueue, only put to last subqueue.
+    Mockito.reset(fcq);
+    try {
+      doThrow(stopPuts).when(fcq).putQueue(anyInt(), any());
+      fcq.put(p0);
+      fail("didn't fail");
+    } catch (Exception e) {
+      assertSame(stopPuts, e);
+    }
+    Mockito.verify(fcq, times(1)).offerQueue(0, p0);
+    Mockito.verify(fcq, times(1)).offerQueue(1, p0);
+    Mockito.verify(fcq, times(0)).offerQueue(2, p0); // expect put, not offer.
+    Mockito.verify(fcq, times(1)).putQueue(2, p0);
+
+    // put with lowest priority should not offer, just put.
+    Mockito.reset(fcq);
+    try {
+      doThrow(stopPuts).when(fcq).putQueue(anyInt(), any());
+      fcq.put(p2);
+      fail("didn't fail");
+    } catch (Exception e) {
+      assertSame(stopPuts, e);
+    }
+    Mockito.verify(fcq, times(0)).offerQueue(0, p2);
+    Mockito.verify(fcq, times(0)).offerQueue(1, p2);
+    Mockito.verify(fcq, times(0)).offerQueue(2, p2);
+    Mockito.verify(fcq, times(1)).putQueue(2, p2);
+  }
+
+  private void checkOverflowException(Exception ex, RpcStatusProto status,
+      boolean failOverTriggered) {
+    // should be an overflow exception
+    assertTrue(ex.getClass().getName() + " != CallQueueOverflowException",
+        ex instanceof CallQueueOverflowException);
+    IOException ioe = ((CallQueueOverflowException)ex).getCause();
+    assertNotNull(ioe);
+    assertTrue(ioe.getClass().getName() + " != RpcServerException",
+        ioe instanceof RpcServerException);
+    RpcServerException rse = (RpcServerException)ioe;
+    // check error/fatal status and if it embeds a retriable ex or standby ex.
+    assertEquals(status, rse.getRpcStatusProto());
+    if (failOverTriggered) {
+      assertTrue(rse.getClass().getName() + " != RetriableException",
+          rse.getCause() instanceof StandbyException);
+    } else {
+      assertTrue(rse.getClass().getName() + " != RetriableException",
+          rse.getCause() instanceof RetriableException);
+    }
   }
 
   //
   // Ensure that FairCallQueue properly implements BlockingQueue
-  //
+  @Test
   public void testPollReturnsNullWhenEmpty() {
     assertNull(fcq.poll());
   }
 
+  @Test
   public void testPollReturnsTopCallWhenNotEmpty() {
     Schedulable call = mockCall("c");
     assertTrue(fcq.offer(call));
@@ -95,6 +445,7 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(0, fcq.size());
   }
 
+  @Test
   public void testOfferSucceeds() {
 
     for (int i = 0; i < 5; i++) {
@@ -105,6 +456,7 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(5, fcq.size());
   }
 
+  @Test
   public void testOfferFailsWhenFull() {
     for (int i = 0; i < 5; i++) { assertTrue(fcq.offer(mockCall("c"))); }
 
@@ -113,6 +465,7 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(5, fcq.size());
   }
 
+  @Test
   public void testOfferSucceedsWhenScheduledLowPriority() {
     // Scheduler will schedule into queue 0 x 5, then queue 1
     int mockedPriorities[] = {0, 0, 0, 0, 0, 1, 0};
@@ -123,10 +476,12 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(6, fcq.size());
   }
 
+  @Test
   public void testPeekNullWhenEmpty() {
     assertNull(fcq.peek());
   }
 
+  @Test
   public void testPeekNonDestructive() {
     Schedulable call = mockCall("c", 0);
     assertTrue(fcq.offer(call));
@@ -136,6 +491,7 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(1, fcq.size());
   }
 
+  @Test
   public void testPeekPointsAtHead() {
     Schedulable call = mockCall("c", 0);
     Schedulable next = mockCall("b", 0);
@@ -145,10 +501,12 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(call, fcq.peek()); // Peek points at the head
   }
 
+  @Test
   public void testPollTimeout() throws InterruptedException {
     assertNull(fcq.poll(10, TimeUnit.MILLISECONDS));
   }
 
+  @Test
   public void testPollSuccess() throws InterruptedException {
     Schedulable call = mockCall("c", 0);
     assertTrue(fcq.offer(call));
@@ -158,6 +516,7 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(0, fcq.size());
   }
 
+  @Test
   public void testOfferTimeout() throws InterruptedException {
     for (int i = 0; i < 5; i++) {
       assertTrue(fcq.offer(mockCall("c"), 10, TimeUnit.MILLISECONDS));
@@ -169,6 +528,7 @@ public class TestFairCallQueue extends TestCase {
   }
 
   @SuppressWarnings("deprecation")
+  @Test
   public void testDrainTo() {
     Configuration conf = new Configuration();
     conf.setInt("ns." + FairCallQueue.IPC_CALLQUEUE_PRIORITY_LEVELS_KEY, 2);
@@ -186,6 +546,7 @@ public class TestFairCallQueue extends TestCase {
   }
 
   @SuppressWarnings("deprecation")
+  @Test
   public void testDrainToWithLimit() {
     Configuration conf = new Configuration();
     conf.setInt("ns." + FairCallQueue.IPC_CALLQUEUE_PRIORITY_LEVELS_KEY, 2);
@@ -202,16 +563,19 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(2, fcq2.size());
   }
 
+  @Test
   public void testInitialRemainingCapacity() {
     assertEquals(10, fcq.remainingCapacity());
   }
 
+  @Test
   public void testFirstQueueFullRemainingCapacity() {
     while (fcq.offer(mockCall("c"))) ; // Queue 0 will fill up first, then queue 1
 
     assertEquals(5, fcq.remainingCapacity());
   }
 
+  @Test
   public void testAllQueuesFullRemainingCapacity() {
     int[] mockedPriorities = {0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0};
     int i = 0;
@@ -221,6 +585,7 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(10, fcq.size());
   }
 
+  @Test
   public void testQueuesPartialFilledRemainingCapacity() {
     int[] mockedPriorities = {0, 1, 0, 1, 0};
     for (int i = 0; i < 5; i++) { fcq.offer(mockCall("c", mockedPriorities[i])); }
@@ -344,12 +709,14 @@ public class TestFairCallQueue extends TestCase {
   }
 
   // Make sure put will overflow into lower queues when the top is full
+  @Test
   public void testPutOverflows() throws InterruptedException {
     // We can fit more than 5, even though the scheduler suggests the top queue
     assertCanPut(fcq, 8, 8);
     assertEquals(8, fcq.size());
   }
 
+  @Test
   public void testPutBlocksWhenAllFull() throws InterruptedException {
     assertCanPut(fcq, 10, 10); // Fill up
     assertEquals(10, fcq.size());
@@ -358,10 +725,12 @@ public class TestFairCallQueue extends TestCase {
     assertCanPut(fcq, 0, 1); // Will block
   }
 
+  @Test
   public void testTakeBlocksWhenEmpty() throws InterruptedException {
     assertCanTake(fcq, 0, 1);
   }
 
+  @Test
   public void testTakeRemovesCall() throws InterruptedException {
     Schedulable call = mockCall("c");
     fcq.offer(call);
@@ -370,6 +739,7 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(0, fcq.size());
   }
 
+  @Test
   public void testTakeTriesNextQueue() throws InterruptedException {
 
     // A mux which only draws from q 0
@@ -386,6 +756,7 @@ public class TestFairCallQueue extends TestCase {
     assertEquals(0, fcq.size());
   }
 
+  @Test
   public void testFairCallQueueMXBean() throws Exception {
     MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
     ObjectName mxbeanName = new ObjectName(
@@ -400,5 +771,38 @@ public class TestFairCallQueue extends TestCase {
     queueSizes = (int[]) mbs.getAttribute(mxbeanName, "QueueSizes");
     assertEquals(0, queueSizes[0]);
     assertEquals(0, queueSizes[1]);
+  }
+
+  @Test
+  public void testFairCallQueueMetrics() throws Exception {
+    final String fcqMetrics = "ns.FairCallQueue";
+    Schedulable p0 = mockCall("a", 0);
+    Schedulable p1 = mockCall("b", 1);
+
+    assertGauge("FairCallQueueSize_p0", 0, getMetrics(fcqMetrics));
+    assertGauge("FairCallQueueSize_p1", 0, getMetrics(fcqMetrics));
+    assertCounter("FairCallQueueOverflowedCalls_p0", 0L,
+        getMetrics(fcqMetrics));
+    assertCounter("FairCallQueueOverflowedCalls_p1", 0L,
+        getMetrics(fcqMetrics));
+
+    for (int i = 0; i < 5; i++) {
+      fcq.add(p0);
+      fcq.add(p1);
+    }
+
+    try {
+      fcq.add(p1);
+      fail("didn't overflow");
+    } catch (IllegalStateException ise) {
+      // Expected exception
+    }
+
+    assertGauge("FairCallQueueSize_p0", 5, getMetrics(fcqMetrics));
+    assertGauge("FairCallQueueSize_p1", 5, getMetrics(fcqMetrics));
+    assertCounter("FairCallQueueOverflowedCalls_p0", 0L,
+        getMetrics(fcqMetrics));
+    assertCounter("FairCallQueueOverflowedCalls_p1", 1L,
+        getMetrics(fcqMetrics));
   }
 }

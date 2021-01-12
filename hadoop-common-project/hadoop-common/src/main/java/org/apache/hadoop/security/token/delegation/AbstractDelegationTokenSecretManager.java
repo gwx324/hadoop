@@ -21,20 +21,24 @@ package org.apache.hadoop.security.token.delegation;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.HashMap;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.crypto.SecretKey;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.metrics2.util.Metrics2Util.NameValuePair;
+import org.apache.hadoop.metrics2.util.Metrics2Util.TopN;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.HadoopKerberosName;
 import org.apache.hadoop.security.token.SecretManager;
@@ -42,24 +46,36 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.Daemon;
 import org.apache.hadoop.util.Time;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-@InterfaceAudience.LimitedPrivate({"HDFS", "MapReduce", "Hive"})
+@InterfaceAudience.Public
 @InterfaceStability.Evolving
 public abstract 
 class AbstractDelegationTokenSecretManager<TokenIdent 
 extends AbstractDelegationTokenIdentifier> 
    extends SecretManager<TokenIdent> {
-  private static final Log LOG = LogFactory
-      .getLog(AbstractDelegationTokenSecretManager.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(AbstractDelegationTokenSecretManager.class);
+
+  private String formatTokenId(TokenIdent id) {
+    return "(" + id + ")";
+  }
 
   /** 
    * Cache of currently valid tokens, mapping from DelegationTokenIdentifier 
    * to DelegationTokenInformation. Protected by this object lock.
    */
   protected final Map<TokenIdent, DelegationTokenInformation> currentTokens 
-      = new HashMap<TokenIdent, DelegationTokenInformation>();
-  
+      = new ConcurrentHashMap<>();
+
+  /**
+   * Map of token real owners to its token count. This is used to generate
+   * metrics of top users by owned tokens.
+   */
+  protected final Map<String, Long> tokenOwnerStats = new ConcurrentHashMap<>();
+
   /**
    * Sequence number to create DelegationTokenIdentifier.
    * Protected by this object lock.
@@ -70,7 +86,7 @@ extends AbstractDelegationTokenIdentifier>
    * Access to allKeys is protected by this object lock
    */
   protected final Map<Integer, DelegationKey> allKeys 
-      = new HashMap<Integer, DelegationKey>();
+      = new ConcurrentHashMap<>();
   
   /**
    * Access to currentId is protected by this object lock.
@@ -140,7 +156,14 @@ extends AbstractDelegationTokenIdentifier>
     setDelegationTokenSeqNum(0);
     currentTokens.clear();
   }
-  
+
+  /**
+   * Total count of active delegation tokens.
+   */
+  public long getCurrentTokensSize() {
+    return currentTokens.size();
+  }
+
   /** 
    * Add a previously used master key to cache (when NN restarts), 
    * should be called before activate(). 
@@ -280,6 +303,7 @@ extends AbstractDelegationTokenIdentifier>
   protected void storeToken(TokenIdent ident,
       DelegationTokenInformation tokenInfo) throws IOException {
     currentTokens.put(ident, tokenInfo);
+    addTokenForOwnerStats(ident);
     storeNewToken(ident, tokenInfo.getRenewDate());
   }
 
@@ -295,7 +319,8 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * This method is intended to be used for recovering persisted delegation
-   * tokens
+   * tokens. Tokens that have an unknown <code>DelegationKey</code> are
+   * marked as expired and automatically cleaned up.
    * This method must be called before this secret manager is activated (before
    * startThreads() is called)
    * @param identifier identifier read from persistent storage
@@ -311,19 +336,25 @@ extends AbstractDelegationTokenIdentifier>
     }
     int keyId = identifier.getMasterKeyId();
     DelegationKey dKey = allKeys.get(keyId);
+    byte[] password = null;
     if (dKey == null) {
-      LOG.warn("No KEY found for persisted identifier " + identifier.toString());
-      return;
+      LOG.warn("No KEY found for persisted identifier, expiring stored token "
+          + formatTokenId(identifier));
+      // make sure the token is expired
+      renewDate = 0L;
+    } else {
+      password = createPassword(identifier.getBytes(), dKey.getKey());
     }
-    byte[] password = createPassword(identifier.getBytes(), dKey.getKey());
     if (identifier.getSequenceNumber() > getDelegationTokenSeqNum()) {
       setDelegationTokenSeqNum(identifier.getSequenceNumber());
     }
     if (getTokenInfo(identifier) == null) {
       currentTokens.put(identifier, new DelegationTokenInformation(renewDate,
           password, getTrackingIdIfEnabled(identifier)));
+      addTokenForOwnerStats(identifier);
     } else {
-      throw new IOException("Same delegation token being added twice.");
+      throw new IOException("Same delegation token being added twice: "
+          + formatTokenId(identifier));
     }
   }
 
@@ -393,7 +424,7 @@ extends AbstractDelegationTokenIdentifier>
     identifier.setMaxDate(now + tokenMaxLifetime);
     identifier.setMasterKeyId(currentKey.getKeyId());
     identifier.setSequenceNumber(sequenceNum);
-    LOG.info("Creating password for identifier: " + identifier
+    LOG.info("Creating password for identifier: " + formatTokenId(identifier)
         + ", currentKey: " + currentKey.getKeyId());
     byte[] password = createPassword(identifier.getBytes(), currentKey.getKey());
     DelegationTokenInformation tokenInfo = new DelegationTokenInformation(now
@@ -401,7 +432,8 @@ extends AbstractDelegationTokenIdentifier>
     try {
       storeToken(identifier, tokenInfo);
     } catch (IOException ioe) {
-      LOG.error("Could not store token !!", ioe);
+      LOG.error("Could not store token " + formatTokenId(identifier) + "!!",
+          ioe);
     }
     return password;
   }
@@ -418,11 +450,14 @@ extends AbstractDelegationTokenIdentifier>
     assert Thread.holdsLock(this);
     DelegationTokenInformation info = getTokenInfo(identifier);
     if (info == null) {
-      throw new InvalidToken("token (" + identifier.toString()
-          + ") can't be found in cache");
+      throw new InvalidToken("token " + formatTokenId(identifier)
+          + " can't be found in cache");
     }
-    if (info.getRenewDate() < Time.now()) {
-      throw new InvalidToken("token (" + identifier.toString() + ") is expired");
+    long now = Time.now();
+    if (info.getRenewDate() < now) {
+      throw new InvalidToken("token " + formatTokenId(identifier) + " is " +
+          "expired, current time: " + Time.formatTime(now) +
+          " expected renewal time: " + Time.formatTime(info.getRenewDate()));
     }
     return info;
   }
@@ -457,9 +492,9 @@ extends AbstractDelegationTokenIdentifier>
   public synchronized void verifyToken(TokenIdent identifier, byte[] password)
       throws InvalidToken {
     byte[] storedPassword = retrievePassword(identifier);
-    if (!Arrays.equals(password, storedPassword)) {
-      throw new InvalidToken("token (" + identifier
-          + ") is invalid, password doesn't match");
+    if (!MessageDigest.isEqual(password, storedPassword)) {
+      throw new InvalidToken("token " + formatTokenId(identifier)
+          + " is invalid, password doesn't match");
     }
   }
   
@@ -477,32 +512,39 @@ extends AbstractDelegationTokenIdentifier>
     DataInputStream in = new DataInputStream(buf);
     TokenIdent id = createIdentifier();
     id.readFields(in);
-    LOG.info("Token renewal for identifier: " + id + "; total currentTokens "
-        +  currentTokens.size());
+    LOG.info("Token renewal for identifier: " + formatTokenId(id)
+        + "; total currentTokens " +  currentTokens.size());
 
     long now = Time.now();
     if (id.getMaxDate() < now) {
-      throw new InvalidToken(renewer + " tried to renew an expired token");
+      throw new InvalidToken(renewer + " tried to renew an expired token "
+          + formatTokenId(id) + " max expiration date: "
+          + Time.formatTime(id.getMaxDate())
+          + " currentTime: " + Time.formatTime(now));
     }
     if ((id.getRenewer() == null) || (id.getRenewer().toString().isEmpty())) {
       throw new AccessControlException(renewer +
-          " tried to renew a token without a renewer");
+          " tried to renew a token " + formatTokenId(id)
+          + " without a renewer");
     }
     if (!id.getRenewer().toString().equals(renewer)) {
-      throw new AccessControlException(renewer +
-          " tries to renew a token with renewer " + id.getRenewer());
+      throw new AccessControlException(renewer
+          + " tries to renew a token " + formatTokenId(id)
+          + " with non-matching renewer " + id.getRenewer());
     }
     DelegationKey key = getDelegationKey(id.getMasterKeyId());
     if (key == null) {
       throw new InvalidToken("Unable to find master key for keyId="
           + id.getMasterKeyId()
-          + " from cache. Failed to renew an unexpired token"
-          + " with sequenceNumber=" + id.getSequenceNumber());
+          + " from cache. Failed to renew an unexpired token "
+          + formatTokenId(id) + " with sequenceNumber="
+          + id.getSequenceNumber());
     }
     byte[] password = createPassword(token.getIdentifier(), key.getKey());
-    if (!Arrays.equals(password, token.getPassword())) {
-      throw new AccessControlException(renewer +
-          " is trying to renew a token with wrong password");
+    if (!MessageDigest.isEqual(password, token.getPassword())) {
+      throw new AccessControlException(renewer
+          + " is trying to renew a token "
+          + formatTokenId(id) + " with wrong password");
     }
     long renewTime = Math.min(id.getMaxDate(), now + tokenRenewInterval);
     String trackingId = getTrackingIdIfEnabled(id);
@@ -510,7 +552,8 @@ extends AbstractDelegationTokenIdentifier>
         password, trackingId);
 
     if (getTokenInfo(id) == null) {
-      throw new InvalidToken("Renewal request for unknown token");
+      throw new InvalidToken("Renewal request for unknown token "
+          + formatTokenId(id));
     }
     updateToken(id, info);
     return renewTime;
@@ -528,10 +571,11 @@ extends AbstractDelegationTokenIdentifier>
     DataInputStream in = new DataInputStream(buf);
     TokenIdent id = createIdentifier();
     id.readFields(in);
-    LOG.info("Token cancelation requested for identifier: "+id);
+    LOG.info("Token cancellation requested for identifier: "
+        + formatTokenId(id));
     
     if (id.getUser() == null) {
-      throw new InvalidToken("Token with no owner");
+      throw new InvalidToken("Token with no owner " + formatTokenId(id));
     }
     String owner = id.getUser().getUserName();
     Text renewer = id.getRenewer();
@@ -541,12 +585,13 @@ extends AbstractDelegationTokenIdentifier>
         && (renewer == null || renewer.toString().isEmpty() || !cancelerShortName
             .equals(renewer.toString()))) {
       throw new AccessControlException(canceller
-          + " is not authorized to cancel the token");
+          + " is not authorized to cancel the token " + formatTokenId(id));
     }
     DelegationTokenInformation info = currentTokens.remove(id);
     if (info == null) {
-      throw new InvalidToken("Token not found");
+      throw new InvalidToken("Token not found " + formatTokenId(id));
     }
+    removeTokenForOwnerStats(id);
     removeStoredToken(id);
     return id;
   }
@@ -603,13 +648,20 @@ extends AbstractDelegationTokenIdentifier>
         long renewDate = entry.getValue().getRenewDate();
         if (renewDate < now) {
           expiredTokens.add(entry.getKey());
+          removeTokenForOwnerStats(entry.getKey());
           i.remove();
         }
       }
     }
     // don't hold lock on 'this' to avoid edit log updates blocking token ops
+    logExpireTokens(expiredTokens);
+  }
+
+  protected void logExpireTokens(
+      Collection<TokenIdent> expiredTokens) throws IOException {
     for (TokenIdent ident : expiredTokens) {
       logExpireToken(ident);
+      LOG.info("Removing expired token " + formatTokenId(ident));
       removeStoredToken(ident);
     }
   }
@@ -689,4 +741,88 @@ extends AbstractDelegationTokenIdentifier>
     return token.decodeIdentifier();
   }
 
+  /**
+   * Return top token real owners list as well as the tokens count.
+   *
+   * @param n top number of users
+   * @return map of owners to counts
+   */
+  public List<NameValuePair> getTopTokenRealOwners(int n) {
+    n = Math.min(n, tokenOwnerStats.size());
+    if (n == 0) {
+      return new ArrayList<>();
+    }
+
+    TopN topN = new TopN(n);
+    for (Map.Entry<String, Long> entry : tokenOwnerStats.entrySet()) {
+      topN.offer(new NameValuePair(
+          entry.getKey(), entry.getValue()));
+    }
+
+    List<NameValuePair> list = new ArrayList<>();
+    while (!topN.isEmpty()) {
+      list.add(topN.poll());
+    }
+    Collections.reverse(list);
+    return list;
+  }
+
+  /**
+   * Return the real owner for a token. If this is a token from a proxy user,
+   * the real/effective user will be returned.
+   *
+   * @param id
+   * @return real owner
+   */
+  private String getTokenRealOwner(TokenIdent id) {
+    String realUser;
+    if (id.getRealUser() != null && !id.getRealUser().toString().isEmpty()) {
+      realUser = id.getRealUser().toString();
+    } else {
+      // if there is no real user -> this is a non proxy user
+      // the user itself is the real owner
+      realUser = id.getUser().getUserName();
+    }
+    return realUser;
+  }
+
+  /**
+   * Add token stats to the owner to token count mapping.
+   *
+   * @param id
+   */
+  private void addTokenForOwnerStats(TokenIdent id) {
+    String realOwner = getTokenRealOwner(id);
+    tokenOwnerStats.put(realOwner,
+        tokenOwnerStats.getOrDefault(realOwner, 0L)+1);
+  }
+
+  /**
+   * Remove token stats to the owner to token count mapping.
+   *
+   * @param id
+   */
+  private void removeTokenForOwnerStats(TokenIdent id) {
+    String realOwner = getTokenRealOwner(id);
+    if (tokenOwnerStats.containsKey(realOwner)) {
+      // unlikely to be less than 1 but in case
+      if (tokenOwnerStats.get(realOwner) <= 1) {
+        tokenOwnerStats.remove(realOwner);
+      } else {
+        tokenOwnerStats.put(realOwner, tokenOwnerStats.get(realOwner)-1);
+      }
+    }
+  }
+
+  /**
+   * This method syncs token information from currentTokens to tokenOwnerStats.
+   * It is used when the currentTokens is initialized or refreshed. This is
+   * called from a single thread thus no synchronization is needed.
+   */
+  protected void syncTokenOwnerStats() {
+    tokenOwnerStats.clear();
+    for (TokenIdent id : currentTokens.keySet()) {
+      addTokenForOwnerStats(id);
+    }
+  }
 }

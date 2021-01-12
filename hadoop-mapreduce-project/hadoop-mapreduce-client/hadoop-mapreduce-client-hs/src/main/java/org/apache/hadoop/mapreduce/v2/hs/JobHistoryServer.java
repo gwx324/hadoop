@@ -21,8 +21,6 @@ package org.apache.hadoop.mapreduce.v2.hs;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.JobConf;
@@ -43,11 +41,12 @@ import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.YarnUncaughtExceptionHandler;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.logaggregation.AggregatedLogDeletionService;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /******************************************************************
  * {@link JobHistoryServer} is responsible for servicing all job history
@@ -63,8 +62,8 @@ public class JobHistoryServer extends CompositeService {
 
   public static final long historyServerTimeStamp = System.currentTimeMillis();
 
-  private static final Log LOG = LogFactory.getLog(JobHistoryServer.class);
-  protected HistoryContext historyContext;
+  private static final Logger LOG =
+      LoggerFactory.getLogger(JobHistoryServer.class);
   private HistoryClientService clientService;
   private JobHistory jobHistoryService;
   protected JHSDelegationTokenSecretManager jhsDTSecretManager;
@@ -120,8 +119,6 @@ public class JobHistoryServer extends CompositeService {
   protected void serviceInit(Configuration conf) throws Exception {
     Configuration config = new YarnConfiguration(conf);
 
-    config.setBoolean(Dispatcher.DISPATCHER_EXIT_ON_ERROR_KEY, true);
-
     // This is required for WebApps to use https if enabled.
     MRWebAppUtil.initialize(getConfig());
     try {
@@ -130,7 +127,6 @@ public class JobHistoryServer extends CompositeService {
       throw new YarnRuntimeException("History Server Failed to login", ie);
     }
     jobHistoryService = new JobHistory();
-    historyContext = (HistoryContext)jobHistoryService;
     stateStore = createStateStore(conf);
     this.jhsDTSecretManager = createJHSSecretManager(conf, stateStore);
     clientService = createHistoryClientService();
@@ -154,8 +150,7 @@ public class JobHistoryServer extends CompositeService {
 
   @VisibleForTesting
   protected HistoryClientService createHistoryClientService() {
-    return new HistoryClientService(historyContext, 
-        this.jhsDTSecretManager);
+    return new HistoryClientService(jobHistoryService, this.jhsDTSecretManager);
   }
 
   protected JHSDelegationTokenSecretManager createJHSSecretManager(
@@ -228,7 +223,7 @@ public class JobHistoryServer extends CompositeService {
       jobHistoryServer.init(conf);
       jobHistoryServer.start();
     } catch (Throwable t) {
-      LOG.fatal("Error starting JobHistoryServer", t);
+      LOG.error("Error starting JobHistoryServer", t);
       ExitUtil.terminate(-1, "Error starting JobHistoryServer");
     }
     return jobHistoryServer;

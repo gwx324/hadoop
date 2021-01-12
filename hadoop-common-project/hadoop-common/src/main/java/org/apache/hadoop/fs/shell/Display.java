@@ -52,10 +52,6 @@ import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.io.compress.CompressionCodecFactory;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringUtils;
-import org.codehaus.jackson.JsonEncoding;
-import org.codehaus.jackson.JsonFactory;
-import org.codehaus.jackson.JsonGenerator;
-import org.codehaus.jackson.util.MinimalPrettyPrinter;
 
 /**
  * Display contents or checksums of files 
@@ -179,7 +175,7 @@ class Display extends FsCommand {
   
   public static class Checksum extends Display {
     public static final String NAME = "checksum";
-    public static final String USAGE = "<src> ...";
+    public static final String USAGE = "[-v] <src> ...";
     public static final String DESCRIPTION =
       "Dump checksum information for files that match the file " +
       "pattern <src> to stdout. Note that this requires a round-trip " +
@@ -188,6 +184,16 @@ class Display extends FsCommand {
       "file depends on its content, block size and the checksum " +
       "algorithm and parameters used for creating the file.";
 
+    private boolean displayBlockSize;
+
+    @Override
+    protected void processOptions(LinkedList<String> args)
+        throws IOException {
+      CommandFormat cf = new CommandFormat(1, Integer.MAX_VALUE, "v");
+      cf.parse(args);
+      displayBlockSize = cf.getOpt("v");
+    }
+
     @Override
     protected void processPath(PathData item) throws IOException {
       if (item.stat.isDirectory()) {
@@ -195,14 +201,15 @@ class Display extends FsCommand {
       }
 
       FileChecksum checksum = item.fs.getFileChecksum(item.path);
-      if (checksum == null) {
-        out.printf("%s\tNONE\t%n", item.toString());
+      String outputChecksum = checksum == null ? "NONE" :
+          String.format("%s\t%s", checksum.getAlgorithmName(), StringUtils
+              .byteToHexString(checksum.getBytes(), 0, checksum.getLength()));
+      if (displayBlockSize) {
+        FileStatus fileStatus = item.fs.getFileStatus(item.path);
+        out.printf("%s\t%s\tBlockSize=%s%n", item.toString(), outputChecksum,
+            fileStatus != null ? fileStatus.getBlockSize() : "NONE");
       } else {
-        String checksumString = StringUtils.byteToHexString(
-            checksum.getBytes(), 0, checksum.getLength());
-        out.printf("%s\t%s\t%s%n",
-            item.toString(), checksum.getAlgorithmName(),
-            checksumString);
+        out.printf("%s\t%s%n", item.toString(), outputChecksum);
       }
     }
   }
@@ -277,12 +284,7 @@ class Display extends FsCommand {
       Schema schema = fileReader.getSchema();
       writer = new GenericDatumWriter<Object>(schema);
       output = new ByteArrayOutputStream();
-      JsonGenerator generator =
-        new JsonFactory().createJsonGenerator(output, JsonEncoding.UTF8);
-      MinimalPrettyPrinter prettyPrinter = new MinimalPrettyPrinter();
-      prettyPrinter.setRootValueSeparator(System.getProperty("line.separator"));
-      generator.setPrettyPrinter(prettyPrinter);
-      encoder = EncoderFactory.get().jsonEncoder(schema, generator);
+      encoder = EncoderFactory.get().jsonEncoder(schema, output);
     }
 
     /**

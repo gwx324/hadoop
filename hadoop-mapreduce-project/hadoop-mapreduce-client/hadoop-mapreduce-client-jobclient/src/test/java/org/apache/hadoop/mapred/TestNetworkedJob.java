@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.mapred;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -161,10 +162,10 @@ public class TestNetworkedJob {
       assertTrue(runningJob.getJobFile().endsWith(
           ".staging/" + runningJob.getJobID() + "/job.xml"));
       assertTrue(runningJob.getTrackingURL().length() > 0);
-      assertTrue(runningJob.mapProgress() == 0.0f);
-      assertTrue(runningJob.reduceProgress() == 0.0f);
-      assertTrue(runningJob.cleanupProgress() == 0.0f);
-      assertTrue(runningJob.setupProgress() == 0.0f);
+      assertThat(runningJob.mapProgress()).isEqualTo(0.0f);
+      assertThat(runningJob.reduceProgress()).isEqualTo(0.0f);
+      assertThat(runningJob.cleanupProgress()).isEqualTo(0.0f);
+      assertThat(runningJob.setupProgress()).isEqualTo(0.0f);
 
       TaskCompletionEvent[] tce = runningJob.getTaskCompletionEvents(0);
       assertEquals(tce.length, 0);
@@ -246,7 +247,7 @@ public class TestNetworkedJob {
       QueueAclsInfo[] aai = client.getQueueAclsForCurrentUser();
       assertEquals(2, aai.length);
       assertEquals("root", aai[0].getQueueName());
-      assertEquals("default", aai[1].getQueueName());
+      assertEquals("root.default", aai[1].getQueueName());
       
       // test JobClient
       // The following asserts read JobStatus twice and ensure the returned
@@ -381,6 +382,9 @@ public class TestNetworkedJob {
     // Expected queue names depending on Capacity Scheduler queue naming
     conf.setClass(YarnConfiguration.RM_SCHEDULER, CapacityScheduler.class,
         CapacityScheduler.class);
+    // Default value is 90 - if you have low disk space,
+    // testNetworkedJob will fail
+    conf.set(YarnConfiguration.NM_MAX_PER_DISK_UTILIZATION_PERCENTAGE, "99");
     return MiniMRClientClusterFactory.create(this.getClass(), 2, conf);
   }
 }

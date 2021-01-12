@@ -22,12 +22,11 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.anyLong;
-import static org.mockito.Matchers.anyObject;
-import static org.mockito.Matchers.anyShort;
-import static org.mockito.Matchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyShort;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
@@ -47,15 +46,14 @@ import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.crypto.CryptoProtocolVersion;
 import org.apache.hadoop.fs.ChecksumException;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
-import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileChecksum;
@@ -80,7 +78,6 @@ import org.apache.hadoop.hdfs.server.namenode.NotReplicatedYetException;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.hdfs.web.WebHdfsConstants;
 import org.apache.hadoop.hdfs.web.WebHdfsTestUtil;
-import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Writable;
@@ -97,13 +94,11 @@ import org.apache.log4j.Level;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.Matchers;
 import org.mockito.Mockito;
 import org.mockito.internal.stubbing.answers.ThrowsException;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.base.Joiner;
 
 /**
  * These tests make sure that DFSClient retries fetching data from DFS
@@ -113,8 +108,8 @@ public class TestDFSClientRetries {
   private static final String ADDRESS = "0.0.0.0";
   final static private int PING_INTERVAL = 1000;
   final static private int MIN_SLEEP_TIME = 1000;
-  public static final Log LOG =
-    LogFactory.getLog(TestDFSClientRetries.class.getName());
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestDFSClientRetries.class.getName());
   static private Configuration conf = null;
  
  private static class TestServer extends Server {
@@ -252,25 +247,36 @@ public class TestDFSClientRetries {
     };
     when(mockNN.addBlock(anyString(), 
                          anyString(),
-                         any(ExtendedBlock.class),
-                         any(DatanodeInfo[].class),
-                         anyLong(), any(String[].class),
-                         Matchers.<EnumSet<AddBlockFlag>>any()))
+                         any(),
+                         any(),
+                         anyLong(), any(),
+                         any()))
         .thenAnswer(answer);
     
-    Mockito.doReturn(
-            new HdfsFileStatus(0, false, 1, 1024, 0, 0, new FsPermission(
-                (short) 777), "owner", "group", new byte[0], new byte[0],
-                1010, 0, null, (byte) 0, null)).when(mockNN).getFileInfo(anyString());
+    Mockito.doReturn(new HdfsFileStatus.Builder()
+          .replication(1)
+          .blocksize(1024)
+          .perm(new FsPermission((short) 777))
+          .owner("owner")
+          .group("group")
+          .symlink(new byte[0])
+          .fileId(1010)
+          .build())
+      .when(mockNN)
+      .getFileInfo(anyString());
     
-    Mockito.doReturn(
-            new HdfsFileStatus(0, false, 1, 1024, 0, 0, new FsPermission(
-                (short) 777), "owner", "group", new byte[0], new byte[0],
-                1010, 0, null, (byte) 0, null))
+    Mockito.doReturn(new HdfsFileStatus.Builder()
+          .replication(1)
+          .blocksize(1024)
+          .perm(new FsPermission((short) 777))
+          .owner("owner")
+          .group("group")
+          .symlink(new byte[0])
+          .fileId(1010)
+          .build())
         .when(mockNN)
-        .create(anyString(), (FsPermission) anyObject(), anyString(),
-            (EnumSetWritable<CreateFlag>) anyObject(), anyBoolean(),
-            anyShort(), anyLong(), (CryptoProtocolVersion[]) anyObject());
+        .create(anyString(), any(), anyString(), any(), anyBoolean(),
+            anyShort(), anyLong(), any(), any(), any());
 
     final DFSClient client = new DFSClient(null, mockNN, conf, null);
     OutputStream os = client.create("testfile", true);
@@ -371,7 +377,7 @@ public class TestDFSClientRetries {
     String file1 = "/testFile1";
     String file2 = "/testFile2";
     // Set short retry timeouts so this test runs faster
-    conf.setInt(DFSConfigKeys.DFS_CLIENT_RETRY_WINDOW_BASE, 10);
+    conf.setInt(HdfsClientConfigKeys.Retry.WINDOW_BASE_KEY, 10);
     conf.setInt(DFS_CLIENT_SOCKET_TIMEOUT_KEY, 2 * 1000);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
     try {
@@ -381,13 +387,14 @@ public class TestDFSClientRetries {
           Mockito.anyString());
       DFSClient client = new DFSClient(null, spyNN, conf, null);
       // Get hold of the lease renewer instance used by the client
-      LeaseRenewer leaseRenewer = client.getLeaseRenewer();
-      leaseRenewer.setRenewalTime(100);
+      final LeaseRenewer leaseRenewer1 = client.getLeaseRenewer();
+      leaseRenewer1.setRenewalTime(100);
       OutputStream out1 = client.create(file1, false);
 
       Mockito.verify(spyNN, timeout(10000).times(1)).renewLease(
           Mockito.anyString());
-      verifyEmptyLease(leaseRenewer);
+      verifyEmptyLease(leaseRenewer1);
+      GenericTestUtils.waitFor(() -> !(leaseRenewer1.isRunning()), 100, 10000);
       try {
         out1.write(new byte[256]);
         fail("existing output stream should be aborted");
@@ -400,14 +407,14 @@ public class TestDFSClientRetries {
       // throws SocketTimeoutException.
       Mockito.doNothing().when(spyNN).renewLease(
           Mockito.anyString());
-      leaseRenewer = client.getLeaseRenewer();
-      leaseRenewer.setRenewalTime(100);
+      final LeaseRenewer leaseRenewer2 = client.getLeaseRenewer();
+      leaseRenewer2.setRenewalTime(100);
       OutputStream out2 = client.create(file2, false);
       Mockito.verify(spyNN, timeout(10000).times(2)).renewLease(
           Mockito.anyString());
       out2.write(new byte[256]);
       out2.close();
-      verifyEmptyLease(leaseRenewer);
+      verifyEmptyLease(leaseRenewer2);
     } finally {
       cluster.shutdown();
     }
@@ -485,8 +492,7 @@ public class TestDFSClientRetries {
           // complete() may return false a few times before it returns
           // true. We want to wait until it returns true, and then
           // make it retry one more time after that.
-          LOG.info("Called complete(: " +
-              Joiner.on(",").join(invocation.getArguments()) + ")");
+          LOG.info("Called complete:");
           if (!(Boolean)invocation.callRealMethod()) {
             LOG.info("Complete call returned false, not faking a retry RPC");
             return false;
@@ -511,7 +517,7 @@ public class TestDFSClientRetries {
         stm.close();
         stm = null;
       } finally {
-        IOUtils.cleanup(LOG, stm);
+        IOUtils.cleanupWithLogger(LOG, stm);
       }
       
       // Make sure the mock was actually properly injected.
@@ -753,11 +759,7 @@ public class TestDFSClientRetries {
   }
 
   private void verifyEmptyLease(LeaseRenewer leaseRenewer) throws Exception {
-    int sleepCount = 0;
-    while (!leaseRenewer.isEmpty() && sleepCount++ < 20) {
-      Thread.sleep(500);
-    }
-    assertTrue("Lease should be empty.", leaseRenewer.isEmpty());
+    GenericTestUtils.waitFor(() -> leaseRenewer.isEmpty(), 100, 10000);
   }
 
   class DFSClientReader implements Runnable {
@@ -837,14 +839,16 @@ public class TestDFSClientRetries {
   public void testGetFileChecksum() throws Exception {
     final String f = "/testGetFileChecksum";
     final Path p = new Path(f);
-
-    final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
+    final int numReplicas = 3;
+    final int numDatanodes = numReplicas;
+    final MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(numDatanodes).build();
     try {
       cluster.waitActive();
 
-      //create a file
+      // create a file
       final FileSystem fs = cluster.getFileSystem();
-      DFSTestUtil.createFile(fs, p, 1L << 20, (short)3, 20100402L);
+      DFSTestUtil.createFile(fs, p, 1L << 20, (short) numReplicas, 20100402L);
 
       //get checksum
       final FileChecksum cs1 = fs.getFileChecksum(p);
@@ -1217,29 +1221,135 @@ public class TestDFSClientRetries {
     }
   }
 
+  /**
+   * Tests default configuration values and configuration setting
+   * of locate following block delays and number of retries.
+   *
+   * Configuration values tested:
+   * - dfs.client.block.write.locateFollowingBlock.initial.delay.ms
+   * - dfs.client.block.write.locateFollowingBlock.max.delay.ms
+   * - dfs.client.block.write.locateFollowingBlock.retries
+   */
   @Test
-  public void testDFSClientConfigurationLocateFollowingBlockInitialDelay()
+  public void testDFSClientConfigurationLocateFollowingBlock()
       throws Exception {
-    // test if HdfsClientConfigKeys.BlockWrite.LOCATEFOLLOWINGBLOCK_INITIAL_DELAY_KEY
-    // is not configured, verify DFSClient uses the default value 400.
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
+    final int initialDelayTestValue = 1000;
+    final int maxDelayTestValue = 35000;
+    final int retryTestValue = 7;
+
+    final int defaultInitialDelay = 400;
+    final int defaultMaxDelay = 60000;
+    final int defultRetry = 5;
+
     try {
       cluster.waitActive();
       NamenodeProtocols nn = cluster.getNameNodeRpc();
       DFSClient client = new DFSClient(null, nn, conf, null);
-      assertEquals(client.getConf().
-          getBlockWriteLocateFollowingInitialDelayMs(), 400);
+      assertEquals(defaultInitialDelay, client.getConf().
+          getBlockWriteLocateFollowingInitialDelayMs());
+      assertEquals(defaultMaxDelay, client.getConf().
+          getBlockWriteLocateFollowingMaxDelayMs());
+      assertEquals(defultRetry, client.getConf().
+          getNumBlockWriteLocateFollowingRetry());
 
-      // change HdfsClientConfigKeys.BlockWrite.LOCATEFOLLOWINGBLOCK_INITIAL_DELAY_KEY,
-      // verify DFSClient uses the configured value 1000.
       conf.setInt(
           HdfsClientConfigKeys.BlockWrite.LOCATEFOLLOWINGBLOCK_INITIAL_DELAY_MS_KEY,
-          1000);
+          initialDelayTestValue);
+      conf.setInt(
+          HdfsClientConfigKeys.BlockWrite.LOCATEFOLLOWINGBLOCK_MAX_DELAY_MS_KEY,
+          maxDelayTestValue);
+      conf.setInt(
+          HdfsClientConfigKeys.BlockWrite.LOCATEFOLLOWINGBLOCK_RETRIES_KEY,
+          retryTestValue);
       client = new DFSClient(null, nn, conf, null);
-      assertEquals(client.getConf().
-          getBlockWriteLocateFollowingInitialDelayMs(), 1000);
+      assertEquals(initialDelayTestValue, client.getConf().
+          getBlockWriteLocateFollowingInitialDelayMs());
+      assertEquals(maxDelayTestValue, client.getConf().
+          getBlockWriteLocateFollowingMaxDelayMs());
+      assertEquals(retryTestValue, client.getConf().
+          getNumBlockWriteLocateFollowingRetry());
     } finally {
       cluster.shutdown();
+    }
+  }
+
+  @Test(timeout=120000)
+  public void testLeaseRenewAndDFSOutputStreamDeadLock() throws Exception {
+    CountDownLatch testLatch = new CountDownLatch(1);
+    DFSClientFaultInjector.set(new DFSClientFaultInjector() {
+      public void delayWhenRenewLeaseTimeout() {
+        try {
+          testLatch.await();
+        } catch (InterruptedException e) {
+          e.printStackTrace();
+        }
+      }
+    });
+    String file1 = "/testFile1";
+    // Set short retry timeouts so this test runs faster
+    conf.setInt(DFS_CLIENT_SOCKET_TIMEOUT_KEY, 1000);
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
+    try {
+      cluster.waitActive();
+      final NamenodeProtocols spyNN = spy(cluster.getNameNodeRpc());
+
+      doAnswer(new SleepFixedTimeAnswer(1500, testLatch)).when(spyNN).complete(
+          anyString(), anyString(), any(ExtendedBlock.class), anyLong());
+      DFSClient client = new DFSClient(null, spyNN, conf, null);
+      // Get hold of the lease renewer instance used by the client
+      LeaseRenewer leaseRenewer = client.getLeaseRenewer();
+      leaseRenewer.setRenewalTime(100);
+      final OutputStream out1 = client.create(file1, false);
+
+      out1.write(new byte[256]);
+
+      Thread closeThread = new Thread(new Runnable() {
+        @Override public void run() {
+          try {
+            //1. trigger get LeaseRenewer lock
+            Mockito.doThrow(new SocketTimeoutException()).when(spyNN)
+                .renewLease(Mockito.anyString());
+          } catch (IOException e) {
+            e.printStackTrace();
+          }
+        }
+      });
+      closeThread.start();
+
+      //2. trigger get DFSOutputStream lock
+      out1.close();
+
+    } finally {
+      cluster.shutdown();
+    }
+  }
+
+  private static class SleepFixedTimeAnswer implements Answer<Object> {
+    private final int sleepTime;
+    private final CountDownLatch testLatch;
+
+    SleepFixedTimeAnswer(int sleepTime, CountDownLatch latch) {
+      this.sleepTime = sleepTime;
+      this.testLatch = latch;
+    }
+
+    @Override
+    public Object answer(InvocationOnMock invocation) throws Throwable {
+      boolean interrupted = false;
+      try {
+        Thread.sleep(sleepTime);
+      } catch (InterruptedException ie) {
+        interrupted = true;
+      }
+      try {
+        return invocation.callRealMethod();
+      } finally {
+        testLatch.countDown();
+        if (interrupted) {
+          Thread.currentThread().interrupt();
+        }
+      }
     }
   }
 }

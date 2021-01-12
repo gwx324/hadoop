@@ -29,10 +29,12 @@ import org.apache.hadoop.fs.local.LocalConfigKeys;
 import org.apache.hadoop.ha.SshFenceByTcpPort;
 import org.apache.hadoop.ha.ZKFailoverController;
 import org.apache.hadoop.http.HttpServer2;
+import org.apache.hadoop.io.erasurecode.CodecUtil;
 import org.apache.hadoop.io.nativeio.NativeIO;
 import org.apache.hadoop.security.CompositeGroupsMapping;
 import org.apache.hadoop.security.HttpCrossOriginFilterInitializer;
 import org.apache.hadoop.security.LdapGroupsMapping;
+import org.apache.hadoop.security.RuleBasedLdapGroupsMapping;
 import org.apache.hadoop.security.http.CrossOriginFilter;
 import org.apache.hadoop.security.ssl.SSLFactory;
 
@@ -49,6 +51,7 @@ import org.apache.hadoop.security.ssl.SSLFactory;
  * {@link org.apache.hadoop.security.LdapGroupsMapping}
  * {@link org.apache.hadoop.security.http.CrossOriginFilter}
  * {@link org.apache.hadoop.security.ssl.SSLFactory}
+ * {@link org.apache.hadoop.io.erasurecode.rawcoder.CoderUtil}
  * <p></p>
  * against core-site.xml for missing properties.  Currently only
  * throws an error if the class is missing a property.
@@ -71,7 +74,9 @@ public class TestCommonConfigurationFields extends TestConfigurationFieldsBase {
         LdapGroupsMapping.class,
         ZKFailoverController.class,
         SSLFactory.class,
-        CompositeGroupsMapping.class
+        CompositeGroupsMapping.class,
+        CodecUtil.class,
+        RuleBasedLdapGroupsMapping.class
         };
 
     // Initialize used variables
@@ -86,22 +91,94 @@ public class TestCommonConfigurationFields extends TestConfigurationFieldsBase {
     // Lots of properties not in the above classes
     xmlPropsToSkipCompare.add("fs.ftp.password.localhost");
     xmlPropsToSkipCompare.add("fs.ftp.user.localhost");
+    xmlPropsToSkipCompare.add("fs.ftp.data.connection.mode");
+    xmlPropsToSkipCompare.add("fs.ftp.transfer.mode");
+    xmlPropsToSkipCompare.add("fs.ftp.timeout");
     xmlPropsToSkipCompare.add("hadoop.tmp.dir");
     xmlPropsToSkipCompare.add("nfs3.mountd.port");
     xmlPropsToSkipCompare.add("nfs3.server.port");
-    xmlPropsToSkipCompare.add("test.fs.s3n.name");
+    xmlPropsToSkipCompare.add("fs.viewfs.rename.strategy");
 
-    // S3N/S3A properties are in a different subtree.
-    // - org.apache.hadoop.fs.s3native.S3NativeFileSystemConfigKeys
+    // S3A properties are in a different subtree.
     xmlPrefixToSkipCompare.add("fs.s3a.");
-    xmlPrefixToSkipCompare.add("fs.s3n.");
-    xmlPrefixToSkipCompare.add("s3native.");
+
+    // O3 properties are in a different subtree.
+    xmlPrefixToSkipCompare.add("fs.o3fs.");
+
+    //ftp properties are in a different subtree.
+    // - org.apache.hadoop.fs.ftp.FTPFileSystem.
+    xmlPrefixToSkipCompare.add("fs.ftp.impl");
+
+    // WASB properties are in a different subtree.
+    // - org.apache.hadoop.fs.azure.NativeAzureFileSystem
+    xmlPrefixToSkipCompare.add("fs.wasb.impl");
+    xmlPrefixToSkipCompare.add("fs.wasbs.impl");
+    xmlPrefixToSkipCompare.add("fs.azure.");
+    xmlPrefixToSkipCompare.add("fs.abfs.impl");
+    xmlPrefixToSkipCompare.add("fs.abfss.impl");
+
 
     // ADL properties are in a different subtree
     // - org.apache.hadoop.hdfs.web.ADLConfKeys
     xmlPrefixToSkipCompare.add("adl.");
-    xmlPropsToSkipCompare.add("fs.adl.impl");
+    xmlPrefixToSkipCompare.add("fs.adl.");
     xmlPropsToSkipCompare.add("fs.AbstractFileSystem.adl.impl");
+
+    // ViewfsOverloadScheme target fs impl property keys are dynamically
+    // constructed and they are advanced props.
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.abfs.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.abfss.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.file.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.ftp.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.hdfs.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.http.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.https.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.ofs.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.o3fs.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.oss.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.s3a.impl");
+    xmlPropsToSkipCompare.
+        add("fs.viewfs.overload.scheme.target.swebhdfs.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.webhdfs.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.wasb.impl");
+    xmlPropsToSkipCompare.add("fs.viewfs.overload.scheme.target.swift.impl");
+
+    // Azure properties are in a different class
+    // - org.apache.hadoop.fs.azure.AzureNativeFileSystemStore
+    // - org.apache.hadoop.fs.azure.SASKeyGeneratorImpl
+    xmlPropsToSkipCompare.add("fs.azure.sas.expiry.period");
+    xmlPropsToSkipCompare.add("fs.azure.local.sas.key.mode");
+    xmlPropsToSkipCompare.add("fs.azure.secure.mode");
+    xmlPropsToSkipCompare.add("fs.azure.authorization");
+    xmlPropsToSkipCompare.add("fs.azure.authorization.caching.enable");
+    xmlPropsToSkipCompare.add("fs.azure.saskey.usecontainersaskeyforallaccess");
+    xmlPropsToSkipCompare.add("fs.azure.user.agent.prefix");
+
+    // FairCallQueue configs that includes dynamic ports in its keys
+    xmlPropsToSkipCompare.add("ipc.[port_number].backoff.enable");
+    xmlPropsToSkipCompare.add("ipc.[port_number].callqueue.impl");
+    xmlPropsToSkipCompare.add("ipc.[port_number].scheduler.impl");
+    xmlPropsToSkipCompare.add("ipc.[port_number].scheduler.priority.levels");
+    xmlPropsToSkipCompare.add(
+        "ipc.[port_number].faircallqueue.multiplexer.weights");
+    xmlPropsToSkipCompare.add("ipc.[port_number].identity-provider.impl");
+    xmlPropsToSkipCompare.add("ipc.[port_number].cost-provider.impl");
+    xmlPropsToSkipCompare.add("ipc.[port_number].decay-scheduler.period-ms");
+    xmlPropsToSkipCompare.add("ipc.[port_number].decay-scheduler.decay-factor");
+    xmlPropsToSkipCompare.add("ipc.[port_number].decay-scheduler.thresholds");
+    xmlPropsToSkipCompare.add(
+        "ipc.[port_number].decay-scheduler.backoff.responsetime.enable");
+    xmlPropsToSkipCompare.add(
+        "ipc.[port_number].decay-scheduler.backoff.responsetime.thresholds");
+    xmlPropsToSkipCompare.add(
+        "ipc.[port_number].decay-scheduler.metrics.top.user.count");
+    xmlPropsToSkipCompare.add(
+        "ipc.[port_number].decay-scheduler.service-users");
+    xmlPropsToSkipCompare.add("ipc.[port_number].weighted-cost.lockshared");
+    xmlPropsToSkipCompare.add("ipc.[port_number].weighted-cost.lockexclusive");
+    xmlPropsToSkipCompare.add("ipc.[port_number].weighted-cost.handler");
+    xmlPropsToSkipCompare.add("ipc.[port_number].weighted-cost.lockfree");
+    xmlPropsToSkipCompare.add("ipc.[port_number].weighted-cost.response");
 
     // Deprecated properties.  These should eventually be removed from the
     // class.
@@ -114,8 +191,6 @@ public class TestCommonConfigurationFields extends TestConfigurationFieldsBase {
     configurationPropsToSkipCompare.add("dr.who");
 
     // XML deprecated properties.
-    xmlPropsToSkipCompare.add("io.seqfile.lazydecompress");
-    xmlPropsToSkipCompare.add("io.seqfile.sorter.recordlimit");
     // - org.apache.hadoop.hdfs.client.HdfsClientConfigKeys
     xmlPropsToSkipCompare
         .add("io.bytes.per.checksum");
@@ -172,6 +247,6 @@ public class TestCommonConfigurationFields extends TestConfigurationFieldsBase {
     // - org.apache.hadoop.io.SequenceFile
     xmlPropsToSkipCompare.add("io.seqfile.local.dir");
 
-
+    xmlPropsToSkipCompare.add("hadoop.http.sni.host.check.enabled");
   }
 }

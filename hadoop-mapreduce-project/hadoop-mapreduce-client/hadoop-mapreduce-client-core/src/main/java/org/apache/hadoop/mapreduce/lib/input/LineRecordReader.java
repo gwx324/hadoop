@@ -24,9 +24,10 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FutureDataInputStreamBuilder;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.Seekable;
+import org.apache.hadoop.fs.impl.FutureIOSupport;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.compress.CodecPool;
@@ -36,10 +37,11 @@ import org.apache.hadoop.io.compress.SplittableCompressionCodec;
 import org.apache.hadoop.io.compress.CompressionCodecFactory;
 import org.apache.hadoop.io.compress.Decompressor;
 import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.Log;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Treats keys as offset in file and value as line. 
@@ -47,7 +49,8 @@ import org.apache.commons.logging.Log;
 @InterfaceAudience.LimitedPrivate({"MapReduce", "Pig"})
 @InterfaceStability.Evolving
 public class LineRecordReader extends RecordReader<LongWritable, Text> {
-  private static final Log LOG = LogFactory.getLog(LineRecordReader.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(LineRecordReader.class);
   public static final String MAX_LINE_LENGTH = 
     "mapreduce.input.linerecordreader.line.maxlength";
 
@@ -81,8 +84,12 @@ public class LineRecordReader extends RecordReader<LongWritable, Text> {
     final Path file = split.getPath();
 
     // open the file and seek to the start of the split
-    final FileSystem fs = file.getFileSystem(job);
-    fileIn = fs.open(file);
+    final FutureDataInputStreamBuilder builder =
+        file.getFileSystem(job).openFile(file);
+    FutureIOSupport.propagateOptions(builder, job,
+        MRJobConfig.INPUT_FILE_OPTION_PREFIX,
+        MRJobConfig.INPUT_FILE_MANDATORY_PREFIX);
+    fileIn = FutureIOSupport.awaitFuture(builder.build());
     
     CompressionCodec codec = new CompressionCodecFactory(job).getCodec(file);
     if (null!=codec) {

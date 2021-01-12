@@ -60,6 +60,8 @@ function calculate_classpath()
 
 function run_sls_generator()
 {
+  local args
+
   if [[ -z "${outputprefix}" ]] ; then
     outputprefix="sls"
   fi
@@ -68,8 +70,7 @@ function run_sls_generator()
   hadoop_add_param args -outputJobs "-outputJobs ${outputdir}/${outputprefix}-jobs.json"
   hadoop_add_param args -outputNodes "-outputNodes ${outputdir}/${outputprefix}-nodes.json"
 
-  hadoop_debug "Appending HADOOP_CLIENT_OPTS onto HADOOP_OPTS"
-  HADOOP_OPTS="${HADOOP_OPTS} ${HADOOP_CLIENT_OPTS}"
+  hadoop_add_client_opts
 
   hadoop_finalize
   # shellcheck disable=SC2086
@@ -89,6 +90,7 @@ HADOOP_LIBEXEC_DIR="${HADOOP_LIBEXEC_DIR:-$HADOOP_DEFAULT_LIBEXEC_DIR}"
 # shellcheck disable=SC2034
 HADOOP_NEW_CONFIG=true
 if [[ -f "${HADOOP_LIBEXEC_DIR}/hadoop-config.sh" ]]; then
+  # shellcheck disable=SC1090
   . "${HADOOP_LIBEXEC_DIR}/hadoop-config.sh"
 else
   echo "ERROR: Cannot execute ${HADOOP_LIBEXEC_DIR}/hadoop-config.sh." 2>&1

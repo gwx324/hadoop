@@ -20,17 +20,23 @@ package org.apache.hadoop.yarn.server.resourcemanager.webapp.dao;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Map;
 import java.util.Set;
 
 import javax.xml.bind.annotation.XmlAccessType;
 import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlRootElement;
 
+import org.apache.hadoop.yarn.api.records.NodeAttribute;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.server.api.records.OpportunisticContainersStatus;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNodeReport;
+
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 @XmlRootElement(name = "node")
 @XmlAccessorType(XmlAccessType.FIELD)
@@ -38,10 +44,10 @@ public class NodeInfo {
 
   protected String rack;
   protected NodeState state;
-  protected String id;
+  private String id;
   protected String nodeHostName;
   protected String nodeHTTPAddress;
-  protected long lastHealthUpdate;
+  private long lastHealthUpdate;
   protected String version;
   protected String healthReport;
   protected int numContainers;
@@ -49,8 +55,19 @@ public class NodeInfo {
   protected long availMemoryMB;
   protected long usedVirtualCores;
   protected long availableVirtualCores;
+  private float memUtilization;
+  private float cpuUtilization;
+  private int numRunningOpportContainers;
+  private long usedMemoryOpportGB;
+  private long usedVirtualCoresOpport;
+  private int numQueuedContainers;
   protected ArrayList<String> nodeLabels = new ArrayList<String>();
+  private AllocationTagsInfo allocationTags;
   protected ResourceUtilizationInfo resourceUtilization;
+  protected ResourceInfo usedResource;
+  protected ResourceInfo availableResource;
+  protected NodeAttributesInfo nodeAttributesInfo;
+  private ResourceInfo totalResource;
 
   public NodeInfo() {
   } // JAXB needs this
@@ -66,7 +83,27 @@ public class NodeInfo {
       this.usedMemoryMB = report.getUsedResource().getMemorySize();
       this.availMemoryMB = report.getAvailableResource().getMemorySize();
       this.usedVirtualCores = report.getUsedResource().getVirtualCores();
-      this.availableVirtualCores = report.getAvailableResource().getVirtualCores();
+      this.availableVirtualCores =
+          report.getAvailableResource().getVirtualCores();
+      this.usedResource = new ResourceInfo(report.getUsedResource());
+      this.availableResource = new ResourceInfo(report.getAvailableResource());
+      Resource totalPhysical = ni.getPhysicalResource();
+      long nodeMem;
+      long nodeCores;
+      if (totalPhysical == null) {
+        nodeMem =
+            this.usedMemoryMB + this.availMemoryMB;
+        // If we don't know the number of physical cores, assume 1. Not
+        // accurate but better than nothing.
+        nodeCores = 1;
+      } else {
+        nodeMem = totalPhysical.getMemorySize();
+        nodeCores = totalPhysical.getVirtualCores();
+      }
+      this.memUtilization = nodeMem <= 0 ? 0
+          : (float)report.getUtilization().getPhysicalMemory() * 100F / nodeMem;
+      this.cpuUtilization =
+          (float)report.getUtilization().getCPU() * 100F / nodeCores;
     }
     this.id = id.toString();
     this.rack = ni.getRackName();
@@ -76,12 +113,44 @@ public class NodeInfo {
     this.lastHealthUpdate = ni.getLastHealthReportTime();
     this.healthReport = String.valueOf(ni.getHealthReport());
     this.version = ni.getNodeManagerVersion();
-    
+    this.totalResource = new ResourceInfo(ni.getTotalCapability());
+
+    // Status of opportunistic containers.
+    this.numRunningOpportContainers = 0;
+    this.usedMemoryOpportGB = 0;
+    this.usedVirtualCoresOpport = 0;
+    this.numQueuedContainers = 0;
+    OpportunisticContainersStatus opportStatus =
+        ni.getOpportunisticContainersStatus();
+    if (opportStatus != null) {
+      this.numRunningOpportContainers =
+          opportStatus.getRunningOpportContainers();
+      this.usedMemoryOpportGB = opportStatus.getOpportMemoryUsed();
+      this.usedVirtualCoresOpport = opportStatus.getOpportCoresUsed();
+      this.numQueuedContainers = opportStatus.getQueuedOpportContainers();
+    }
+
     // add labels
     Set<String> labelSet = ni.getNodeLabels();
     if (labelSet != null) {
       nodeLabels.addAll(labelSet);
       Collections.sort(nodeLabels);
+    }
+
+    // add attributes
+    Set<NodeAttribute> attrs = ni.getAllNodeAttributes();
+    nodeAttributesInfo = new NodeAttributesInfo();
+    for (NodeAttribute attribute : attrs) {
+      NodeAttributeInfo info = new NodeAttributeInfo(attribute);
+      this.nodeAttributesInfo.addNodeAttributeInfo(info);
+    }
+
+    // add allocation tags
+    allocationTags = new AllocationTagsInfo();
+    Map<String, Long> allocationTagsInfo = ni.getAllocationTagsWithCount();
+    if (allocationTagsInfo != null) {
+      allocationTagsInfo.forEach((tag, count) ->
+          allocationTags.addAllocationTag(new AllocationTagInfo(tag, count)));
     }
 
     // update node and containers resource utilization
@@ -140,11 +209,82 @@ public class NodeInfo {
     return this.availableVirtualCores;
   }
 
+  public int getNumRunningOpportContainers() {
+    return numRunningOpportContainers;
+  }
+
+  public long getUsedMemoryOpportGB() {
+    return usedMemoryOpportGB;
+  }
+
+  public long getUsedVirtualCoresOpport() {
+    return usedVirtualCoresOpport;
+  }
+
+  public int getNumQueuedContainers() {
+    return numQueuedContainers;
+  }
+
   public ArrayList<String> getNodeLabels() {
     return this.nodeLabels;
   }
 
+  public ResourceInfo getUsedResource() {
+    return usedResource;
+  }
+
+  public void setUsedResource(ResourceInfo used) {
+    this.usedResource = used;
+  }
+
+  public ResourceInfo getAvailableResource() {
+    return availableResource;
+  }
+
+  public void setAvailableResource(ResourceInfo avail) {
+    this.availableResource = avail;
+  }
+
   public ResourceUtilizationInfo getResourceUtilization() {
     return this.resourceUtilization;
+  }
+
+  public float getMemUtilization() {
+    return memUtilization;
+  }
+
+  public void setMemUtilization(float util) {
+    this.memUtilization = util;
+  }
+
+  public float getVcoreUtilization() {
+    return cpuUtilization;
+  }
+
+  public void setVcoreUtilization(float util) {
+    this.cpuUtilization = util;
+  }
+
+  public String getAllocationTagsSummary() {
+    return this.allocationTags == null ? "" :
+        this.allocationTags.toString();
+  }
+
+  @VisibleForTesting
+  public void setId(String id) {
+    this.id = id;
+  }
+
+  @VisibleForTesting
+  public void setLastHealthUpdate(long lastHealthUpdate) {
+    this.lastHealthUpdate = lastHealthUpdate;
+  }
+
+  public void setTotalResource(ResourceInfo total) {
+    this.totalResource = total;
+  }
+
+  public ResourceInfo getTotalResource() {
+    return this.totalResource;
   }
 }

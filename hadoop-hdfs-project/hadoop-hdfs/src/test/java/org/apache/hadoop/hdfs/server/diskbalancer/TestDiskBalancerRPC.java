@@ -17,6 +17,7 @@
 
 package org.apache.hadoop.hdfs.server.diskbalancer;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -36,7 +37,6 @@ import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerCluster;
 import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerDataNode;
 import org.apache.hadoop.hdfs.server.diskbalancer.planner.GreedyPlanner;
 import org.apache.hadoop.hdfs.server.diskbalancer.planner.NodePlan;
-import org.codehaus.jackson.map.ObjectMapper;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -51,7 +51,7 @@ import java.util.Random;
 import static org.apache.hadoop.hdfs.server.datanode.DiskBalancerWorkStatus.Result.NO_PLAN;
 import static org.apache.hadoop.hdfs.server.datanode.DiskBalancerWorkStatus.Result.PLAN_DONE;
 import static org.apache.hadoop.hdfs.server.datanode.DiskBalancerWorkStatus.Result.PLAN_UNDER_PROGRESS;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertEquals;
 
 /**
  * Test DiskBalancer RPC.
@@ -265,7 +265,7 @@ public class TestDiskBalancerRPC {
         dest = (FsVolumeImpl) refs.get(1);
         DiskBalancerTestUtil.moveAllDataToDestVolume(dnNode.getFSDataset(),
             source, dest);
-        assertTrue(DiskBalancerTestUtil.getBlockCount(source) == 0);
+        assertEquals(0, DiskBalancerTestUtil.getBlockCount(source, false));
       } finally {
         refs.close();
       }
@@ -317,7 +317,7 @@ public class TestDiskBalancerRPC {
       plan = new NodePlan(node.getDataNodeName(), node.getDataNodePort());
       planner.balanceVolumeSet(node, node.getVolumeSets().get("DISK"), plan);
       planVersion = 1;
-      planHash = DigestUtils.sha512Hex(plan.toJson());
+      planHash = DigestUtils.sha1Hex(plan.toJson());
       return this;
     }
   }

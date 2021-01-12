@@ -18,19 +18,20 @@
 
 package org.apache.hadoop.security.ssl;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.security.cert.CertificateException;
@@ -47,7 +48,8 @@ public final class ReloadingX509TrustManager
   implements X509TrustManager, Runnable {
 
   @VisibleForTesting
-  static final Log LOG = LogFactory.getLog(ReloadingX509TrustManager.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(ReloadingX509TrustManager.class);
   @VisibleForTesting
   static final String RELOAD_ERROR_MESSAGE =
       "Could not load truststore (keep using existing one) : ";
@@ -165,10 +167,10 @@ public final class ReloadingX509TrustManager
   throws IOException, GeneralSecurityException {
     X509TrustManager trustManager = null;
     KeyStore ks = KeyStore.getInstance(type);
-    lastLoaded = file.lastModified();
-    FileInputStream in = new FileInputStream(file);
+    InputStream in = Files.newInputStream(file.toPath());
     try {
-      ks.load(in, password.toCharArray());
+      ks.load(in, (password == null) ? null : password.toCharArray());
+      lastLoaded = file.lastModified();
       LOG.debug("Loaded truststore '" + file + "'");
     } finally {
       in.close();

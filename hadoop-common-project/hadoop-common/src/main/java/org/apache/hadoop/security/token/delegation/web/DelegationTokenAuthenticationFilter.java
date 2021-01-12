@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.security.token.delegation.web;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -29,6 +29,7 @@ import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.security.authentication.server.AuthenticationHandler;
 import org.apache.hadoop.security.authentication.server.AuthenticationToken;
 import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
+import org.apache.hadoop.security.authentication.server.MultiSchemeAuthenticationHandler;
 import org.apache.hadoop.security.authentication.server.PseudoAuthenticationHandler;
 import org.apache.hadoop.security.authentication.util.ZKSignerSecretProvider;
 import org.apache.hadoop.security.authorize.AuthorizationException;
@@ -38,7 +39,8 @@ import org.apache.hadoop.security.token.delegation.ZKDelegationTokenSecretManage
 import org.apache.hadoop.util.HttpExceptionUtils;
 import org.apache.http.NameValuePair;
 import org.apache.http.client.utils.URLEncodedUtils;
-import org.codehaus.jackson.map.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.servlet.FilterChain;
 import javax.servlet.FilterConfig;
@@ -49,19 +51,16 @@ import javax.servlet.http.HttpServletRequestWrapper;
 import javax.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
-import java.io.Writer;
 import java.nio.charset.Charset;
 import java.security.Principal;
 import java.util.Enumeration;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Properties;
 
 /**
  *  The <code>DelegationTokenAuthenticationFilter</code> filter is a
  *  {@link AuthenticationFilter} with Hadoop Delegation Token support.
- *  <p/>
+ *  <p>
  *  By default it uses it own instance of the {@link
  *  AbstractDelegationTokenSecretManager}. For situations where an external
  *  <code>AbstractDelegationTokenSecretManager</code> is required (i.e. one that
@@ -81,10 +80,13 @@ public class DelegationTokenAuthenticationFilter
   private static final String ERROR_EXCEPTION_JSON = "exception";
   private static final String ERROR_MESSAGE_JSON = "message";
 
+  private static final Logger LOG = LoggerFactory.getLogger(
+          DelegationTokenAuthenticationFilter.class);
+
   /**
    * Sets an external <code>DelegationTokenSecretManager</code> instance to
    * manage creation and verification of Delegation Tokens.
-   * <p/>
+   * <p>
    * This is useful for use cases where secrets must be shared across multiple
    * services.
    */
@@ -137,13 +139,16 @@ public class DelegationTokenAuthenticationFilter
     } else if (authType.equals(KerberosAuthenticationHandler.TYPE)) {
       props.setProperty(AUTH_TYPE,
           KerberosDelegationTokenAuthenticationHandler.class.getName());
+    } else if (authType.equals(MultiSchemeAuthenticationHandler.TYPE)) {
+      props.setProperty(AUTH_TYPE,
+          MultiSchemeDelegationTokenAuthenticationHandler.class.getName());
     }
   }
 
   /**
    * Returns the proxyuser configuration. All returned properties must start
    * with <code>proxyuser.</code>'
-   * <p/>
+   * <p>
    * Subclasses may override this method if the proxyuser configuration is 
    * read from other place than the filter init parameters.
    *
@@ -261,6 +266,11 @@ public class DelegationTokenAuthenticationFilter
             HttpExceptionUtils.createServletExceptionResponse(response,
                 HttpServletResponse.SC_FORBIDDEN, ex);
             requestCompleted = true;
+            if (LOG.isDebugEnabled()) {
+              LOG.debug("Authentication exception: " + ex.getMessage(), ex);
+            } else {
+              LOG.warn("Authentication exception: " + ex.getMessage());
+            }
           }
         }
       }
@@ -297,5 +307,4 @@ public class DelegationTokenAuthenticationFilter
       }
     }
   }
-
 }

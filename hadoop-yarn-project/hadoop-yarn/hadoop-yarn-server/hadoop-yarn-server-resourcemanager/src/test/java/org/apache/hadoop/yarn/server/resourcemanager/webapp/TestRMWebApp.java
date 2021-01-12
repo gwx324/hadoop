@@ -21,18 +21,19 @@ package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 import static org.apache.hadoop.yarn.server.resourcemanager.MockNodes.newResource;
 import static org.apache.hadoop.yarn.webapp.Params.TITLE;
 import static org.junit.Assert.assertEquals;
-import static org.mockito.Matchers.any;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.yarn.api.ApplicationBaseProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsResponse;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
@@ -52,6 +53,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.RMContextImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.applicationsmanager.MockAsm;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NullRMNodeLabelsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
@@ -62,6 +64,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSec
 import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
+import org.apache.hadoop.yarn.server.webapp.WebPageUtils;
 import org.apache.hadoop.yarn.util.StringHelper;
 import org.apache.hadoop.yarn.webapp.WebApps;
 import org.apache.hadoop.yarn.webapp.YarnWebParams;
@@ -69,7 +72,7 @@ import org.apache.hadoop.yarn.webapp.test.WebAppTests;
 import org.junit.Assert;
 import org.junit.Test;
 
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 import com.google.inject.Binder;
 import com.google.inject.Injector;
 import com.google.inject.Module;
@@ -102,8 +105,6 @@ public class TestRMWebApp {
         try {
           ResourceManager mockRm = mockRm(3, 1, 2, 8*GiB);
           binder.bind(ResourceManager.class).toInstance(mockRm);
-          binder.bind(ApplicationBaseProtocol.class)
-              .toInstance(mockRm.getClientRMService());
         } catch (IOException e) {
           throw new IllegalStateException(e);
         }
@@ -161,6 +162,40 @@ public class TestRMWebApp {
 
   }
 
+  @Test
+  public void testRMAppColumnIndices() {
+
+    // Find the columns to check
+    List<Integer> colsId = new LinkedList<Integer>();
+    List<Integer> colsTime = new LinkedList<Integer>();
+    List<Integer> colsProgress = new LinkedList<Integer>();
+    for (int i = 0; i < RMAppsBlock.COLUMNS.length; i++) {
+      ColumnHeader col = RMAppsBlock.COLUMNS[i];
+      if (col.getCData().contains("ID")) {
+        colsId.add(i);
+      } else if (col.getCData().contains("Time")) {
+        colsTime.add(i);
+      } else if (col.getCData().contains("Progress")) {
+        colsProgress.add(i);
+      }
+    }
+
+    // Verify that the table JS header matches the columns
+    String tableInit = WebPageUtils.appsTableInit(true);
+    for (String tableLine : tableInit.split("\\n")) {
+      if (tableLine.contains("parseHadoopID")) {
+        assertTrue(tableLine + " should have id " + colsId,
+            tableLine.contains(colsId.toString()));
+      } else if (tableLine.contains("renderHadoopDate")) {
+        assertTrue(tableLine + " should have dates " + colsTime,
+            tableLine.contains(colsTime.toString()));
+      } else if (tableLine.contains("parseHadoopProgress")) {
+        assertTrue(tableLine + " should have progress " + colsProgress,
+            tableLine.contains(colsProgress.toString()));
+      }
+    }
+  }
+
   public static RMContext mockRMContext(int numApps, int racks, int numNodes,
       int mbsPerNode) {
     final List<RMApp> apps = MockAsm.newApplications(numApps);
@@ -200,6 +235,7 @@ public class TestRMWebApp {
        }
      }; 
     rmContext.setNodeLabelManager(new NullRMNodeLabelsManager());
+    rmContext.setYarnConfiguration(new YarnConfiguration());
     return rmContext;
   }
 
@@ -211,8 +247,13 @@ public class TestRMWebApp {
   }
 
   public static ResourceManager mockRm(RMContext rmContext) throws IOException {
+    return mockRm(rmContext, false);
+  }
+
+  public static ResourceManager mockRm(RMContext rmContext,
+      boolean useDRC) throws IOException {
     ResourceManager rm = mock(ResourceManager.class);
-    ResourceScheduler rs = mockCapacityScheduler();
+    ResourceScheduler rs = mockCapacityScheduler(useDRC);
     ApplicationACLsManager aclMgr = mockAppACLsManager();
     ClientRMService clientRMService = mockClientRMService(rmContext);
     when(rm.getResourceScheduler()).thenReturn(rs);
@@ -223,17 +264,25 @@ public class TestRMWebApp {
   }
 
   public static CapacityScheduler mockCapacityScheduler() throws IOException {
+    return mockCapacityScheduler(false);
+  }
+
+  public static CapacityScheduler mockCapacityScheduler(boolean useDRC)
+      throws IOException {
     // stolen from TestCapacityScheduler
     CapacitySchedulerConfiguration conf = new CapacitySchedulerConfiguration();
-    setupQueueConfiguration(conf);
+    setupQueueConfiguration(conf, useDRC);
 
     CapacityScheduler cs = new CapacityScheduler();
-    cs.setConf(new YarnConfiguration());
+    YarnConfiguration yarnConf = new YarnConfiguration();
+    cs.setConf(yarnConf);
     RMContext rmContext = new RMContextImpl(null, null, null, null, null,
         null, new RMContainerTokenSecretManager(conf),
         new NMTokenSecretManagerInRM(conf),
         new ClientToAMTokenSecretManagerInRM(), null);
-    rmContext.setNodeLabelManager(new NullRMNodeLabelsManager());
+    RMNodeLabelsManager labelManager = new NullRMNodeLabelsManager();
+    labelManager.init(yarnConf);
+    rmContext.setNodeLabelManager(labelManager);
     cs.setRMContext(rmContext);
     cs.init(conf);
     return cs;
@@ -255,7 +304,7 @@ public class TestRMWebApp {
               app.getName(), (String) null, 0, (Token) null,
               app.createApplicationState(),
               app.getDiagnostics().toString(), (String) null,
-              app.getStartTime(), app.getFinishTime(),
+              app.getStartTime(), app.getLaunchTime(), app.getFinishTime(),
               app.getFinalApplicationStatus(),
               (ApplicationResourceUsageReport) null, app.getTrackingUrl(),
               app.getProgress(), app.getApplicationType(), (Token) null);
@@ -267,13 +316,18 @@ public class TestRMWebApp {
       when(clientRMService.getApplications(any(GetApplicationsRequest.class)))
           .thenReturn(response);
     } catch (YarnException e) {
-      Assert.fail("Exception is not expteced.");
+      Assert.fail("Exception is not expected.");
     }
     return clientRMService;
   }
 
 
   static void setupQueueConfiguration(CapacitySchedulerConfiguration conf) {
+    setupQueueConfiguration(conf, false);
+  }
+
+  static void setupQueueConfiguration(CapacitySchedulerConfiguration conf,
+      boolean useDRC) {
     // Define top-level queues
     conf.setQueues(CapacitySchedulerConfiguration.ROOT, new String[] {"a", "b", "c"});
 
@@ -319,6 +373,10 @@ public class TestRMWebApp {
     conf.setCapacity(C11, 15);
     conf.setCapacity(C12, 45);
     conf.setCapacity(C13, 40);
+    if (useDRC) {
+      conf.set("yarn.scheduler.capacity.resource-calculator",
+          "org.apache.hadoop.yarn.util.resource.DominantResourceCalculator");
+    }
   }
 
   public static ResourceManager mockFifoRm(int apps, int racks, int nodes,

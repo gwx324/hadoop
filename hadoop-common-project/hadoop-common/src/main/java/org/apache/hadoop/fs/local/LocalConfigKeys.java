@@ -22,6 +22,7 @@ import java.io.IOException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.fs.ChecksumFileSystem;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.util.DataChecksum;
@@ -54,6 +55,8 @@ public class LocalConfigKeys extends CommonConfigurationKeys {
   public static final long FS_TRASH_INTERVAL_DEFAULT = 0;
   public static final DataChecksum.Type CHECKSUM_TYPE_DEFAULT =
       DataChecksum.Type.CRC32;
+  public static final String KEY_PROVIDER_URI_DEFAULT = "";
+
   public static FsServerDefaults getServerDefaults() throws IOException {
     return new FsServerDefaults(
         BLOCK_SIZE_DEFAULT,
@@ -63,7 +66,8 @@ public class LocalConfigKeys extends CommonConfigurationKeys {
         STREAM_BUFFER_SIZE_DEFAULT,
         ENCRYPT_DATA_TRANSFER_DEFAULT,
         FS_TRASH_INTERVAL_DEFAULT,
-        CHECKSUM_TYPE_DEFAULT);
+        CHECKSUM_TYPE_DEFAULT,
+        KEY_PROVIDER_URI_DEFAULT);
   }
 }
   

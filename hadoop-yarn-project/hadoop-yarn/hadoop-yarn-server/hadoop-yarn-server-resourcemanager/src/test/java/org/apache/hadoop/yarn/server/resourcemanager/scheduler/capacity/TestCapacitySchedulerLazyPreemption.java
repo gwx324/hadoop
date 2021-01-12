@@ -18,14 +18,17 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
-import org.apache.hadoop.yarn.server.resourcemanager.monitor.SchedulingEditPolicy;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmissionData;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmitter;
+import org.apache.hadoop.yarn.server.resourcemanager.monitor.SchedulingMonitor;
+import org.apache.hadoop.yarn.server.resourcemanager.monitor.SchedulingMonitorManager;
 import org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity.ProportionalCapacityPreemptionPolicy;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
@@ -46,15 +49,13 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import static org.mockito.Mockito.mock;
-
 public class TestCapacitySchedulerLazyPreemption
     extends CapacitySchedulerPreemptionTestBase {
   @Override
   @Before
   public void setUp() throws Exception {
     super.setUp();
-    conf.setBoolean(CapacitySchedulerConfiguration.LAZY_PREEMPTION_ENALBED,
+    conf.setBoolean(CapacitySchedulerConfiguration.LAZY_PREEMPTION_ENABLED,
         true);
   }
 
@@ -94,7 +95,15 @@ public class TestCapacitySchedulerLazyPreemption
     RMNode rmNode2 = rm1.getRMContext().getRMNodes().get(nm2.getNodeId());
 
     // launch an app to queue, AM container should be launched in nm1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "a");
+    MockRMAppSubmissionData data1 =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data1);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     am1.allocate("*", 1 * GB, 7, new ArrayList<ContainerId>());
@@ -111,7 +120,15 @@ public class TestCapacitySchedulerLazyPreemption
     Assert.assertEquals(7, schedulerApp1.getLiveContainers().size());
 
     // Submit app2 to queue-c and asks for a 1G container for AM
-    RMApp app2 = rm1.submitApp(1 * GB, "app", "user", null, "c");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("c")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app2 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am2 = MockRM.launchAndRegisterAM(app2, rm1, nm2);
 
     // NM1/NM2 has available resource = 0G
@@ -126,7 +143,11 @@ public class TestCapacitySchedulerLazyPreemption
             Resources.createResource(1 * GB), 1)), null);
 
     // Get edit policy and do one update
-    SchedulingEditPolicy editPolicy = getSchedulingEditPolicy(rm1);
+    SchedulingMonitorManager smm = ((CapacityScheduler) rm1.
+        getResourceScheduler()).getSchedulingMonitorManager();
+    SchedulingMonitor smon = smm.getAvailableSchedulingMonitor();
+    ProportionalCapacityPreemptionPolicy editPolicy =
+        (ProportionalCapacityPreemptionPolicy) smon.getSchedulingEditPolicy();
 
     // Call edit schedule twice, and check if one container from app1 marked
     // to be "killable"
@@ -135,7 +156,8 @@ public class TestCapacitySchedulerLazyPreemption
 
     PreemptionManager pm = cs.getPreemptionManager();
     Map<ContainerId, RMContainer> killableContainers =
-        waitKillableContainersSize(pm, "a", RMNodeLabelsManager.NO_LABEL, 1);
+        waitKillableContainersSize(
+            pm, "root.a", RMNodeLabelsManager.NO_LABEL, 1);
     Assert.assertEquals(1, killableContainers.size());
     Assert.assertEquals(killableContainers.entrySet().iterator().next().getKey()
         .getApplicationAttemptId(), am1.getApplicationAttemptId());
@@ -149,6 +171,14 @@ public class TestCapacitySchedulerLazyPreemption
     // App1 has 6 containers, and app2 has 2 containers
     Assert.assertEquals(6, schedulerApp1.getLiveContainers().size());
     Assert.assertEquals(2, schedulerApp2.getLiveContainers().size());
+
+    // Ensure preemption metrics were recored.
+    Assert.assertEquals(
+        "Number of preempted containers incorrectly recorded:", 1,
+        cs.getQueue("a").getMetrics().getAggregatePreemptedContainers());
+    Assert.assertEquals(
+        "Number of preempted containers incorrectly recorded:", 1,
+        cs.getRootQueue().getMetrics().getAggregatePreemptedContainers());
 
     rm1.close();
   }
@@ -173,7 +203,15 @@ public class TestCapacitySchedulerLazyPreemption
     RMNode rmNode2 = rm1.getRMContext().getRMNodes().get(nm2.getNodeId());
 
     // launch an app to queue, AM container should be launched in nm1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "a");
+    MockRMAppSubmissionData data1 =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data1);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     am1.allocate("*", 1 * GB, 6, new ArrayList<ContainerId>());
@@ -190,7 +228,15 @@ public class TestCapacitySchedulerLazyPreemption
     Assert.assertEquals(7, schedulerApp1.getLiveContainers().size());
 
     // Submit app2 to queue-c and asks for a 1G container for AM
-    RMApp app2 = rm1.submitApp(1 * GB, "app", "user", null, "c");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("c")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app2 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am2 = MockRM.launchAndRegisterAM(app2, rm1, nm2);
 
     // NM1/NM2 has available resource = 0G
@@ -209,7 +255,11 @@ public class TestCapacitySchedulerLazyPreemption
             Resources.createResource(1 * GB), 1)), null);
 
     // Get edit policy and do one update
-    SchedulingEditPolicy editPolicy = getSchedulingEditPolicy(rm1);
+    SchedulingMonitorManager smm = ((CapacityScheduler) rm1.
+        getResourceScheduler()).getSchedulingMonitorManager();
+    SchedulingMonitor smon = smm.getAvailableSchedulingMonitor();
+    ProportionalCapacityPreemptionPolicy editPolicy =
+        (ProportionalCapacityPreemptionPolicy) smon.getSchedulingEditPolicy();
 
     // Call edit schedule twice, and check if one container from app1 marked
     // to be "killable"
@@ -218,7 +268,8 @@ public class TestCapacitySchedulerLazyPreemption
 
     PreemptionManager pm = cs.getPreemptionManager();
     Map<ContainerId, RMContainer> killableContainers =
-        waitKillableContainersSize(pm, "a", RMNodeLabelsManager.NO_LABEL, 1);
+        waitKillableContainersSize(
+            pm, "root.a", RMNodeLabelsManager.NO_LABEL, 1);
     Assert.assertEquals(killableContainers.entrySet().iterator().next().getKey()
         .getApplicationAttemptId(), am1.getApplicationAttemptId());
 
@@ -262,7 +313,15 @@ public class TestCapacitySchedulerLazyPreemption
     RMNode rmNode2 = rm1.getRMContext().getRMNodes().get(nm2.getNodeId());
 
     // launch an app to queue, AM container should be launched in nm1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "a");
+    MockRMAppSubmissionData data1 =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data1);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     am1.allocate("*", 1 * GB, 6, new ArrayList<ContainerId>());
@@ -281,7 +340,15 @@ public class TestCapacitySchedulerLazyPreemption
     Assert.assertEquals(7, schedulerApp1.getLiveContainers().size());
 
     // Submit app2 to queue-c and asks for a 1G container for AM
-    RMApp app2 = rm1.submitApp(1 * GB, "app", "user", null, "c");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("c")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app2 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am2 = MockRM.launchAndRegisterAM(app2, rm1, nm2);
 
     // NM1/NM2 has available resource = 0G
@@ -301,7 +368,11 @@ public class TestCapacitySchedulerLazyPreemption
             Resources.createResource(1 * GB), 1, false)), null);
 
     // Get edit policy and do one update
-    SchedulingEditPolicy editPolicy = getSchedulingEditPolicy(rm1);
+    SchedulingMonitorManager smm = ((CapacityScheduler) rm1.
+        getResourceScheduler()).getSchedulingMonitorManager();
+    SchedulingMonitor smon = smm.getAvailableSchedulingMonitor();
+    ProportionalCapacityPreemptionPolicy editPolicy =
+        (ProportionalCapacityPreemptionPolicy) smon.getSchedulingEditPolicy();
 
     // Call edit schedule twice, and check if one container from app1 marked
     // to be "killable"
@@ -310,7 +381,8 @@ public class TestCapacitySchedulerLazyPreemption
 
     PreemptionManager pm = cs.getPreemptionManager();
     Map<ContainerId, RMContainer> killableContainers =
-        waitKillableContainersSize(pm, "a", RMNodeLabelsManager.NO_LABEL, 1);
+        waitKillableContainersSize(
+            pm, "root.a", RMNodeLabelsManager.NO_LABEL, 1);
     Assert.assertEquals(killableContainers.entrySet().iterator().next().getKey()
         .getApplicationAttemptId(), am1.getApplicationAttemptId());
 
@@ -362,7 +434,15 @@ public class TestCapacitySchedulerLazyPreemption
     RMNode rmNode1 = rm1.getRMContext().getRMNodes().get(nm1.getNodeId());
 
     // launch an app to queue, AM container should be launched in nm1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "a");
+    MockRMAppSubmissionData data1 =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data1);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     am1.allocate("*", 1 * GB, 6, new ArrayList<ContainerId>());
@@ -378,7 +458,15 @@ public class TestCapacitySchedulerLazyPreemption
     Assert.assertEquals(7, schedulerApp1.getLiveContainers().size());
 
     // Submit app2 to queue-c and asks for a 1G container for AM
-    RMApp app2 = rm1.submitApp(1 * GB, "app", "user", null, "c");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("c")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app2 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am2 = MockRM.launchAndRegisterAM(app2, rm1, nm1);
 
     // NM1 has available resource = 0G
@@ -387,8 +475,11 @@ public class TestCapacitySchedulerLazyPreemption
     am2.allocate("*", 1 * GB, 1, new ArrayList<ContainerId>());
 
     // Get edit policy and do one update
+    SchedulingMonitorManager smm = ((CapacityScheduler) rm1.
+        getResourceScheduler()).getSchedulingMonitorManager();
+    SchedulingMonitor smon = smm.getAvailableSchedulingMonitor();
     ProportionalCapacityPreemptionPolicy editPolicy =
-        (ProportionalCapacityPreemptionPolicy) getSchedulingEditPolicy(rm1);
+        (ProportionalCapacityPreemptionPolicy) smon.getSchedulingEditPolicy();
 
     // Call edit schedule twice, and check if one container from app1 marked
     // to be "killable"
@@ -396,7 +487,7 @@ public class TestCapacitySchedulerLazyPreemption
     editPolicy.editSchedule();
 
     PreemptionManager pm = cs.getPreemptionManager();
-    waitKillableContainersSize(pm, "a", RMNodeLabelsManager.NO_LABEL, 1);
+    waitKillableContainersSize(pm, "root.a", RMNodeLabelsManager.NO_LABEL, 1);
 
     // Check killable containers and to-be-preempted containers in edit policy
     Assert.assertEquals(0, editPolicy.getToPreemptContainers().size());
@@ -425,7 +516,8 @@ public class TestCapacitySchedulerLazyPreemption
 
     // Check if previous killable containers included by new killable containers
     Map<ContainerId, RMContainer> killableContainers =
-        waitKillableContainersSize(pm, "a", RMNodeLabelsManager.NO_LABEL, 2);
+        waitKillableContainersSize(
+            pm, "root.a", RMNodeLabelsManager.NO_LABEL, 2);
     Assert.assertTrue(
         Sets.difference(previousKillableContainers, killableContainers.keySet())
             .isEmpty());
@@ -462,7 +554,15 @@ public class TestCapacitySchedulerLazyPreemption
     RMNode rmNode1 = rm1.getRMContext().getRMNodes().get(nm1.getNodeId());
 
     // launch an app to queue, AM container should be launched in nm1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "a");
+    MockRMAppSubmissionData data1 =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data1);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     am1.allocate("*", 1 * GB, 6, new ArrayList<ContainerId>());
@@ -478,7 +578,15 @@ public class TestCapacitySchedulerLazyPreemption
     Assert.assertEquals(7, schedulerApp1.getLiveContainers().size());
 
     // Submit app2 to queue-c and asks for a 1G container for AM
-    RMApp app2 = rm1.submitApp(1 * GB, "app", "user", null, "c");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("c")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app2 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am2 = MockRM.launchAndRegisterAM(app2, rm1, nm1);
 
     // NM1 has available resource = 0G
@@ -487,8 +595,11 @@ public class TestCapacitySchedulerLazyPreemption
     am2.allocate("*", 3 * GB, 1, new ArrayList<ContainerId>());
 
     // Get edit policy and do one update
+    SchedulingMonitorManager smm = ((CapacityScheduler) rm1.
+        getResourceScheduler()).getSchedulingMonitorManager();
+    SchedulingMonitor smon = smm.getAvailableSchedulingMonitor();
     ProportionalCapacityPreemptionPolicy editPolicy =
-        (ProportionalCapacityPreemptionPolicy) getSchedulingEditPolicy(rm1);
+        (ProportionalCapacityPreemptionPolicy) smon.getSchedulingEditPolicy();
 
     // Call edit schedule twice, and check if 3 container from app1 marked
     // to be "killable"
@@ -550,7 +661,15 @@ public class TestCapacitySchedulerLazyPreemption
     RMNode rmNode2 = rm1.getRMContext().getRMNodes().get(nm2.getNodeId());
 
     // launch an app to queue, AM container should be launched in nm1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "a");
+    MockRMAppSubmissionData data1 =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("a")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data1);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     am1.allocate("*", 1 * GB, 6, new ArrayList<ContainerId>());
@@ -567,7 +686,15 @@ public class TestCapacitySchedulerLazyPreemption
     Assert.assertEquals(7, schedulerApp1.getLiveContainers().size());
 
     // Submit app2 to queue-c and asks for a 1G container for AM
-    RMApp app2 = rm1.submitApp(1 * GB, "app", "user", null, "c");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("c")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app2 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am2 = MockRM.launchAndRegisterAM(app2, rm1, nm2);
 
     // NM1/NM2 has available resource = 0G
@@ -582,7 +709,11 @@ public class TestCapacitySchedulerLazyPreemption
             Resources.createResource(1 * GB), 1)), null);
 
     // Get edit policy and do one update
-    SchedulingEditPolicy editPolicy = getSchedulingEditPolicy(rm1);
+    SchedulingMonitorManager smm = ((CapacityScheduler) rm1.
+        getResourceScheduler()).getSchedulingMonitorManager();
+    SchedulingMonitor smon = smm.getAvailableSchedulingMonitor();
+    ProportionalCapacityPreemptionPolicy editPolicy =
+        (ProportionalCapacityPreemptionPolicy) smon.getSchedulingEditPolicy();
 
     // Call edit schedule twice, and check if no container from app1 marked
     // to be "killable"

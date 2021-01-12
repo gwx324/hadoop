@@ -17,11 +17,11 @@
 
 package org.apache.hadoop.jmx;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
 import org.apache.hadoop.http.HttpServer2;
-import org.codehaus.jackson.JsonFactory;
-import org.codehaus.jackson.JsonGenerator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.management.AttributeNotFoundException;
 import javax.management.InstanceNotFoundException;
@@ -70,7 +70,7 @@ import java.util.Set;
  * <p>
  * The optional <code>get</code> parameter is used to query an specific 
  * attribute of a JMX bean.  The format of the URL is
- * <code>http://.../jmx?get=MXBeanName::AttributeName<code>
+ * <code>http://.../jmx?get=MXBeanName::AttributeName</code>
  * <p>
  * For example 
  * <code>
@@ -85,7 +85,7 @@ import java.util.Set;
  * <p>
  * The return format is JSON and in the form
  * <p>
- *  <code><pre>
+ *  <pre><code>
  *  {
  *    "beans" : [
  *      {
@@ -94,7 +94,7 @@ import java.util.Set;
  *      }
  *    ]
  *  }
- *  </pre></code>
+ *  </code></pre>
  *  <p>
  *  The servlet attempts to convert the the JMXBeans into JSON. Each
  *  bean's attributes will be converted to a JSON object member.
@@ -115,7 +115,8 @@ import java.util.Set;
  *
  */
 public class JMXJsonServlet extends HttpServlet {
-  private static final Log LOG = LogFactory.getLog(JMXJsonServlet.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(JMXJsonServlet.class);
   static final String ACCESS_CONTROL_ALLOW_METHODS =
       "Access-Control-Allow-Methods";
   static final String ACCESS_CONTROL_ALLOW_ORIGIN =
@@ -180,7 +181,7 @@ public class JMXJsonServlet extends HttpServlet {
         response.setHeader(ACCESS_CONTROL_ALLOW_METHODS, "GET");
         response.setHeader(ACCESS_CONTROL_ALLOW_ORIGIN, "*");
 
-        jg = jsonFactory.createJsonGenerator(writer);
+        jg = jsonFactory.createGenerator(writer);
         jg.disable(JsonGenerator.Feature.AUTO_CLOSE_TARGET);
         jg.useDefaultPrettyPrinter();
         jg.writeStartObject();
@@ -347,7 +348,8 @@ public class JMXJsonServlet extends HttpServlet {
     } catch (RuntimeErrorException e) {
       // RuntimeErrorException happens when an unexpected failure occurs in getAttribute
       // for example https://issues.apache.org/jira/browse/DAEMON-120
-      LOG.debug("getting attribute "+attName+" of "+oname+" threw an exception", e);
+      LOG.error("getting attribute {} of {} threw an exception",
+          attName, oname, e);
       return;
     } catch (AttributeNotFoundException e) {
       //Ignored the attribute was not found, which should never happen because the bean

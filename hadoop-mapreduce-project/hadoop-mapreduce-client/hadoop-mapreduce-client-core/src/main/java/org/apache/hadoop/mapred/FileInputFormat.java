@@ -19,6 +19,7 @@
 package org.apache.hadoop.mapred;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -30,8 +31,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.BlockLocation;
@@ -49,7 +48,9 @@ import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StopWatch;
 import org.apache.hadoop.util.StringUtils;
 
-import com.google.common.collect.Iterables;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Iterables;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** 
  * A base class for file-based {@link InputFormat}.
@@ -68,19 +69,22 @@ import com.google.common.collect.Iterables;
 @InterfaceStability.Stable
 public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
 
-  public static final Log LOG =
-    LogFactory.getLog(FileInputFormat.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(FileInputFormat.class);
   
   @Deprecated
-  public static enum Counter { 
+  public enum Counter {
     BYTES_READ
   }
 
   public static final String NUM_INPUT_FILES =
     org.apache.hadoop.mapreduce.lib.input.FileInputFormat.NUM_INPUT_FILES;
-  
+
   public static final String INPUT_DIR_RECURSIVE = 
     org.apache.hadoop.mapreduce.lib.input.FileInputFormat.INPUT_DIR_RECURSIVE;
+
+  public static final String INPUT_DIR_NONRECURSIVE_IGNORE_SUBDIRS =
+    org.apache.hadoop.mapreduce.lib.input.FileInputFormat.INPUT_DIR_NONRECURSIVE_IGNORE_SUBDIRS;
 
 
   private static final double SPLIT_SLOP = 1.1;   // 10% slop
@@ -189,17 +193,22 @@ public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
         if (stat.isDirectory()) {
           addInputPathRecursively(result, fs, stat.getPath(), inputFilter);
         } else {
-          result.add(stat);
+          result.add(org.apache.hadoop.mapreduce.lib.input.
+              FileInputFormat.shrinkStatus(stat));
         }
       }
     }
   }
   
-  /** List input directories.
+  /**
+   * List input directories.
    * Subclasses may override to, e.g., select only files matching a regular
    * expression. 
    * 
-   * @param job the job to list input paths for
+   * If security is enabled, this method collects
+   * delegation tokens from the input paths and adds them to the job's
+   * credentials.
+   * @param job the job to list input paths for and attach tokens to.
    * @return array of FileStatus objects
    * @throws IOException if zero items.
    */
@@ -243,7 +252,9 @@ public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
             job, dirs, recursive, inputFilter, false);
         locatedFiles = locatedFileStatusFetcher.getFileStatuses();
       } catch (InterruptedException e) {
-        throw new IOException("Interrupted while getting file statuses");
+        throw  (IOException)
+            new InterruptedIOException("Interrupted while getting file statuses")
+                .initCause(e);
       }
       result = Iterables.toArray(locatedFiles, FileStatus.class);
     }
@@ -280,7 +291,8 @@ public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
                   addInputPathRecursively(result, fs, stat.getPath(),
                       inputFilter);
                 } else {
-                  result.add(stat);
+                  result.add(org.apache.hadoop.mapreduce.lib.input.
+                      FileInputFormat.shrinkStatus(stat));
                 }
               }
             }
@@ -319,16 +331,24 @@ public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
   public InputSplit[] getSplits(JobConf job, int numSplits)
     throws IOException {
     StopWatch sw = new StopWatch().start();
-    FileStatus[] files = listStatus(job);
-    
+    FileStatus[] stats = listStatus(job);
+
     // Save the number of input files for metrics/loadgen
-    job.setLong(NUM_INPUT_FILES, files.length);
+    job.setLong(NUM_INPUT_FILES, stats.length);
     long totalSize = 0;                           // compute total size
-    for (FileStatus file: files) {                // check we have valid files
+    boolean ignoreDirs = !job.getBoolean(INPUT_DIR_RECURSIVE, false)
+      && job.getBoolean(INPUT_DIR_NONRECURSIVE_IGNORE_SUBDIRS, false);
+
+    List<FileStatus> files = new ArrayList<>(stats.length);
+    for (FileStatus file: stats) {                // check we have valid files
       if (file.isDirectory()) {
-        throw new IOException("Not a file: "+ file.getPath());
+        if (!ignoreDirs) {
+          throw new IOException("Not a file: "+ file.getPath());
+        }
+      } else {
+        files.add(file);
+        totalSize += file.getLen();
       }
-      totalSize += file.getLen();
     }
 
     long goalSize = totalSize / (numSplits == 0 ? 1 : numSplits);
@@ -369,6 +389,13 @@ public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
                 splitHosts[0], splitHosts[1]));
           }
         } else {
+          if (LOG.isDebugEnabled()) {
+            // Log only if the file is big enough to be splitted
+            if (length > Math.min(file.getBlockSize(), minSize)) {
+              LOG.debug("File is not splittable so no parallelization "
+                  + "is possible: " + file.getPath());
+            }
+          }
           String[][] splitHosts = getSplitHostsAndCachedHosts(blkLocations,0,length,clusterMap);
           splits.add(makeSplit(path, 0, length, splitHosts[0], splitHosts[1]));
         }

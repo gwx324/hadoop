@@ -24,6 +24,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.io.Text;
@@ -35,23 +36,49 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerExitStatus;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerState;
+import org.apache.hadoop.yarn.api.records.ContainerStatus;
+import org.apache.hadoop.yarn.api.records.ExecutionType;
+import org.apache.hadoop.yarn.api.records.NodeAttribute;
+import org.apache.hadoop.yarn.api.records.NodeAttributeType;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.impl.pb.ContainerStatusPBImpl;
+import org.apache.hadoop.yarn.api.records.impl.pb.ProtoUtils;
+import org.apache.hadoop.yarn.api.records.impl.pb.ResourcePBImpl;
+import org.apache.hadoop.yarn.proto.YarnProtos.ResourceProto;
 import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb.NMContainerStatusPBImpl;
-
 import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb
     .NodeHeartbeatRequestPBImpl;
 import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb.NodeHeartbeatResponsePBImpl;
 import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb.RegisterNodeManagerRequestPBImpl;
-
 import org.apache.hadoop.yarn.server.api.records.NodeStatus;
-import org.apache.hadoop.yarn.server.api.records.QueuedContainersStatus;
+import org.apache.hadoop.yarn.server.api.records.OpportunisticContainersStatus;
+import org.apache.hadoop.yarn.server.utils.YarnServerBuilderUtils;
 import org.apache.hadoop.yarn.util.Records;
 import org.junit.Assert;
 import org.junit.Test;
 
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
+
 public class TestProtocolRecords {
+
+  @Test
+  public void testResource() {
+    final long mem = 123;
+    final int vcores = 456;
+    final Resource r = Resource.newInstance(mem, vcores);
+    // should be a lightweight SimpleResource which is a private inner class
+    // so just verify it's not the heavyweight pb impl.
+    Assert.assertFalse(r instanceof ResourcePBImpl);
+    Assert.assertEquals(mem, r.getMemorySize());
+    Assert.assertEquals(vcores, r.getVirtualCores());
+
+    ResourceProto proto = ProtoUtils.convertToProtoFormat(r);
+    Assert.assertEquals(mem, proto.getMemory());
+    Assert.assertEquals(vcores, proto.getVirtualCores());
+    Assert.assertEquals(r, ProtoUtils.convertFromProtoFormat(proto));
+  }
 
   @Test
   public void testNMContainerStatus() {
@@ -61,7 +88,7 @@ public class TestProtocolRecords {
     Resource resource = Resource.newInstance(1000, 200);
 
     NMContainerStatus report =
-        NMContainerStatus.newInstance(containerId,
+        NMContainerStatus.newInstance(containerId, 0,
           ContainerState.COMPLETE, resource, "diagnostics",
           ContainerExitStatus.ABORTED, Priority.newInstance(10), 1234);
     NMContainerStatus reportProto =
@@ -85,7 +112,7 @@ public class TestProtocolRecords {
     ContainerId containerId = ContainerId.newContainerId(attemptId, 1);
 
     NMContainerStatus containerReport =
-        NMContainerStatus.newInstance(containerId,
+        NMContainerStatus.newInstance(containerId, 0,
           ContainerState.RUNNING, Resource.newInstance(1024, 1), "diagnostics",
           0, Priority.newInstance(10), 1234);
     List<NMContainerStatus> reports = Arrays.asList(containerReport);
@@ -128,14 +155,17 @@ public class TestProtocolRecords {
 
     DataOutputBuffer dob = new DataOutputBuffer();
     app1Cred.writeTokenStorageToStream(dob);
-    ByteBuffer byteBuffer1 = ByteBuffer.wrap(dob.getData(), 0, dob.getLength());
-    appCredentials.put(ApplicationId.newInstance(1234, 1), byteBuffer1);
-    record.setSystemCredentialsForApps(appCredentials);
+    ByteBuffer byteBuffer = ByteBuffer.wrap(dob.getData(), 0, dob.getLength());
+
+    appCredentials.put(ApplicationId.newInstance(1234, 1), byteBuffer);
+    record.setSystemCredentialsForApps(
+        YarnServerBuilderUtils.convertToProtoFormat(appCredentials));
 
     NodeHeartbeatResponse proto =
         new NodeHeartbeatResponsePBImpl(
           ((NodeHeartbeatResponsePBImpl) record).getProto());
-    Assert.assertEquals(appCredentials, proto.getSystemCredentialsForApps());
+    Assert.assertEquals(appCredentials, YarnServerBuilderUtils
+        .convertFromProtoFormat(proto.getSystemCredentialsForApps()));
   }
 
   @Test
@@ -144,12 +174,19 @@ public class TestProtocolRecords {
         Records.newRecord(NodeHeartbeatRequest.class);
     NodeStatus nodeStatus =
         Records.newRecord(NodeStatus.class);
-    QueuedContainersStatus queuedContainersStatus = Records.newRecord
-        (QueuedContainersStatus.class);
-    queuedContainersStatus.setEstimatedQueueWaitTime(123);
-    queuedContainersStatus.setWaitQueueLength(321);
-    nodeStatus.setQueuedContainersStatus(queuedContainersStatus);
+    OpportunisticContainersStatus opportunisticContainersStatus =
+        Records.newRecord(OpportunisticContainersStatus.class);
+    opportunisticContainersStatus.setEstimatedQueueWaitTime(123);
+    opportunisticContainersStatus.setWaitQueueLength(321);
+    nodeStatus.setOpportunisticContainersStatus(opportunisticContainersStatus);
     record.setNodeStatus(nodeStatus);
+
+    Set<NodeAttribute> attributeSet =
+        Sets.newHashSet(NodeAttribute.newInstance("attributeA",
+                NodeAttributeType.STRING, "valueA"),
+            NodeAttribute.newInstance("attributeB",
+                NodeAttributeType.STRING, "valueB"));
+    record.setNodeAttributes(attributeSet);
 
     NodeHeartbeatRequestPBImpl pb = new
         NodeHeartbeatRequestPBImpl(
@@ -157,8 +194,25 @@ public class TestProtocolRecords {
 
     Assert.assertEquals(123,
         pb.getNodeStatus()
-            .getQueuedContainersStatus().getEstimatedQueueWaitTime());
+            .getOpportunisticContainersStatus().getEstimatedQueueWaitTime());
     Assert.assertEquals(321,
-        pb.getNodeStatus().getQueuedContainersStatus().getWaitQueueLength());
+        pb.getNodeStatus().getOpportunisticContainersStatus()
+            .getWaitQueueLength());
+    Assert.assertEquals(2, pb.getNodeAttributes().size());
+  }
+
+  @Test
+  public void testContainerStatus() {
+    ContainerStatus status = Records.newRecord(ContainerStatus.class);
+    List<String> ips = Arrays.asList("127.0.0.1", "139.5.25.2");
+    status.setIPs(ips);
+    status.setHost("locahost123");
+    ContainerStatusPBImpl pb =
+        new ContainerStatusPBImpl(((ContainerStatusPBImpl) status).getProto());
+    Assert.assertEquals(ips, pb.getIPs());
+    Assert.assertEquals("locahost123", pb.getHost());
+    Assert.assertEquals(ExecutionType.GUARANTEED, pb.getExecutionType());
+    status.setIPs(null);
+    Assert.assertNull(status.getIPs());
   }
 }

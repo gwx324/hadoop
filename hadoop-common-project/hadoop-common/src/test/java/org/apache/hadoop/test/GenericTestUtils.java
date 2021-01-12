@@ -18,43 +18,52 @@
 package org.apache.hadoop.test;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.io.StringWriter;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.InvocationTargetException;
 import java.util.Arrays;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
+import java.util.Enumeration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.RandomStringUtils;
+import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
+import org.apache.log4j.Appender;
 import org.apache.log4j.Layout;
 import org.apache.log4j.Level;
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
+import org.apache.log4j.PatternLayout;
 import org.apache.log4j.WriterAppender;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Supplier;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 
 /**
  * Test provides some very generic helpers which might be used across the tests
@@ -79,20 +88,42 @@ public abstract class GenericTestUtils {
    */
   public static final String DEFAULT_TEST_DATA_PATH = "target/test/data/";
 
+  /**
+   * Error string used in
+   * {@link GenericTestUtils#waitFor(Supplier, long, long)}.
+   */
+  public static final String ERROR_MISSING_ARGUMENT =
+      "Input supplier interface should be initailized";
+  public static final String ERROR_INVALID_ARGUMENT =
+      "Total wait time should be greater than check interval time";
+
+  /**
+   * @deprecated use {@link #disableLog(org.slf4j.Logger)} instead
+   */
+  @Deprecated
   @SuppressWarnings("unchecked")
   public static void disableLog(Log log) {
     // We expect that commons-logging is a wrapper around Log4j.
     disableLog((Log4JLogger) log);
   }
 
+  @Deprecated
   public static Logger toLog4j(org.slf4j.Logger logger) {
     return LogManager.getLogger(logger.getName());
   }
 
+  /**
+   * @deprecated use {@link #disableLog(org.slf4j.Logger)} instead
+   */
+  @Deprecated
   public static void disableLog(Log4JLogger log) {
     log.getLogger().setLevel(Level.OFF);
   }
 
+  /**
+   * @deprecated use {@link #disableLog(org.slf4j.Logger)} instead
+   */
+  @Deprecated
   public static void disableLog(Logger logger) {
     logger.setLevel(Level.OFF);
   }
@@ -101,24 +132,87 @@ public abstract class GenericTestUtils {
     disableLog(toLog4j(logger));
   }
 
+  /**
+   * @deprecated
+   * use {@link #setLogLevel(org.slf4j.Logger, org.slf4j.event.Level)} instead
+   */
+  @Deprecated
   @SuppressWarnings("unchecked")
   public static void setLogLevel(Log log, Level level) {
     // We expect that commons-logging is a wrapper around Log4j.
     setLogLevel((Log4JLogger) log, level);
   }
 
+  /**
+   * A helper used in log4j2 migration to accept legacy
+   * org.apache.commons.logging apis.
+   * <p>
+   * And will be removed after migration.
+   *
+   * @param log   a log
+   * @param level level to be set
+   */
+  @Deprecated
+  public static void setLogLevel(Log log, org.slf4j.event.Level level) {
+    setLogLevel(log, Level.toLevel(level.toString()));
+  }
+
+  /**
+   * @deprecated
+   * use {@link #setLogLevel(org.slf4j.Logger, org.slf4j.event.Level)} instead
+   */
+  @Deprecated
   public static void setLogLevel(Log4JLogger log, Level level) {
     log.getLogger().setLevel(level);
   }
 
+  /**
+   * @deprecated
+   * use {@link #setLogLevel(org.slf4j.Logger, org.slf4j.event.Level)} instead
+   */
+  @Deprecated
   public static void setLogLevel(Logger logger, Level level) {
     logger.setLevel(level);
   }
 
+  /**
+   * @deprecated
+   * use {@link #setLogLevel(org.slf4j.Logger, org.slf4j.event.Level)} instead
+   */
+  @Deprecated
   public static void setLogLevel(org.slf4j.Logger logger, Level level) {
     setLogLevel(toLog4j(logger), level);
   }
 
+  public static void setLogLevel(org.slf4j.Logger logger,
+                                 org.slf4j.event.Level level) {
+    setLogLevel(toLog4j(logger), Level.toLevel(level.toString()));
+  }
+
+  public static void setRootLogLevel(org.slf4j.event.Level level) {
+    setLogLevel(LogManager.getRootLogger(), Level.toLevel(level.toString()));
+  }
+
+  public static void setCurrentLoggersLogLevel(org.slf4j.event.Level level) {
+    for (Enumeration<?> loggers = LogManager.getCurrentLoggers();
+        loggers.hasMoreElements();) {
+      Logger logger = (Logger) loggers.nextElement();
+      logger.setLevel(Level.toLevel(level.toString()));
+    }
+  }
+
+  public static org.slf4j.event.Level toLevel(String level) {
+    return toLevel(level, org.slf4j.event.Level.DEBUG);
+  }
+
+  public static org.slf4j.event.Level toLevel(
+      String level, org.slf4j.event.Level defaultLevel) {
+    try {
+      return org.slf4j.event.Level.valueOf(level);
+    } catch (IllegalArgumentException e) {
+      return defaultLevel;
+    }
+  }
   /**
    * Extracts the name of the method where the invocation has happened
    * @return String name of the invoking method
@@ -165,7 +259,7 @@ public abstract class GenericTestUtils {
    * @return the absolute directory for tests. Caller is expected to create it.
    */
   public static File getRandomizedTestDir() {
-    return new File(getRandomizedTempPath()).getAbsoluteFile();
+    return new File(getRandomizedTempPath());
   }
 
   /**
@@ -176,7 +270,9 @@ public abstract class GenericTestUtils {
    * @return a string to use in paths
    */
   public static String getTempPath(String subpath) {
-    String prop = System.getProperty(SYSPROP_TEST_DATA_DIR, DEFAULT_TEST_DATA_PATH);
+    String prop = (Path.WINDOWS) ? DEFAULT_TEST_DATA_PATH
+        : System.getProperty(SYSPROP_TEST_DATA_DIR, DEFAULT_TEST_DATA_PATH);
+
     if (prop.isEmpty()) {
       // corner case: property is there but empty
       prop = DEFAULT_TEST_DATA_PATH;
@@ -191,7 +287,6 @@ public abstract class GenericTestUtils {
    * Get a temp path. This may or may not be relative; it depends on what the
    * {@link #SYSPROP_TEST_DATA_DIR} is set to. If unset, it returns a path
    * under the relative path {@link #DEFAULT_TEST_DATA_PATH}
-   * @param subpath sub path, with no leading "/" character
    * @return a string to use in paths
    */
   public static String getRandomizedTempPath() {
@@ -204,7 +299,7 @@ public abstract class GenericTestUtils {
   public static void assertExists(File f) {
     Assert.assertTrue("File " + f + " should exist", f.exists());
   }
-    
+
   /**
    * List all of the files in 'dir' that match the regex 'pattern'.
    * Then check that this list is identical to 'expectedMatches'.
@@ -212,7 +307,7 @@ public abstract class GenericTestUtils {
    */
   public static void assertGlobEquals(File dir, String pattern,
       String ... expectedMatches) throws IOException {
-    
+
     Set<String> found = Sets.newTreeSet();
     for (File f : FileUtil.listFiles(dir)) {
       if (f.getName().matches(pattern)) {
@@ -234,96 +329,204 @@ public abstract class GenericTestUtils {
   /**
    * Assert that an exception's <code>toString()</code> value
    * contained the expected text.
-   * @param string expected string
+   * @param expectedText expected string
    * @param t thrown exception
    * @throws AssertionError if the expected string is not found
    */
-  public static void assertExceptionContains(String string, Throwable t) {
+  public static void assertExceptionContains(String expectedText, Throwable t) {
+    assertExceptionContains(expectedText, t, "");
+  }
+
+  /**
+   * Assert that an exception's <code>toString()</code> value
+   * contained the expected text.
+   * @param expectedText expected string
+   * @param t thrown exception
+   * @param message any extra text for the string
+   * @throws AssertionError if the expected string is not found
+   */
+  public static void assertExceptionContains(String expectedText,
+      Throwable t,
+      String message) {
     Assert.assertNotNull(E_NULL_THROWABLE, t);
     String msg = t.toString();
     if (msg == null) {
       throw new AssertionError(E_NULL_THROWABLE_STRING, t);
     }
-    if (!msg.contains(string)) {
-      throw new AssertionError("Expected to find '" + string + "' "
-          + E_UNEXPECTED_EXCEPTION + ":"
-          + StringUtils.stringifyException(t),
+    if (expectedText != null && !msg.contains(expectedText)) {
+      String prefix = org.apache.commons.lang3.StringUtils.isEmpty(message)
+          ? "" : (message + ": ");
+      throw new AssertionError(
+          String.format("%s Expected to find '%s' %s: %s",
+              prefix, expectedText, E_UNEXPECTED_EXCEPTION,
+              StringUtils.stringifyException(t)),
           t);
     }
-  }  
-
-  public static void waitFor(Supplier<Boolean> check,
-      int checkEveryMillis, int waitForMillis)
-      throws TimeoutException, InterruptedException
-  {
-    long st = Time.now();
-    do {
-      boolean result = check.get();
-      if (result) {
-        return;
-      }
-      
-      Thread.sleep(checkEveryMillis);
-    } while (Time.now() - st < waitForMillis);
-    
-    throw new TimeoutException("Timed out waiting for condition. " +
-        "Thread diagnostics:\n" +
-        TimedOutTestsListener.buildThreadDiagnosticString());
   }
-  
+
+  /**
+   * Wait for the specified test to return true. The test will be performed
+   * initially and then every {@code checkEveryMillis} until at least
+   * {@code waitForMillis} time has expired. If {@code check} is null or
+   * {@code waitForMillis} is less than {@code checkEveryMillis} this method
+   * will throw an {@link IllegalArgumentException}.
+   *
+   * @param check the test to perform
+   * @param checkEveryMillis how often to perform the test
+   * @param waitForMillis the amount of time after which no more tests will be
+   * performed
+   * @throws TimeoutException if the test does not return true in the allotted
+   * time
+   * @throws InterruptedException if the method is interrupted while waiting
+   */
+  public static void waitFor(final Supplier<Boolean> check,
+      final long checkEveryMillis, final long waitForMillis)
+      throws TimeoutException, InterruptedException {
+    Objects.requireNonNull(check, ERROR_MISSING_ARGUMENT);
+    if (waitForMillis < checkEveryMillis) {
+      throw new IllegalArgumentException(ERROR_INVALID_ARGUMENT);
+    }
+
+    long st = Time.monotonicNow();
+    boolean result = check.get();
+
+    while (!result && (Time.monotonicNow() - st < waitForMillis)) {
+      Thread.sleep(checkEveryMillis);
+      result = check.get();
+    }
+
+    if (!result) {
+      throw new TimeoutException("Timed out waiting for condition. " +
+          "Thread diagnostics:\n" +
+          TimedOutTestsListener.buildThreadDiagnosticString());
+    }
+  }
+
+  /**
+   * Prints output to one {@link PrintStream} while copying to the other.
+   * <p>
+   * Closing the main {@link PrintStream} will NOT close the other.
+   */
+  public static class TeePrintStream extends PrintStream {
+    private final PrintStream other;
+
+    public TeePrintStream(OutputStream main, PrintStream other) {
+      super(main);
+      this.other = other;
+    }
+
+    @Override
+    public void flush() {
+      super.flush();
+      other.flush();
+    }
+
+    @Override
+    public void write(byte[] buf, int off, int len) {
+      super.write(buf, off, len);
+      other.write(buf, off, len);
+    }
+  }
+
+  /**
+   * Capture output printed to {@link System#err}.
+   * <p>
+   * Usage:
+   * <pre>
+   *   try (SystemErrCapturer capture = new SystemErrCapturer()) {
+   *     ...
+   *     // Call capture.getOutput() to get the output string
+   *   }
+   * </pre>
+   *
+   * TODO: Add lambda support once Java 8 is common.
+   * <pre>
+   *   SystemErrCapturer.withCapture(capture -> {
+   *     ...
+   *   })
+   * </pre>
+   */
+  public static class SystemErrCapturer implements AutoCloseable {
+    final private ByteArrayOutputStream bytes;
+    final private PrintStream bytesPrintStream;
+    final private PrintStream oldErr;
+
+    public SystemErrCapturer() {
+      bytes = new ByteArrayOutputStream();
+      bytesPrintStream = new PrintStream(bytes);
+      oldErr = System.err;
+      System.setErr(new TeePrintStream(oldErr, bytesPrintStream));
+    }
+
+    public String getOutput() {
+      return bytes.toString();
+    }
+
+    @Override
+    public void close() throws Exception {
+      IOUtils.closeQuietly(bytesPrintStream);
+      System.setErr(oldErr);
+    }
+  }
+
   public static class LogCapturer {
     private StringWriter sw = new StringWriter();
     private WriterAppender appender;
     private Logger logger;
-    
+
     public static LogCapturer captureLogs(Log l) {
       Logger logger = ((Log4JLogger)l).getLogger();
-      LogCapturer c = new LogCapturer(logger);
-      return c;
+      return new LogCapturer(logger);
     }
-    
+
+    public static LogCapturer captureLogs(org.slf4j.Logger logger) {
+      return new LogCapturer(toLog4j(logger));
+    }
 
     private LogCapturer(Logger logger) {
       this.logger = logger;
-      Layout layout = Logger.getRootLogger().getAppender("stdout").getLayout();
-      WriterAppender wa = new WriterAppender(layout, sw);
-      logger.addAppender(wa);
+      Appender defaultAppender = Logger.getRootLogger().getAppender("stdout");
+      if (defaultAppender == null) {
+        defaultAppender = Logger.getRootLogger().getAppender("console");
+      }
+      final Layout layout = (defaultAppender == null) ? new PatternLayout() :
+          defaultAppender.getLayout();
+      this.appender = new WriterAppender(layout, sw);
+      logger.addAppender(this.appender);
     }
-    
+
     public String getOutput() {
       return sw.toString();
     }
-    
+
     public void stopCapturing() {
       logger.removeAppender(appender);
-
     }
 
     public void clearOutput() {
       sw.getBuffer().setLength(0);
     }
   }
-  
-  
+
   /**
    * Mockito answer helper that triggers one latch as soon as the
    * method is called, then waits on another before continuing.
    */
   public static class DelayAnswer implements Answer<Object> {
-    private final Log LOG;
-    
+    private final org.slf4j.Logger LOG;
+
     private final CountDownLatch fireLatch = new CountDownLatch(1);
     private final CountDownLatch waitLatch = new CountDownLatch(1);
     private final CountDownLatch resultLatch = new CountDownLatch(1);
-    
+
     private final AtomicInteger fireCounter = new AtomicInteger(0);
     private final AtomicInteger resultCounter = new AtomicInteger(0);
-    
+
     // Result fields set after proceed() is called.
     private volatile Throwable thrown;
     private volatile Object returnValue;
-    
-    public DelayAnswer(Log log) {
+
+    public DelayAnswer(org.slf4j.Logger log) {
       this.LOG = log;
     }
 
@@ -333,7 +536,7 @@ public abstract class GenericTestUtils {
     public void waitForCall() throws InterruptedException {
       fireLatch.await();
     }
-  
+
     /**
      * Tell the method to proceed.
      * This should only be called after waitForCall()
@@ -341,7 +544,7 @@ public abstract class GenericTestUtils {
     public void proceed() {
       waitLatch.countDown();
     }
-  
+
     @Override
     public Object answer(InvocationOnMock invocation) throws Throwable {
       LOG.info("DelayAnswer firing fireLatch");
@@ -370,7 +573,7 @@ public abstract class GenericTestUtils {
         resultLatch.countDown();
       }
     }
-    
+
     /**
      * After calling proceed(), this will wait until the call has
      * completed and a result has been returned to the caller.
@@ -378,7 +581,7 @@ public abstract class GenericTestUtils {
     public void waitForResult() throws InterruptedException {
       resultLatch.await();
     }
-    
+
     /**
      * After the call has gone through, return any exception that
      * was thrown, or null if no exception was thrown.
@@ -386,7 +589,7 @@ public abstract class GenericTestUtils {
     public Throwable getThrown() {
       return thrown;
     }
-    
+
     /**
      * After the call has gone through, return the call's return value,
      * or null in case it was void or an exception was thrown.
@@ -394,20 +597,20 @@ public abstract class GenericTestUtils {
     public Object getReturnValue() {
       return returnValue;
     }
-    
+
     public int getFireCount() {
       return fireCounter.get();
     }
-    
+
     public int getResultCount() {
       return resultCounter.get();
     }
   }
-  
+
   /**
    * An Answer implementation that simply forwards all calls through
    * to a delegate.
-   * 
+   *
    * This is useful as the default Answer for a mock object, to create
    * something like a spy on an RPC proxy. For example:
    * <code>
@@ -418,15 +621,15 @@ public abstract class GenericTestUtils {
    *    ...
    * </code>
    */
-  public static class DelegateAnswer implements Answer<Object> { 
+  public static class DelegateAnswer implements Answer<Object> {
     private final Object delegate;
-    private final Log log;
-    
+    private final org.slf4j.Logger log;
+
     public DelegateAnswer(Object delegate) {
       this(null, delegate);
     }
-    
-    public DelegateAnswer(Log log, Object delegate) {
+
+    public DelegateAnswer(org.slf4j.Logger log, Object delegate) {
       this.log = log;
       this.delegate = delegate;
     }
@@ -453,18 +656,24 @@ public abstract class GenericTestUtils {
    * conditions.
    */
   public static class SleepAnswer implements Answer<Object> {
+    private final int minSleepTime;
     private final int maxSleepTime;
     private static Random r = new Random();
-    
+
     public SleepAnswer(int maxSleepTime) {
+      this(0, maxSleepTime);
+    }
+
+    public SleepAnswer(int minSleepTime, int maxSleepTime) {
+      this.minSleepTime = minSleepTime;
       this.maxSleepTime = maxSleepTime;
     }
-    
+
     @Override
     public Object answer(InvocationOnMock invocation) throws Throwable {
       boolean interrupted = false;
       try {
-        Thread.sleep(r.nextInt(maxSleepTime));
+        Thread.sleep(r.nextInt(maxSleepTime - minSleepTime) + minSleepTime);
       } catch (InterruptedException ie) {
         interrupted = true;
       }
@@ -489,11 +698,11 @@ public abstract class GenericTestUtils {
         " but got:\n" + output,
         Pattern.compile(pattern).matcher(output).find());
   }
-  
+
   public static void assertValueNear(long expected, long actual, long allowedError) {
     assertValueWithinRange(expected - allowedError, expected + allowedError, actual);
   }
-  
+
   public static void assertValueWithinRange(long expectedMin, long expectedMax,
       long actual) {
     Assert.assertTrue("Expected " + actual + " to be in range (" + expectedMin + ","
@@ -615,4 +824,61 @@ public abstract class GenericTestUtils {
       bld.append(" + ").append(l).append("\n");
     }
   }
+
+  /**
+   * Formatted fail, via {@link String#format(String, Object...)}.
+   * @param format format string
+   * @param args argument list. If the last argument is a throwable, it
+   * is used as the inner cause of the exception
+   * @throws AssertionError with the formatted message
+   */
+  public static void failf(String format, Object... args) {
+    String message = String.format(Locale.ENGLISH, format, args);
+    AssertionError error = new AssertionError(message);
+    int len = args.length;
+    if (len > 0 && args[len - 1] instanceof Throwable) {
+      error.initCause((Throwable) args[len - 1]);
+    }
+    throw error;
+  }
+
+  /**
+   * Conditional formatted fail, via {@link String#format(String, Object...)}.
+   * @param condition condition: if true the method fails
+   * @param format format string
+   * @param args argument list. If the last argument is a throwable, it
+   * is used as the inner cause of the exception
+   * @throws AssertionError with the formatted message
+   */
+  public static void failif(boolean condition,
+      String format,
+      Object... args) {
+    if (condition) {
+      failf(format, args);
+    }
+  }
+
+  /**
+   * Retreive the max number of parallel test threads when running under maven.
+   * @return int number of threads
+   */
+  public static int getTestsThreadCount() {
+    String propString = System.getProperty("testsThreadCount", "1");
+    int threadCount = 1;
+    if (propString != null) {
+      String trimProp = propString.trim();
+      if (trimProp.endsWith("C")) {
+        double multiplier = Double.parseDouble(
+            trimProp.substring(0, trimProp.length()-1));
+        double calculated = multiplier * ((double) Runtime
+            .getRuntime()
+            .availableProcessors());
+        threadCount = calculated > 0d ? Math.max((int) calculated, 1) : 0;
+      } else {
+        threadCount = Integer.parseInt(trimProp);
+      }
+    }
+    return threadCount;
+  }
+
 }

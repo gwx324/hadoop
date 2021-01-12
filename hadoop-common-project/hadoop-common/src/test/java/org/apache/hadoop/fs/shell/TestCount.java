@@ -283,9 +283,10 @@ public class TestCount {
     count.processOptions(options);
     String withStorageTypeHeader =
         // <----13---> <-------17------> <----13-----> <------17------->
+        " NVDIMM_QUOTA  REM_NVDIMM_QUOTA " +
         "    SSD_QUOTA     REM_SSD_QUOTA    DISK_QUOTA    REM_DISK_QUOTA " +
         // <----13---> <-------17------>
-        "ARCHIVE_QUOTA REM_ARCHIVE_QUOTA " +
+        "ARCHIVE_QUOTA REM_ARCHIVE_QUOTA PROVIDED_QUOTA REM_PROVIDED_QUOTA " +
         "PATHNAME";
     verify(out).println(withStorageTypeHeader);
     verifyNoMoreInteractions(out);
@@ -337,9 +338,11 @@ public class TestCount {
     count.processOptions(options);
     String withStorageTypeHeader =
         // <----13---> <-------17------>
+        " NVDIMM_QUOTA  REM_NVDIMM_QUOTA " +
         "    SSD_QUOTA     REM_SSD_QUOTA " +
         "   DISK_QUOTA    REM_DISK_QUOTA " +
         "ARCHIVE_QUOTA REM_ARCHIVE_QUOTA " +
+        "PROVIDED_QUOTA REM_PROVIDED_QUOTA " +
         "PATHNAME";
     verify(out).println(withStorageTypeHeader);
     verifyNoMoreInteractions(out);
@@ -411,6 +414,25 @@ public class TestCount {
   }
 
   @Test
+  public void processPathWithSnapshotHeader() throws Exception {
+    Path path = new Path("mockfs:/test");
+    when(mockFs.getFileStatus(eq(path))).thenReturn(fileStat);
+    PrintStream out = mock(PrintStream.class);
+    Count count = new Count();
+    count.out = out;
+    LinkedList<String> options = new LinkedList<String>();
+    options.add("-s");
+    options.add("-v");
+    options.add("dummy");
+    count.processOptions(options);
+    String withSnapshotHeader = "   DIR_COUNT   FILE_COUNT       CONTENT_SIZE "
+        + "   SNAPSHOT_LENGTH      SNAPSHOT_FILE_COUNT      "
+        + " SNAPSHOT_DIR_COUNT      SNAPSHOT_SPACE_CONSUMED PATHNAME";
+    verify(out).println(withSnapshotHeader);
+    verifyNoMoreInteractions(out);
+  }
+
+  @Test
   public void getCommandName() {
     Count count = new Count();
     String actual = count.getCommandName();
@@ -447,7 +469,8 @@ public class TestCount {
     Count count = new Count();
     String actual = count.getUsage();
     String expected =
-        "-count [-q] [-h] [-v] [-t [<storage type>]] [-u] <path> ...";
+        "-count [-q] [-h] [-v] [-t [<storage type>]]"
+        + " [-u] [-x] [-e] [-s] <path> ...";
     assertEquals("Count.getUsage", expected, actual);
   }
 
@@ -465,14 +488,22 @@ public class TestCount {
         + "      DIR_COUNT FILE_COUNT CONTENT_SIZE PATHNAME\n"
         + "The -h option shows file sizes in human readable format.\n"
         + "The -v option displays a header line.\n"
+        + "The -x option excludes snapshots from being calculated. \n"
         + "The -t option displays quota by storage types.\n"
-        + "It must be used with -q option.\n"
+        + "It should be used with -q or -u option, "
+        + "otherwise it will be ignored.\n"
         + "If a comma-separated list of storage types is given after the -t option, \n"
         + "it displays the quota and usage for the specified types. \n"
         + "Otherwise, it displays the quota and usage for all the storage \n"
-        + "types that support quota \n"
+        + "types that support quota. The list of possible storage "
+        + "types(case insensitive):\n"
+        + "ram_disk, ssd, disk, archive and nvdimm.\n"
+        + "It can also pass the value '', 'all' or 'ALL' to specify all the "
+        + "storage types.\n"
         + "The -u option shows the quota and \n"
-        + "the usage against the quota without the detailed content summary.";
+        + "the usage against the quota without the detailed content summary."
+        + "The -e option shows the erasure coding policy."
+        + "The -s option shows snapshot counts.";
 
     assertEquals("Count.getDescription", expected, actual);
   }
@@ -521,7 +552,7 @@ public class TestCount {
     }
 
     @Override
-    public String toString(boolean qOption, boolean hOption) {
+    public String toString(boolean qOption, boolean hOption, boolean xOption) {
       if (qOption) {
         if (hOption) {
           return (HUMAN + WITH_QUOTAS);

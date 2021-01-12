@@ -43,6 +43,7 @@ import java.io.IOException;
 public class KMSExceptionsProvider implements ExceptionMapper<Exception> {
   private static Logger LOG =
       LoggerFactory.getLogger(KMSExceptionsProvider.class);
+  private final static Logger EXCEPTION_LOG = KMS.LOG;
 
   private static final String ENTER = System.getProperty("line.separator");
 
@@ -100,6 +101,9 @@ public class KMSExceptionsProvider implements ExceptionMapper<Exception> {
           KMSMDCFilter.getMethod(),
           KMSMDCFilter.getURL(), getOneLineMessage(exception));
     }
+    EXCEPTION_LOG.warn("User {} request {} {} caused exception.",
+        KMSMDCFilter.getUgi(), KMSMDCFilter.getMethod(),
+        KMSMDCFilter.getURL(), exception);
     return createResponse(status, throwable);
   }
 
@@ -107,9 +111,10 @@ public class KMSExceptionsProvider implements ExceptionMapper<Exception> {
     UserGroupInformation ugi = KMSMDCFilter.getUgi();
     String method = KMSMDCFilter.getMethod();
     String url = KMSMDCFilter.getURL();
+    String remoteClientAddress = KMSMDCFilter.getRemoteClientAddress();
     String msg = getOneLineMessage(ex);
-    LOG.warn("User:'{}' Method:{} URL:{} Response:{}-{}", ugi, method, url,
-        status, msg, ex);
+    LOG.warn("User:'{}' Method:{} URL:{} From:{} Response:{}-{}", ugi, method,
+        url, remoteClientAddress, status, msg, ex);
   }
 
 }

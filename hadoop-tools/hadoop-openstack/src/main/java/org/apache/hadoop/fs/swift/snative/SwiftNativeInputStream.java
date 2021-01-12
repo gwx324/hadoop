@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.fs.swift.snative;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FSExceptionMessages;
 import org.apache.hadoop.fs.FSInputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -43,7 +43,8 @@ import java.io.IOException;
  */
 class SwiftNativeInputStream extends FSInputStream {
 
-  private static final Log LOG = LogFactory.getLog(SwiftNativeInputStream.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(SwiftNativeInputStream.class);
 
   /**
    *  range requested off the server: {@value}
@@ -161,6 +162,9 @@ class SwiftNativeInputStream extends FSInputStream {
   public synchronized int read(byte[] b, int off, int len) throws IOException {
     SwiftUtils.debug(LOG, "read(buffer, %d, %d)", off, len);
     SwiftUtils.validateReadArgs(b, off, len);
+    if (len == 0) {
+      return 0;
+    }
     int result = -1;
     try {
       verifyOpen();

@@ -25,8 +25,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.LimitedPrivate;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
@@ -45,7 +43,9 @@ import org.apache.hadoop.yarn.ipc.YarnRPC;
 import org.apache.hadoop.yarn.security.NMTokenIdentifier;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /**
@@ -53,7 +53,8 @@ import com.google.common.annotations.VisibleForTesting;
  */
 @LimitedPrivate({ "MapReduce", "YARN" })
 public class ContainerManagementProtocolProxy {
-  static final Log LOG = LogFactory.getLog(ContainerManagementProtocolProxy.class);
+  static final Logger LOG =
+          LoggerFactory.getLogger(ContainerManagementProtocolProxy.class);
 
   private final int maxConnectedNMs;
   private final Map<String, ContainerManagementProtocolProxyData> cmProxy;
@@ -78,8 +79,9 @@ public class ContainerManagementProtocolProxy {
           YarnConfiguration.NM_CLIENT_MAX_NM_PROXIES
               + " (" + maxConnectedNMs + ") can not be less than 0.");
     }
-    LOG.info(YarnConfiguration.NM_CLIENT_MAX_NM_PROXIES + " : "
-        + maxConnectedNMs);
+
+    LOG.debug("{} : {}", YarnConfiguration.NM_CLIENT_MAX_NM_PROXIES,
+        maxConnectedNMs);
 
     if (maxConnectedNMs > 0) {
       cmProxy =
@@ -106,10 +108,8 @@ public class ContainerManagementProtocolProxy {
     while (proxy != null
         && !proxy.token.getIdentifier().equals(
             nmTokenCache.getToken(containerManagerBindAddr).getIdentifier())) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Refreshing proxy as NMToken got updated for node : "
-            + containerManagerBindAddr);
-      }
+      LOG.debug("Refreshing proxy as NMToken got updated for node : {}",
+          containerManagerBindAddr);
       // Token is updated. check if anyone has already tried closing it.
       if (!proxy.scheduledForClose) {
         // try closing the proxy. Here if someone is already using it
@@ -145,10 +145,8 @@ public class ContainerManagementProtocolProxy {
   private void addProxyToCache(String containerManagerBindAddr,
       ContainerManagementProtocolProxyData proxy) {
     while (cmProxy.size() >= maxConnectedNMs) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Cleaning up the proxy cache, size=" + cmProxy.size()
-            + " max=" + maxConnectedNMs);
-      }
+      LOG.debug("Cleaning up the proxy cache, size={} max={}", cmProxy.size(),
+          maxConnectedNMs);
       boolean removedProxy = false;
       for (ContainerManagementProtocolProxyData otherProxy : cmProxy.values()) {
         removedProxy = removeProxy(otherProxy);
@@ -189,9 +187,7 @@ public class ContainerManagementProtocolProxy {
       ContainerManagementProtocolProxyData proxy) {
     proxy.activeCallers--;
     if (proxy.scheduledForClose && proxy.activeCallers < 0) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Closing proxy : " + proxy.containerManagerBindAddr);
-      }
+      LOG.debug("Closing proxy : {}", proxy.containerManagerBindAddr);
       cmProxy.remove(proxy.containerManagerBindAddr);
       try {
         rpc.stopProxy(proxy.getContainerManagementProtocol(), conf);
@@ -261,9 +257,7 @@ public class ContainerManagementProtocolProxy {
       
       final InetSocketAddress cmAddr =
           NetUtils.createSocketAddr(containerManagerBindAddr);
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Opening proxy : " + containerManagerBindAddr);
-      }
+      LOG.debug("Opening proxy : {}", containerManagerBindAddr);
       // the user in createRemoteUser in this context has to be ContainerID
       UserGroupInformation user =
           UserGroupInformation.createRemoteUser(containerId

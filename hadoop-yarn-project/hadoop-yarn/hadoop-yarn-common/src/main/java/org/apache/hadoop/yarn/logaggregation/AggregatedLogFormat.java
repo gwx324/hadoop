@@ -26,6 +26,7 @@ import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -44,11 +45,8 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.regex.Pattern;
-
 import org.apache.commons.io.input.BoundedInputStream;
 import org.apache.commons.io.output.WriterOutputStream;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.commons.math3.util.Pair;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
@@ -61,6 +59,7 @@ import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.Options;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.protocol.DSQuotaExceededException;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.SecureIOUtils;
 import org.apache.hadoop.io.Writable;
@@ -71,19 +70,19 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.LogAggregationContext;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Times;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Predicate;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Sets;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Iterables;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 
 @Public
 @Evolving
 public class AggregatedLogFormat {
 
-  private static final Log LOG = LogFactory.getLog(AggregatedLogFormat.class);
+  private final static Logger LOG = LoggerFactory.getLogger(
+      AggregatedLogFormat.class);
   private static final LogKey APPLICATION_ACL_KEY = new LogKey("APPLICATION_ACL");
   private static final LogKey APPLICATION_OWNER_KEY = new LogKey("APPLICATION_OWNER");
   private static final LogKey VERSION_KEY = new LogKey("VERSION");
@@ -97,7 +96,6 @@ public class AggregatedLogFormat {
    */
   private static final FsPermission APP_LOG_FILE_UMASK = FsPermission
       .createImmutable((short) (0640 ^ 0777));
-
 
   static {
     RESERVED_KEYS = new HashMap<String, AggregatedLogFormat.LogKey>();
@@ -180,7 +178,7 @@ public class AggregatedLogFormat {
      * The set of log files that are older than retention policy that will
      * not be uploaded but ready for deletion.
      */
-    private final Set<File> obseleteRetentionLogFiles = new HashSet<File>();
+    private final Set<File> obsoleteRetentionLogFiles = new HashSet<File>();
 
     // TODO Maybe add a version string here. Instead of changing the version of
     // the entire k-v format
@@ -247,7 +245,7 @@ public class AggregatedLogFormat {
           in = secureOpenFile(logFile);
         } catch (IOException e) {
           logErrorMessage(logFile, e);
-          IOUtils.cleanup(LOG, in);
+          IOUtils.cleanupWithLogger(LOG, in);
           continue;
         }
 
@@ -285,7 +283,7 @@ public class AggregatedLogFormat {
           String message = logErrorMessage(logFile, e);
           out.write(message.getBytes(Charset.forName("UTF-8")));
         } finally {
-          IOUtils.cleanup(LOG, in);
+          IOUtils.cleanupWithLogger(LOG, in);
         }
       }
     }
@@ -308,8 +306,17 @@ public class AggregatedLogFormat {
     }
 
     private Set<File> getPendingLogFilesToUpload(File containerLogDir) {
+      if(containerLogDir == null) {
+        return new HashSet<>(0);
+      }
+
+      File[] filesList = containerLogDir.listFiles();
+      if (filesList == null) {
+        return new HashSet<>(0);
+      }
+
       Set<File> candidates =
-          new HashSet<File>(Arrays.asList(containerLogDir.listFiles()));
+          new HashSet<File>(Arrays.asList(filesList));
       for (File logFile : candidates) {
         this.allExistingFileMeta.add(getLogFileMetaData(logFile));
       }
@@ -317,7 +324,7 @@ public class AggregatedLogFormat {
       // if log files are older than retention policy, do not upload them.
       // but schedule them for deletion.
       if(logRetentionContext != null && !logRetentionContext.shouldRetainLog()){
-        obseleteRetentionLogFiles.addAll(candidates);
+        obsoleteRetentionLogFiles.addAll(candidates);
         candidates.clear();
         return candidates;
       }
@@ -347,14 +354,9 @@ public class AggregatedLogFormat {
               : this.logAggregationContext.getRolledLogsExcludePattern(),
           candidates, true);
 
-      Iterable<File> mask =
-          Iterables.filter(candidates, new Predicate<File>() {
-            @Override
-            public boolean apply(File next) {
-              return !alreadyUploadedLogFiles
-                  .contains(getLogFileMetaData(next));
-            }
-          });
+      Iterable<File> mask = Iterables.filter(candidates, (input) ->
+          !alreadyUploadedLogFiles
+              .contains(getLogFileMetaData(input)));
       return Sets.newHashSet(mask);
     }
 
@@ -389,9 +391,9 @@ public class AggregatedLogFormat {
       return info;
     }
 
-    public Set<Path> getObseleteRetentionLogFiles() {
+    public Set<Path> getObsoleteRetentionLogFiles() {
       Set<Path> path = new HashSet<Path>();
-      for(File file: this.obseleteRetentionLogFiles) {
+      for(File file: this.obsoleteRetentionLogFiles) {
         path.add(new Path(file.getAbsolutePath()));
       }
       return path;
@@ -444,14 +446,23 @@ public class AggregatedLogFormat {
    * The writer that writes out the aggregated logs.
    */
   @Private
-  public static class LogWriter {
+  public static class LogWriter implements AutoCloseable {
 
-    private final FSDataOutputStream fsDataOStream;
-    private final TFile.Writer writer;
+    private FSDataOutputStream fsDataOStream;
+    private TFile.Writer writer;
     private FileContext fc;
 
-    public LogWriter(final Configuration conf, final Path remoteAppLogFile,
-        UserGroupInformation userUgi) throws IOException {
+    /**
+     * Initialize the LogWriter.
+     * Must be called just after the instance is created.
+     * @param conf Configuration
+     * @param remoteAppLogFile remote log file path
+     * @param userUgi Ugi of the user
+     * @throws IOException Failed to initialize
+     */
+    public void initialize(final Configuration conf,
+                           final Path remoteAppLogFile,
+                           UserGroupInformation userUgi) throws IOException {
       try {
         this.fsDataOStream =
             userUgi.doAs(new PrivilegedExceptionAction<FSDataOutputStream>() {
@@ -485,34 +496,34 @@ public class AggregatedLogFormat {
     }
 
     private void writeVersion() throws IOException {
-      DataOutputStream out = this.writer.prepareAppendKey(-1);
-      VERSION_KEY.write(out);
-      out.close();
-      out = this.writer.prepareAppendValue(-1);
-      out.writeInt(VERSION);
-      out.close();
+      try (DataOutputStream out = this.writer.prepareAppendKey(-1)) {
+        VERSION_KEY.write(out);
+      }
+      try (DataOutputStream out = this.writer.prepareAppendValue(-1)) {
+        out.writeInt(VERSION);
+      }
     }
 
     public void writeApplicationOwner(String user) throws IOException {
-      DataOutputStream out = this.writer.prepareAppendKey(-1);
-      APPLICATION_OWNER_KEY.write(out);
-      out.close();
-      out = this.writer.prepareAppendValue(-1);
-      out.writeUTF(user);
-      out.close();
+      try (DataOutputStream out = this.writer.prepareAppendKey(-1)) {
+        APPLICATION_OWNER_KEY.write(out);
+      }
+      try (DataOutputStream out = this.writer.prepareAppendValue(-1)) {
+        out.writeUTF(user);
+      }
     }
 
     public void writeApplicationACLs(Map<ApplicationAccessType, String> appAcls)
         throws IOException {
-      DataOutputStream out = this.writer.prepareAppendKey(-1);
-      APPLICATION_ACL_KEY.write(out);
-      out.close();
-      out = this.writer.prepareAppendValue(-1);
-      for (Entry<ApplicationAccessType, String> entry : appAcls.entrySet()) {
-        out.writeUTF(entry.getKey().toString());
-        out.writeUTF(entry.getValue());
+      try (DataOutputStream out = this.writer.prepareAppendKey(-1)) {
+        APPLICATION_ACL_KEY.write(out);
       }
-      out.close();
+      try (DataOutputStream out = this.writer.prepareAppendValue(-1)) {
+        for (Entry<ApplicationAccessType, String> entry : appAcls.entrySet()) {
+          out.writeUTF(entry.getKey().toString());
+          out.writeUTF(entry.getValue());
+        }
+      }
     }
 
     public void append(LogKey logKey, LogValue logValue) throws IOException {
@@ -521,21 +532,34 @@ public class AggregatedLogFormat {
       if (pendingUploadFiles.size() == 0) {
         return;
       }
-      DataOutputStream out = this.writer.prepareAppendKey(-1);
-      logKey.write(out);
-      out.close();
-      out = this.writer.prepareAppendValue(-1);
-      logValue.write(out, pendingUploadFiles);
-      out.close();
+      try (DataOutputStream out = this.writer.prepareAppendKey(-1)) {
+        logKey.write(out);
+      }
+      try (DataOutputStream out = this.writer.prepareAppendValue(-1)) {
+        logValue.write(out, pendingUploadFiles);
+      }
     }
 
-    public void close() {
+    @Override
+    public void close() throws DSQuotaExceededException {
       try {
-        this.writer.close();
-      } catch (IOException e) {
+        if (writer != null) {
+          writer.close();
+        }
+      } catch (Exception e) {
         LOG.warn("Exception closing writer", e);
+      } finally {
+        try {
+          this.fsDataOStream.close();
+        } catch (DSQuotaExceededException e) {
+          LOG.error("Exception in closing {}",
+              this.fsDataOStream.getClass(), e);
+          throw e;
+        } catch (Throwable e) {
+          LOG.error("Exception in closing {}",
+              this.fsDataOStream.getClass(), e);
+        }
       }
-      IOUtils.closeStream(fsDataOStream);
     }
   }
 
@@ -549,22 +573,26 @@ public class AggregatedLogFormat {
 
     public LogReader(Configuration conf, Path remoteAppLogFile)
         throws IOException {
-      FileContext fileContext =
-          FileContext.getFileContext(remoteAppLogFile.toUri(), conf);
-      this.fsDataIStream = fileContext.open(remoteAppLogFile);
-      reader =
-          new TFile.Reader(this.fsDataIStream, fileContext.getFileStatus(
-              remoteAppLogFile).getLen(), conf);
-      this.scanner = reader.createScanner();
+      try {
+        FileContext fileContext =
+            FileContext.getFileContext(remoteAppLogFile.toUri(), conf);
+        this.fsDataIStream = fileContext.open(remoteAppLogFile);
+        reader = new TFile.Reader(this.fsDataIStream,
+            fileContext.getFileStatus(remoteAppLogFile).getLen(), conf);
+        this.scanner = reader.createScanner();
+      } catch (IOException ioe) {
+        close();
+        throw new IOException("Error in creating LogReader", ioe);
+      }
     }
 
     private boolean atBeginning = true;
 
     /**
      * Returns the owner of the application.
-     * 
+     *
      * @return the application owner.
-     * @throws IOException
+     * @throws IOException if we can not get the application owner.
      */
     public String getApplicationOwner() throws IOException {
       TFile.Reader.Scanner ownerScanner = null;
@@ -582,16 +610,16 @@ public class AggregatedLogFormat {
         }
         return null;
       } finally {
-        IOUtils.cleanup(LOG, ownerScanner);
+        IOUtils.cleanupWithLogger(LOG, ownerScanner);
       }
     }
 
     /**
      * Returns ACLs for the application. An empty map is returned if no ACLs are
      * found.
-     * 
+     *
      * @return a map of the Application ACLs.
-     * @throws IOException
+     * @throws IOException if we can not get the application acls.
      */
     public Map<ApplicationAccessType, String> getApplicationAcls()
         throws IOException {
@@ -628,16 +656,17 @@ public class AggregatedLogFormat {
         }
         return acls;
       } finally {
-        IOUtils.cleanup(LOG, aclScanner);
+        IOUtils.cleanupWithLogger(LOG, aclScanner);
       }
     }
 
     /**
      * Read the next key and return the value-stream.
      * 
-     * @param key
-     * @return the valueStream if there are more keys or null otherwise.
-     * @throws IOException
+     * @param key the log key
+     * @return the valueStream if there are more keys or null otherwise
+     * @throws IOException if we can not get the dataInputStream
+     * for the next key
      */
     public DataInputStream next(LogKey key) throws IOException {
       if (!this.atBeginning) {
@@ -662,10 +691,10 @@ public class AggregatedLogFormat {
      * Get a ContainerLogsReader to read the logs for
      * the specified container.
      *
-     * @param containerId
+     * @param containerId the containerId
      * @return object to read the container's logs or null if the
      *         logs could not be found
-     * @throws IOException
+     * @throws IOException if we can not get the container log reader.
      */
     @Private
     public ContainerLogsReader getContainerLogsReader(
@@ -731,10 +760,10 @@ public class AggregatedLogFormat {
 
     /**
      * Writes all logs for a single container to the provided writer.
-     * @param valueStream
-     * @param writer
-     * @param logUploadedTime
-     * @throws IOException
+     * @param valueStream the valueStream
+     * @param writer the log writer
+     * @param logUploadedTime the time stamp
+     * @throws IOException if we can not read the container logs.
      */
     public static void readAcontainerLogs(DataInputStream valueStream,
         Writer writer, long logUploadedTime) throws IOException {
@@ -752,16 +781,15 @@ public class AggregatedLogFormat {
           }
         }
       } finally {
-        IOUtils.cleanup(LOG, ps);
-        IOUtils.cleanup(LOG, os);
+        IOUtils.cleanupWithLogger(LOG, ps, os);
       }
     }
 
     /**
      * Writes all logs for a single container to the provided writer.
-     * @param valueStream
-     * @param writer
-     * @throws IOException
+     * @param valueStream the value stream
+     * @param writer the log writer
+     * @throws IOException if we can not read the container logs.
      */
     public static void readAcontainerLogs(DataInputStream valueStream,
         Writer writer) throws IOException {
@@ -828,10 +856,11 @@ public class AggregatedLogFormat {
      * Keep calling this till you get a {@link EOFException} for getting logs of
      * all types for a single container.
      * 
-     * @param valueStream
-     * @param out
-     * @param logUploadedTime
-     * @throws IOException
+     * @param valueStream the value stream
+     * @param out the print stream
+     * @param logUploadedTime the time stamp
+     * @throws IOException if we can not read the container log by specifying
+     * the container log type.
      */
     public static void readAContainerLogsForALogType(
         DataInputStream valueStream, PrintStream out, long logUploadedTime)
@@ -843,11 +872,11 @@ public class AggregatedLogFormat {
      * Keep calling this till you get a {@link EOFException} for getting logs of
      * all types for a single container for the specific bytes.
      *
-     * @param valueStream
-     * @param out
-     * @param logUploadedTime
-     * @param bytes
-     * @throws IOException
+     * @param valueStream the value stream
+     * @param out the output print stream
+     * @param logUploadedTime the log upload time stamp
+     * @param bytes the output size of the log
+     * @throws IOException if we can not read the container log
      */
     public static void readAContainerLogsForALogType(
         DataInputStream valueStream, PrintStream out, long logUploadedTime,
@@ -859,9 +888,9 @@ public class AggregatedLogFormat {
      * Keep calling this till you get a {@link EOFException} for getting logs of
      * all types for a single container.
      * 
-     * @param valueStream
-     * @param out
-     * @throws IOException
+     * @param valueStream the value stream
+     * @param out the output print stream
+     * @throws IOException if we can not read the container log
      */
     public static void readAContainerLogsForALogType(
         DataInputStream valueStream, PrintStream out)
@@ -872,11 +901,11 @@ public class AggregatedLogFormat {
     /**
      * Keep calling this till you get a {@link EOFException} for getting logs of
      * the specific types for a single container.
-     * @param valueStream
-     * @param out
-     * @param logUploadedTime
-     * @param logType
-     * @throws IOException
+     * @param valueStream the value stream
+     * @param out the output print stream
+     * @param logUploadedTime the log uploaded time stamp
+     * @param logType the given log type
+     * @throws IOException if we can not read the container logs
      */
     public static int readContainerLogsForALogType(
         DataInputStream valueStream, PrintStream out, long logUploadedTime,
@@ -888,11 +917,11 @@ public class AggregatedLogFormat {
     /**
      * Keep calling this till you get a {@link EOFException} for getting logs of
      * the specific types for a single container.
-     * @param valueStream
-     * @param out
-     * @param logUploadedTime
-     * @param logType
-     * @throws IOException
+     * @param valueStream the value stream
+     * @param out the output print stream
+     * @param logUploadedTime the log uploaded time stamp
+     * @param logType the given log type
+     * @throws IOException if we can not read the container logs
      */
     public static int readContainerLogsForALogType(
         DataInputStream valueStream, PrintStream out, long logUploadedTime,
@@ -961,7 +990,7 @@ public class AggregatedLogFormat {
 
     @Private
     public static Pair<String, String> readContainerMetaDataAndSkipData(
-        DataInputStream valueStream, PrintStream out) throws IOException {
+        DataInputStream valueStream) throws IOException {
 
       String fileType = valueStream.readUTF();
       String fileLengthStr = valueStream.readUTF();
@@ -978,12 +1007,12 @@ public class AggregatedLogFormat {
     }
 
     public void close() {
-      IOUtils.cleanup(LOG, scanner, reader, fsDataIStream);
+      IOUtils.cleanupWithLogger(LOG, scanner, reader, fsDataIStream);
     }
   }
 
   @Private
-  public static class ContainerLogsReader {
+  public static class ContainerLogsReader extends InputStream {
     private DataInputStream valueStream;
     private String currentLogType = null;
     private long currentLogLength = 0;

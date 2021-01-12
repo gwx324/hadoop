@@ -40,30 +40,40 @@ public final class ContainerStartContext {
   private final Map<Path, List<String>> localizedResources;
   private final Path nmPrivateContainerScriptPath;
   private final Path nmPrivateTokensPath;
+  private final Path nmPrivateKeystorePath;
+  private final Path nmPrivateTruststorePath;
   private final String user;
   private final String appId;
   private final Path containerWorkDir;
+  private final Path csiVolumesRootDir;
   private final List<String> localDirs;
   private final List<String> logDirs;
   private final List<String> filecacheDirs;
   private final List<String> userLocalDirs;
   private final List<String> containerLocalDirs;
   private final List<String> containerLogDirs;
+  private final List<String> userFilecacheDirs;
+  private final List<String> applicationLocalDirs;
 
   public static final class Builder {
     private Container container;
     private Map<Path, List<String>> localizedResources;
     private Path nmPrivateContainerScriptPath;
     private Path nmPrivateTokensPath;
+    private Path nmPrivateKeystorePath;
+    private Path nmPrivateTruststorePath;
     private String user;
     private String appId;
     private Path containerWorkDir;
+    private Path csiVolumesRoot;
     private List<String> localDirs;
     private List<String> logDirs;
     private List<String> filecacheDirs;
     private List<String> userLocalDirs;
     private List<String> containerLocalDirs;
     private List<String> containerLogDirs;
+    private List<String> userFilecacheDirs;
+    private List<String> applicationLocalDirs;
 
     public Builder() {
     }
@@ -90,6 +100,16 @@ public final class ContainerStartContext {
       return this;
     }
 
+    public Builder setNmPrivateKeystorePath(Path nmPrivateKeystorePath) {
+      this.nmPrivateKeystorePath = nmPrivateKeystorePath;
+      return this;
+    }
+
+    public Builder setNmPrivateTruststorePath(Path nmPrivateTruststorePath) {
+      this.nmPrivateTruststorePath = nmPrivateTruststorePath;
+      return this;
+    }
+
     public Builder setUser(String user) {
       this.user = user;
       return this;
@@ -97,6 +117,11 @@ public final class ContainerStartContext {
 
     public Builder setAppId(String appId) {
       this.appId = appId;
+      return this;
+    }
+
+    public Builder setContainerCsiVolumesRootDir(Path csiVolumesRootDir) {
+      this.csiVolumesRoot = csiVolumesRootDir;
       return this;
     }
 
@@ -135,6 +160,18 @@ public final class ContainerStartContext {
       return this;
     }
 
+    @SuppressWarnings("checkstyle:hiddenfield")
+    public Builder setUserFilecacheDirs(List<String> userFilecacheDirs) {
+      this.userFilecacheDirs = userFilecacheDirs;
+      return this;
+    }
+
+    @SuppressWarnings("checkstyle:hiddenfield")
+    public Builder setApplicationLocalDirs(List<String> applicationLocalDirs) {
+      this.applicationLocalDirs = applicationLocalDirs;
+      return this;
+    }
+
     public ContainerStartContext build() {
       return new ContainerStartContext(this);
     }
@@ -145,6 +182,8 @@ public final class ContainerStartContext {
     this.localizedResources = builder.localizedResources;
     this.nmPrivateContainerScriptPath = builder.nmPrivateContainerScriptPath;
     this.nmPrivateTokensPath = builder.nmPrivateTokensPath;
+    this.nmPrivateKeystorePath = builder.nmPrivateKeystorePath;
+    this.nmPrivateTruststorePath = builder.nmPrivateTruststorePath;
     this.user = builder.user;
     this.appId = builder.appId;
     this.containerWorkDir = builder.containerWorkDir;
@@ -154,6 +193,9 @@ public final class ContainerStartContext {
     this.userLocalDirs = builder.userLocalDirs;
     this.containerLocalDirs = builder.containerLocalDirs;
     this.containerLogDirs = builder.containerLogDirs;
+    this.userFilecacheDirs = builder.userFilecacheDirs;
+    this.applicationLocalDirs = builder.applicationLocalDirs;
+    this.csiVolumesRootDir = builder.csiVolumesRoot;
   }
 
   public Container getContainer() {
@@ -174,6 +216,14 @@ public final class ContainerStartContext {
 
   public Path getNmPrivateTokensPath() {
     return this.nmPrivateTokensPath;
+  }
+
+  public Path getNmPrivateKeystorePath() {
+    return this.nmPrivateKeystorePath;
+  }
+
+  public Path getNmPrivateTruststorePath() {
+    return this.nmPrivateTruststorePath;
   }
 
   public String getUser() {
@@ -211,5 +261,17 @@ public final class ContainerStartContext {
   public List<String> getContainerLogDirs() {
     return Collections.unmodifiableList(this
         .containerLogDirs);
+  }
+
+  public List<String> getUserFilecacheDirs() {
+    return Collections.unmodifiableList(this.userFilecacheDirs);
+  }
+
+  public List<String> getApplicationLocalDirs() {
+    return Collections.unmodifiableList(this.applicationLocalDirs);
+  }
+
+  public Path getCsiVolumesRootDir() {
+    return this.csiVolumesRootDir;
   }
 }

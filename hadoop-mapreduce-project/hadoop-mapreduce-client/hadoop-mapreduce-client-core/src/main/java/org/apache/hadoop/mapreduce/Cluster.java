@@ -24,10 +24,10 @@ import java.net.InetSocketAddress;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -43,6 +43,8 @@ import org.apache.hadoop.mapreduce.v2.LogParams;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.SecretManager.InvalidToken;
 import org.apache.hadoop.security.token.Token;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Provides a way to access information about the map/reduce cluster.
@@ -52,8 +54,8 @@ import org.apache.hadoop.security.token.Token;
 public class Cluster {
   
   @InterfaceStability.Evolving
-  public static enum JobTrackerStatus {INITIALIZING, RUNNING};
-  
+  public enum JobTrackerStatus {INITIALIZING, RUNNING};
+
   private ClientProtocolProvider clientProtocolProvider;
   private ClientProtocol client;
   private UserGroupInformation ugi;
@@ -62,9 +64,11 @@ public class Cluster {
   private Path sysDir = null;
   private Path stagingAreaDir = null;
   private Path jobHistoryDir = null;
-  private static final Log LOG = LogFactory.getLog(Cluster.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(Cluster.class);
 
-  private static ServiceLoader<ClientProtocolProvider> frameworkLoader =
+  @VisibleForTesting
+  static Iterable<ClientProtocolProvider> frameworkLoader =
       ServiceLoader.load(ClientProtocolProvider.class);
   private volatile List<ClientProtocolProvider> providerList = null;
 
@@ -74,8 +78,15 @@ public class Cluster {
         if (providerList == null) {
           List<ClientProtocolProvider> localProviderList =
               new ArrayList<ClientProtocolProvider>();
-          for (ClientProtocolProvider provider : frameworkLoader) {
-            localProviderList.add(provider);
+          try {
+            for (ClientProtocolProvider provider : frameworkLoader) {
+              localProviderList.add(provider);
+            }
+          } catch(ServiceConfigurationError e) {
+            LOG.info("Failed to instantiate ClientProtocolProvider, please "
+                         + "check the /META-INF/services/org.apache."
+                         + "hadoop.mapreduce.protocol.ClientProtocolProvider "
+                         + "files on the classpath", e);
           }
           providerList = localProviderList;
         }
@@ -203,15 +214,15 @@ public class Cluster {
   public Job getJob(JobID jobId) throws IOException, InterruptedException {
     JobStatus status = client.getJobStatus(jobId);
     if (status != null) {
-      final JobConf conf = new JobConf();
-      final Path jobPath = new Path(client.getFilesystemName(),
-          status.getJobFile());
-      final FileSystem fs = FileSystem.get(jobPath.toUri(), getConf());
+      JobConf conf;
       try {
-        conf.addResource(fs.open(jobPath), jobPath.toString());
-      } catch (FileNotFoundException fnf) {
-        if (LOG.isWarnEnabled()) {
-          LOG.warn("Job conf missing on cluster", fnf);
+        conf = new JobConf(status.getJobFile());
+      } catch (RuntimeException ex) {
+        // If job file doesn't exist it means we can't find the job
+        if (ex.getCause() instanceof FileNotFoundException) {
+          return null;
+        } else {
+          throw ex;
         }
       }
       return Job.getInstance(this, status, conf);

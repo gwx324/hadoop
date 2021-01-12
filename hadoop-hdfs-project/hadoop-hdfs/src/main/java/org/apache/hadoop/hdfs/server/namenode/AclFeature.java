@@ -24,8 +24,8 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.hdfs.util.ReferenceCountMap.ReferenceCounter;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
 
 /**
  * Feature that represents the ACLs of the inode.
@@ -70,6 +70,11 @@ public class AclFeature implements INode.Feature, ReferenceCounter {
       return false;
     }
     return Arrays.equals(entries, ((AclFeature) o).entries);
+  }
+
+  @Override
+  public String toString() {
+    return "AclFeature : " + Integer.toHexString(hashCode()) + " Size of entries : " + entries.length;
   }
 
   @Override

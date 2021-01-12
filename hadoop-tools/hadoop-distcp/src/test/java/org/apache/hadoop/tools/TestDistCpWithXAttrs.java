@@ -40,7 +40,7 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 /**
  * Tests distcp in combination with HDFS XAttrs.
@@ -226,7 +226,7 @@ public class TestDistCpWithXAttrs {
 
     @Override
     public FileStatus[] listStatus(Path f) throws IOException {
-      return null;
+      return new FileStatus[0];
     }
 
     @Override

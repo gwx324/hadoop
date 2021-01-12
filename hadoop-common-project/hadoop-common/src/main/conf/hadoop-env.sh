@@ -58,10 +58,13 @@
 # export HADOOP_HOME=
 
 # Location of Hadoop's configuration information.  i.e., where this
-# file is probably living. Many sites will also set this in the
-# same location where JAVA_HOME is defined.  If this is not defined
-# Hadoop will attempt to locate it based upon its execution
-# path.
+# file is living. If this is not defined, Hadoop will attempt to
+# locate it based upon its execution path.
+#
+# NOTE: It is recommend that this variable not be set here but in
+# /etc/profile.d or equivalent.  Some options (such as
+# --config) may react strangely otherwise.
+#
 # export HADOOP_CONF_DIR=${HADOOP_HOME}/etc/hadoop
 
 # The maximum amount of heap to use (Java -Xmx).  If no unit
@@ -85,26 +88,13 @@
 # Extra Java runtime options for all Hadoop commands. We don't support
 # IPv6 yet/still, so by default the preference is set to IPv4.
 # export HADOOP_OPTS="-Djava.net.preferIPv4Stack=true"
-# For Kerberos debugging, an extended option set logs more invormation
+# For Kerberos debugging, an extended option set logs more information
 # export HADOOP_OPTS="-Djava.net.preferIPv4Stack=true -Dsun.security.krb5.debug=true -Dsun.security.spnego.debug"
 
 # Some parts of the shell code may do special things dependent upon
 # the operating system.  We have to set this here. See the next
 # section as to why....
 export HADOOP_OS_TYPE=${HADOOP_OS_TYPE:-$(uname -s)}
-
-
-# Under certain conditions, Java on OS X will throw SCDynamicStore errors
-# in the system logs.
-# See HADOOP-8719 for more information.  If one needs Kerberos
-# support on OS X, one will want to change/remove this extra bit.
-case ${HADOOP_OS_TYPE} in
-  Darwin*)
-    export HADOOP_OPTS="${HADOOP_OPTS} -Djava.security.krb5.realm= "
-    export HADOOP_OPTS="${HADOOP_OPTS} -Djava.security.krb5.kdc= "
-    export HADOOP_OPTS="${HADOOP_OPTS} -Djava.security.krb5.conf= "
-  ;;
-esac
 
 # Extra Java runtime options for some Hadoop commands
 # and clients (i.e., hdfs dfs -blah).  These get appended to HADOOP_OPTS for
@@ -117,9 +107,9 @@ esac
 #
 # By default, Apache Hadoop overrides Java's CLASSPATH
 # environment variable.  It is configured such
-# that it sarts out blank with new entries added after passing
+# that it starts out blank with new entries added after passing
 # a series of checks (file/dir exists, not already listed aka
-# de-deduplication).  During de-depulication, wildcards and/or
+# de-deduplication).  During de-deduplication, wildcards and/or
 # directories are *NOT* expanded to keep it simple. Therefore,
 # if the computed classpath has two specific mentions of
 # awesome-methods-1.0.jar, only the first one added will be seen.
@@ -223,12 +213,6 @@ esac
 # Java property: hadoop.security.logger
 # export HADOOP_SECURITY_LOGGER=INFO,NullAppender
 
-# Default log level for file system audit messages.
-# Generally, this is specifically set in the namenode-specific
-# options line.
-# Java property: hdfs.audit.logger
-# export HADOOP_AUDIT_LOGGER=INFO,NullAppender
-
 # Default process priority level
 # Note that sub-processes will also run at this level!
 # export HADOOP_NICENESS=0
@@ -275,7 +259,7 @@ esac
 #
 # When running a secure daemon, the default value of HADOOP_IDENT_STRING
 # ends up being a bit bogus.  Therefore, by default, the code will
-# replace HADOOP_IDENT_STRING with HADOOP_SECURE_xx_USER.  If one wants
+# replace HADOOP_IDENT_STRING with HADOOP_xx_SECURE_USER.  If one wants
 # to keep HADOOP_IDENT_STRING untouched, then uncomment this line.
 # export HADOOP_SECURE_IDENT_PRESERVE="true"
 
@@ -294,16 +278,16 @@ esac
 # and therefore may override any similar flags set in HADOOP_OPTS
 #
 # a) Set JMX options
-# export HADOOP_NAMENODE_OPTS="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=1026"
+# export HDFS_NAMENODE_OPTS="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=1026"
 #
 # b) Set garbage collection logs
-# export HADOOP_NAMENODE_OPTS="${HADOOP_GC_SETTINGS} -Xloggc:${HADOOP_LOG_DIR}/gc-rm.log-$(date +'%Y%m%d%H%M')"
+# export HDFS_NAMENODE_OPTS="${HADOOP_GC_SETTINGS} -Xloggc:${HADOOP_LOG_DIR}/gc-rm.log-$(date +'%Y%m%d%H%M')"
 #
 # c) ... or set them directly
-# export HADOOP_NAMENODE_OPTS="-verbose:gc -XX:+PrintGCDetails -XX:+PrintGCTimeStamps -XX:+PrintGCDateStamps -Xloggc:${HADOOP_LOG_DIR}/gc-rm.log-$(date +'%Y%m%d%H%M')"
+# export HDFS_NAMENODE_OPTS="-verbose:gc -XX:+PrintGCDetails -XX:+PrintGCTimeStamps -XX:+PrintGCDateStamps -Xloggc:${HADOOP_LOG_DIR}/gc-rm.log-$(date +'%Y%m%d%H%M')"
 
 # this is the default:
-# export HADOOP_NAMENODE_OPTS="-Dhadoop.security.logger=INFO,RFAS"
+# export HDFS_NAMENODE_OPTS="-Dhadoop.security.logger=INFO,RFAS"
 
 ###
 # SecondaryNameNode specific parameters
@@ -313,7 +297,7 @@ esac
 # and therefore may override any similar flags set in HADOOP_OPTS
 #
 # This is the default:
-# export HADOOP_SECONDARYNAMENODE_OPTS="-Dhadoop.security.logger=INFO,RFAS"
+# export HDFS_SECONDARYNAMENODE_OPTS="-Dhadoop.security.logger=INFO,RFAS"
 
 ###
 # DataNode specific parameters
@@ -323,7 +307,7 @@ esac
 # and therefore may override any similar flags set in HADOOP_OPTS
 #
 # This is the default:
-# export HADOOP_DATANODE_OPTS="-Dhadoop.security.logger=ERROR,RFAS"
+# export HDFS_DATANODE_OPTS="-Dhadoop.security.logger=ERROR,RFAS"
 
 # On secure datanodes, user to run the datanode as after dropping privileges.
 # This **MUST** be uncommented to enable secure HDFS if using privileged ports
@@ -331,19 +315,12 @@ esac
 # defined if SASL is configured for authentication of data transfer protocol
 # using non-privileged ports.
 # This will replace the hadoop.id.str Java property in secure mode.
-# export HADOOP_SECURE_DN_USER=hdfs
+# export HDFS_DATANODE_SECURE_USER=hdfs
 
 # Supplemental options for secure datanodes
 # By default, Hadoop uses jsvc which needs to know to launch a
 # server jvm.
-# export HADOOP_DN_SECURE_EXTRA_OPTS="-jvm server"
-
-# Where datanode log files are stored in the secure data environment.
-# This will replace the hadoop.log.dir Java property in secure mode.
-# export HADOOP_SECURE_DN_LOG_DIR=${HADOOP_SECURE_LOG_DIR}
-
-# Where datanode pid files are stored in the secure data environment.
-# export HADOOP_SECURE_DN_PID_DIR=${HADOOP_SECURE_PID_DIR}
+# export HDFS_DATANODE_SECURE_EXTRA_OPTS="-jvm server"
 
 ###
 # NFS3 Gateway specific parameters
@@ -352,22 +329,22 @@ esac
 # These options will be appended to the options specified as HADOOP_OPTS
 # and therefore may override any similar flags set in HADOOP_OPTS
 #
-# export HADOOP_NFS3_OPTS=""
+# export HDFS_NFS3_OPTS=""
 
 # Specify the JVM options to be used when starting the Hadoop portmapper.
 # These options will be appended to the options specified as HADOOP_OPTS
 # and therefore may override any similar flags set in HADOOP_OPTS
 #
-# export HADOOP_PORTMAP_OPTS="-Xmx512m"
+# export HDFS_PORTMAP_OPTS="-Xmx512m"
 
 # Supplemental options for priviliged gateways
 # By default, Hadoop uses jsvc which needs to know to launch a
 # server jvm.
-# export HADOOP_NFS3_SECURE_EXTRA_OPTS="-jvm server"
+# export HDFS_NFS3_SECURE_EXTRA_OPTS="-jvm server"
 
 # On privileged gateways, user to run the gateway as after dropping privileges
 # This will replace the hadoop.id.str Java property in secure mode.
-# export HADOOP_PRIVILEGED_NFS_USER=nfsserver
+# export HDFS_NFS3_SECURE_USER=nfsserver
 
 ###
 # ZKFailoverController specific parameters
@@ -376,7 +353,7 @@ esac
 # These options will be appended to the options specified as HADOOP_OPTS
 # and therefore may override any similar flags set in HADOOP_OPTS
 #
-# export HADOOP_ZKFC_OPTS=""
+# export HDFS_ZKFC_OPTS=""
 
 ###
 # QuorumJournalNode specific parameters
@@ -385,7 +362,7 @@ esac
 # These options will be appended to the options specified as HADOOP_OPTS
 # and therefore may override any similar flags set in HADOOP_OPTS
 #
-# export HADOOP_JOURNALNODE_OPTS=""
+# export HDFS_JOURNALNODE_OPTS=""
 
 ###
 # HDFS Balancer specific parameters
@@ -394,7 +371,7 @@ esac
 # These options will be appended to the options specified as HADOOP_OPTS
 # and therefore may override any similar flags set in HADOOP_OPTS
 #
-# export HADOOP_BALANCER_OPTS=""
+# export HDFS_BALANCER_OPTS=""
 
 ###
 # HDFS Mover specific parameters
@@ -403,7 +380,24 @@ esac
 # These options will be appended to the options specified as HADOOP_OPTS
 # and therefore may override any similar flags set in HADOOP_OPTS
 #
-# export HADOOP_MOVER_OPTS=""
+# export HDFS_MOVER_OPTS=""
+
+###
+# Router-based HDFS Federation specific parameters
+# Specify the JVM options to be used when starting the RBF Routers.
+# These options will be appended to the options specified as HADOOP_OPTS
+# and therefore may override any similar flags set in HADOOP_OPTS
+#
+# export HDFS_DFSROUTER_OPTS=""
+
+###
+# HDFS StorageContainerManager specific parameters
+###
+# Specify the JVM options to be used when starting the HDFS Storage Container Manager.
+# These options will be appended to the options specified as HADOOP_OPTS
+# and therefore may override any similar flags set in HADOOP_OPTS
+#
+# export HDFS_STORAGECONTAINERMANAGER_OPTS=""
 
 ###
 # Advanced Users Only!
@@ -417,6 +411,20 @@ esac
 #
 # To prevent accidents, shell commands be (superficially) locked
 # to only allow certain users to execute certain subcommands.
+# It uses the format of (command)_(subcommand)_USER.
 #
 # For example, to limit who can execute the namenode command,
-# export HADOOP_namenode_USER=hdfs
+# export HDFS_NAMENODE_USER=hdfs
+
+
+###
+# Registry DNS specific parameters
+###
+# For privileged registry DNS, user to run as after dropping privileges
+# This will replace the hadoop.id.str Java property in secure mode.
+# export HADOOP_REGISTRYDNS_SECURE_USER=yarn
+
+# Supplemental options for privileged registry DNS
+# By default, Hadoop uses jsvc which needs to know to launch a
+# server jvm.
+# export HADOOP_REGISTRYDNS_SECURE_EXTRA_OPTS="-jvm server"

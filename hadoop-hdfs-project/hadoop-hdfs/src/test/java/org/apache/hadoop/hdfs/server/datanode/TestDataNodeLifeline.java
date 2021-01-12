@@ -18,11 +18,14 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_LIFELINE_INTERVAL_SECONDS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_LIFELINE_RPC_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_STALE_DATANODE_INTERVAL_KEY;
+
+import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
 import static org.apache.hadoop.test.MetricsAsserts.getLongCounter;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
 import static org.junit.Assert.assertEquals;
@@ -45,12 +48,13 @@ import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeLifelineProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.datanode.metrics.DataNodeMetrics;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.HeartbeatResponse;
+import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
-import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.test.GenericTestUtils;
 
 import org.apache.log4j.Level;
@@ -67,7 +71,7 @@ import org.mockito.stubbing.Answer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 /**
  * Test suite covering lifeline protocol handling in the DataNode.
@@ -90,6 +94,8 @@ public class TestDataNodeLifeline {
   private DataNodeMetrics metrics;
   private DatanodeProtocolClientSideTranslatorPB namenode;
   private FSNamesystem namesystem;
+  private DataNode dn;
+  private BPServiceActor bpsa;
 
   @Before
   public void setup() throws Exception {
@@ -106,7 +112,7 @@ public class TestDataNodeLifeline {
     namesystem = cluster.getNameNode().getNamesystem();
 
     // Set up spies on RPC proxies so that we can inject failures.
-    DataNode dn = cluster.getDataNodes().get(0);
+    dn = cluster.getDataNodes().get(0);
     metrics = dn.getMetrics();
     assertNotNull(metrics);
     List<BPOfferService> allBpos = dn.getAllBpOs();
@@ -118,7 +124,7 @@ public class TestDataNodeLifeline {
     assertNotNull(allBpsa);
     assertEquals(1, allBpsa.size());
 
-    final BPServiceActor bpsa = allBpsa.get(0);
+    bpsa = allBpsa.get(0);
     assertNotNull(bpsa);
 
     // Lifeline RPC proxy gets created on separate thread, so poll until found.
@@ -163,8 +169,10 @@ public class TestDataNodeLifeline {
             anyInt(),
             anyInt(),
             anyInt(),
-            any(VolumeFailureSummary.class),
-            anyBoolean());
+            any(),
+            anyBoolean(),
+            any(SlowPeerReports.class),
+            any(SlowDiskReports.class));
 
     // Intercept lifeline to trigger latch count-down on each call.
     doAnswer(new LatchCountingAnswer<Void>(lifelinesSent))
@@ -176,7 +184,7 @@ public class TestDataNodeLifeline {
             anyInt(),
             anyInt(),
             anyInt(),
-            any(VolumeFailureSummary.class));
+            any());
 
     // While waiting on the latch for the expected number of lifeline messages,
     // poll DataNode tracking information.  Thanks to the lifeline, we expect
@@ -188,6 +196,10 @@ public class TestDataNodeLifeline {
           namesystem.getNumDeadDataNodes());
       assertEquals("Expect DataNode not marked stale due to lifeline.", 0,
           namesystem.getNumStaleDataNodes());
+      // add a new volume on the next heartbeat
+      cluster.getDataNodes().get(0).reconfigurePropertyImpl(
+          DFS_DATANODE_DATA_DIR_KEY,
+          cluster.getDataDirectory().concat("/data-new"));
     }
 
     // Verify that we did in fact call the lifeline RPC.
@@ -199,7 +211,7 @@ public class TestDataNodeLifeline {
         anyInt(),
         anyInt(),
         anyInt(),
-        any(VolumeFailureSummary.class));
+        any());
 
     // Also verify lifeline call through metrics.  We expect at least
     // numLifelines, guaranteed by waiting on the latch.  There is a small
@@ -226,8 +238,10 @@ public class TestDataNodeLifeline {
             anyInt(),
             anyInt(),
             anyInt(),
-            any(VolumeFailureSummary.class),
-            anyBoolean());
+            any(),
+            anyBoolean(),
+            any(SlowPeerReports.class),
+            any(SlowDiskReports.class));
 
     // While waiting on the latch for the expected number of heartbeat messages,
     // poll DataNode tracking information.  We expect that the DataNode always
@@ -250,11 +264,37 @@ public class TestDataNodeLifeline {
         anyInt(),
         anyInt(),
         anyInt(),
-        any(VolumeFailureSummary.class));
+        any());
 
     // Also verify no lifeline calls through metrics.
     assertEquals("Expect metrics to count no lifeline calls.", 0,
         getLongCounter("LifelinesNumOps", getMetrics(metrics.name())));
+  }
+
+  @Test
+  public void testLifelineForDeadNode() throws Exception {
+    long initialCapacity = cluster.getNamesystem(0).getCapacityTotal();
+    assertTrue(initialCapacity > 0);
+    dn.setHeartbeatsDisabledForTests(true);
+    cluster.setDataNodesDead();
+    assertEquals("Capacity should be 0 after all DNs dead", 0, cluster
+        .getNamesystem(0).getCapacityTotal());
+    bpsa.sendLifelineForTests();
+    assertEquals("Lifeline should be ignored for dead node", 0, cluster
+        .getNamesystem(0).getCapacityTotal());
+    // Wait for re-registration and heartbeat
+    dn.setHeartbeatsDisabledForTests(false);
+    final DatanodeDescriptor dnDesc = cluster.getNamesystem(0).getBlockManager()
+        .getDatanodeManager().getDatanodes().iterator().next();
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+
+      @Override
+      public Boolean get() {
+        return dnDesc.isAlive() && dnDesc.isHeartbeatedSinceRegistration();
+      }
+    }, 100, 5000);
+    assertEquals("Capacity should include only live capacity", initialCapacity,
+        cluster.getNamesystem(0).getCapacityTotal());
   }
 
   /**

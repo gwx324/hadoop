@@ -31,6 +31,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -46,6 +48,7 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.serializer.Deserializer;
 import org.apache.hadoop.io.serializer.SerializationFactory;
 import org.apache.hadoop.io.serializer.Serializer;
+import org.slf4j.Logger;
 
 /**
  * General reflection utils
@@ -121,15 +124,35 @@ public class ReflectionUtils {
    */
   @SuppressWarnings("unchecked")
   public static <T> T newInstance(Class<T> theClass, Configuration conf) {
+    return newInstance(theClass, conf, EMPTY_ARRAY);
+  }
+
+  /** Create an object for the given class and initialize it from conf
+   *
+   * @param theClass class of which an object is created
+   * @param conf Configuration
+   * @param argTypes the types of the arguments
+   * @param values the values of the arguments
+   * @return a new object
+   */
+  @SuppressWarnings("unchecked")
+  public static <T> T newInstance(Class<T> theClass, Configuration conf,
+      Class<?>[] argTypes, Object ... values) {
     T result;
+    if (argTypes.length != values.length) {
+      throw new IllegalArgumentException(argTypes.length
+          + " parameters are required but "
+          + values.length
+          + " arguments are provided");
+    }
     try {
       Constructor<T> meth = (Constructor<T>) CONSTRUCTOR_CACHE.get(theClass);
       if (meth == null) {
-        meth = theClass.getDeclaredConstructor(EMPTY_ARRAY);
+        meth = theClass.getDeclaredConstructor(argTypes);
         meth.setAccessible(true);
         CONSTRUCTOR_CACHE.put(theClass, meth);
       }
-      result = meth.newInstance();
+      result = meth.newInstance(values);
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
@@ -211,7 +234,36 @@ public class ReflectionUtils {
     boolean dumpStack = false;
     if (log.isInfoEnabled()) {
       synchronized (ReflectionUtils.class) {
-        long now = Time.now();
+        long now = Time.monotonicNow();
+        if (now - previousLogTime >= minInterval * 1000) {
+          previousLogTime = now;
+          dumpStack = true;
+        }
+      }
+      if (dumpStack) {
+        try {
+          ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+          printThreadInfo(new PrintStream(buffer, false, "UTF-8"), title);
+          log.info(buffer.toString(Charset.defaultCharset().name()));
+        } catch (UnsupportedEncodingException ignored) {
+        }
+      }
+    }
+  }
+
+  /**
+   * Log the current thread stacks at INFO level.
+   * @param log the logger that logs the stack trace
+   * @param title a descriptive title for the call stacks
+   * @param minInterval the minimum time from the last
+   */
+  public static void logThreadInfo(Logger log,
+                                   String title,
+                                   long minInterval) {
+    boolean dumpStack = false;
+    if (log.isInfoEnabled()) {
+      synchronized (ReflectionUtils.class) {
+        long now = Time.monotonicNow();
         if (now - previousLogTime >= minInterval * 1000) {
           previousLogTime = now;
           dumpStack = true;
@@ -320,7 +372,13 @@ public class ReflectionUtils {
   public static List<Field> getDeclaredFieldsIncludingInherited(Class<?> clazz) {
     List<Field> fields = new ArrayList<Field>();
     while (clazz != null) {
-      for (Field field : clazz.getDeclaredFields()) {
+      Field[] sortedFields = clazz.getDeclaredFields();
+      Arrays.sort(sortedFields, new Comparator<Field>() {
+        public int compare(Field a, Field b) {
+          return a.getName().compareTo(b.getName());
+        }
+      });
+      for (Field field : sortedFields) {
         fields.add(field);
       }
       clazz = clazz.getSuperclass();

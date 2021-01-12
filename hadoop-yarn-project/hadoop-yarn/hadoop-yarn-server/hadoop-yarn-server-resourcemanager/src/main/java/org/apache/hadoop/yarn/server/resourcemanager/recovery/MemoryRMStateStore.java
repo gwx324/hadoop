@@ -19,6 +19,8 @@
 package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
 import java.io.IOException;
+import java.security.PrivateKey;
+import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -38,7 +40,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenS
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 @Private
 @Unstable
@@ -59,7 +61,7 @@ public class MemoryRMStateStore extends RMStateStore {
   @Override
   public synchronized long getAndIncrementEpoch() throws Exception {
     long currentEpoch = epoch;
-    epoch = epoch + 1;
+    epoch = nextEpoch(epoch);
     return currentEpoch;
   }
 
@@ -78,11 +80,21 @@ public class MemoryRMStateStore extends RMStateStore {
         state.amrmTokenSecretManagerState == null ? null
             : AMRMTokenSecretManagerState
               .newInstance(state.amrmTokenSecretManagerState);
+    if (state.proxyCAState.getCaCert() != null) {
+      byte[] caCertData = state.proxyCAState.getCaCert().getEncoded();
+      returnState.proxyCAState.setCaCert(caCertData);
+    }
+    if (state.proxyCAState.getCaPrivateKey() != null) {
+      byte[] caPrivateKeyData
+          = state.proxyCAState.getCaPrivateKey().getEncoded();
+      returnState.proxyCAState.setCaPrivateKey(caPrivateKeyData);
+    }
     return returnState;
   }
   
   @Override
   public synchronized void initInternal(Configuration conf) {
+    epoch = baseEpoch;
   }
 
   @Override
@@ -162,7 +174,7 @@ public class MemoryRMStateStore extends RMStateStore {
     ApplicationStateData removed = state.appState.remove(appId);
 
     if (removed == null) {
-      throw new YarnRuntimeException("Removing non-exsisting application state");
+      throw new YarnRuntimeException("Removing non-existing application state");
     }
   }
 
@@ -274,6 +286,13 @@ public class MemoryRMStateStore extends RMStateStore {
     if (planState.isEmpty()) {
       state.getReservationState().remove(planName);
     }
+  }
+
+  @Override
+  protected void storeProxyCACertState(
+      X509Certificate caCert, PrivateKey caPrivateKey) throws Exception {
+    state.getProxyCAState().setCaCert(caCert);
+    state.getProxyCAState().setCaPrivateKey(caPrivateKey);
   }
 
   @Override

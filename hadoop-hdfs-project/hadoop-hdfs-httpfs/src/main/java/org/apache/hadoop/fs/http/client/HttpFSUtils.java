@@ -33,6 +33,8 @@ import java.text.MessageFormat;
 import java.util.List;
 import java.util.Map;
 
+import javax.ws.rs.core.MediaType;
+
 /**
  * Utility methods used by HttpFS classes.
  */
@@ -42,6 +44,8 @@ public class HttpFSUtils {
   public static final String SERVICE_NAME = "/webhdfs";
 
   public static final String SERVICE_VERSION = "/v1";
+
+  public static final byte[] EMPTY_BYTES = {};
 
   private static final String SERVICE_PATH = SERVICE_NAME + SERVICE_VERSION;
 
@@ -125,8 +129,17 @@ public class HttpFSUtils {
    * @throws IOException thrown if the <code>InputStream</code> could not be
    * JSON parsed.
    */
-  static Object jsonParse(HttpURLConnection conn) throws IOException {
+  public static Object jsonParse(HttpURLConnection conn) throws IOException {
     try {
+      String contentType = conn.getContentType();
+      if (contentType != null) {
+        final MediaType parsed = MediaType.valueOf(contentType);
+        if (!MediaType.APPLICATION_JSON_TYPE.isCompatible(parsed)) {
+          throw new IOException("Content-Type \"" + contentType
+              + "\" is incompatible with \"" + MediaType.APPLICATION_JSON
+              + "\" (parsed=\"" + parsed + "\")");
+        }
+      }
       JSONParser parser = new JSONParser();
       return parser.parse(
           new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));

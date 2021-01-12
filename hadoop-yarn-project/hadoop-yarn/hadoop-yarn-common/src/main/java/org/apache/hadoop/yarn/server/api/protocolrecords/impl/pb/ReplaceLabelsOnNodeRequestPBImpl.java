@@ -28,12 +28,12 @@ import java.util.Set;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.impl.pb.NodeIdPBImpl;
 import org.apache.hadoop.yarn.proto.YarnProtos.NodeIdProto;
-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.NodeIdToLabelsNameProto;
+import org.apache.hadoop.yarn.proto.YarnProtos.NodeIdToLabelsProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ReplaceLabelsOnNodeRequestProto;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerServiceProtos.ReplaceLabelsOnNodeRequestProtoOrBuilder;
 import org.apache.hadoop.yarn.server.api.protocolrecords.ReplaceLabelsOnNodeRequest;
 
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 
 public class ReplaceLabelsOnNodeRequestPBImpl extends
     ReplaceLabelsOnNodeRequest {
@@ -58,10 +58,10 @@ public class ReplaceLabelsOnNodeRequestPBImpl extends
       return;
     }
     ReplaceLabelsOnNodeRequestProtoOrBuilder p = viaProto ? proto : builder;
-    List<NodeIdToLabelsNameProto> list = p.getNodeToLabelsList();
+    List<NodeIdToLabelsProto> list = p.getNodeToLabelsList();
     this.nodeIdToLabels = new HashMap<NodeId, Set<String>>();
 
-    for (NodeIdToLabelsNameProto c : list) {
+    for (NodeIdToLabelsProto c : list) {
       this.nodeIdToLabels.put(new NodeIdPBImpl(c.getNodeId()),
           Sets.newHashSet(c.getNodeLabelsList()));
     }
@@ -80,11 +80,11 @@ public class ReplaceLabelsOnNodeRequestPBImpl extends
     if (nodeIdToLabels == null) {
       return;
     }
-    Iterable<NodeIdToLabelsNameProto> iterable =
-        new Iterable<NodeIdToLabelsNameProto>() {
+    Iterable<NodeIdToLabelsProto> iterable =
+        new Iterable<NodeIdToLabelsProto>() {
           @Override
-          public Iterator<NodeIdToLabelsNameProto> iterator() {
-            return new Iterator<NodeIdToLabelsNameProto>() {
+          public Iterator<NodeIdToLabelsProto> iterator() {
+            return new Iterator<NodeIdToLabelsProto>() {
 
               Iterator<Entry<NodeId, Set<String>>> iter = nodeIdToLabels
                   .entrySet().iterator();
@@ -95,9 +95,9 @@ public class ReplaceLabelsOnNodeRequestPBImpl extends
               }
 
               @Override
-              public NodeIdToLabelsNameProto next() {
+              public NodeIdToLabelsProto next() {
                 Entry<NodeId, Set<String>> now = iter.next();
-                return NodeIdToLabelsNameProto.newBuilder()
+                return NodeIdToLabelsProto.newBuilder()
                     .setNodeId(convertToProtoFormat(now.getKey())).clearNodeLabels()
                     .addAllNodeLabels(now.getValue()).build();
               }
@@ -146,10 +146,22 @@ public class ReplaceLabelsOnNodeRequestPBImpl extends
     nodeIdToLabels.putAll(map);
   }
 
+  @Override
+  public boolean getFailOnUnknownNodes() {
+    ReplaceLabelsOnNodeRequestProtoOrBuilder p = viaProto ? proto : builder;
+    return p.getFailOnUnknownNodes();
+  }
+
+  @Override
+  public void setFailOnUnknownNodes(boolean failOnUnknownNodes) {
+    maybeInitBuilder();
+    builder.setFailOnUnknownNodes(failOnUnknownNodes);
+  }
+
   private NodeIdProto convertToProtoFormat(NodeId t) {
     return ((NodeIdPBImpl) t).getProto();
   }
-  
+
   @Override
   public int hashCode() {
     assert false : "hashCode not designed";

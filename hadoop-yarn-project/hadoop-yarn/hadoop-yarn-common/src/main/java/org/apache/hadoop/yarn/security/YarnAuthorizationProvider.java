@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.yarn.security;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
@@ -28,6 +28,7 @@ import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import java.util.List;
 
 /**
@@ -40,7 +41,8 @@ import java.util.List;
 @Unstable
 public abstract class YarnAuthorizationProvider {
 
-  private static final Log LOG = LogFactory.getLog(YarnAuthorizationProvider.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(YarnAuthorizationProvider.class);
 
   private static YarnAuthorizationProvider authorizer = null;
 
@@ -54,10 +56,24 @@ public abstract class YarnAuthorizationProvider {
             (YarnAuthorizationProvider) ReflectionUtils.newInstance(
               authorizerClass, conf);
         authorizer.init(conf);
-        LOG.info(authorizerClass.getName() + " is instiantiated.");
+        LOG.info(authorizerClass.getName() + " is instantiated.");
       }
     }
     return authorizer;
+  }
+
+  /**
+   * Destroy the {@link YarnAuthorizationProvider} instance.
+   * This method is called only in Tests.
+   */
+  @VisibleForTesting
+  public static void destroy() {
+    synchronized (YarnAuthorizationProvider.class) {
+      if (authorizer != null) {
+        LOG.debug("{} is destroyed.", authorizer.getClass().getName());
+        authorizer = null;
+      }
+    }
   }
 
   /**

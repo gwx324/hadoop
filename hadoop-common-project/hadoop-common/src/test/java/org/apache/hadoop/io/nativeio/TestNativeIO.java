@@ -25,43 +25,53 @@ import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileChannel.MapMode;
 import java.util.Random;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
+import org.apache.commons.io.FileUtils;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.PathIOException;
+import org.apache.hadoop.fs.contract.ContractTestUtils;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-
-import static org.junit.Assume.*;
-import static org.junit.Assert.*;
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.apache.hadoop.test.StatUtils;
+import org.apache.hadoop.util.NativeCodeLoader;
+import org.apache.hadoop.util.Time;
+import static org.apache.hadoop.io.nativeio.NativeIO.POSIX.*;
+import static org.apache.hadoop.io.nativeio.NativeIO.POSIX.Stat.*;
 import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
 import static org.apache.hadoop.test.PlatformAssumptions.assumeWindows;
 
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileUtil;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.hadoop.util.NativeCodeLoader;
-import org.apache.hadoop.util.Time;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
+import static org.junit.Assume.*;
+import static org.junit.Assert.*;
 
-import static org.apache.hadoop.io.nativeio.NativeIO.POSIX.*;
-import static org.apache.hadoop.io.nativeio.NativeIO.POSIX.Stat.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestNativeIO {
-  static final Log LOG = LogFactory.getLog(TestNativeIO.class);
+  static final Logger LOG = LoggerFactory.getLogger(TestNativeIO.class);
 
   static final File TEST_DIR = GenericTestUtils.getTestDir("testnativeio");
 
@@ -161,6 +171,110 @@ public class TestNativeIO {
       LOG.info("Got expected exception", nioe);
       assertEquals(Errno.EBADF, nioe.getErrno());
     }
+  }
+
+  @Test (timeout = 30000)
+  public void testStat() throws Exception {
+    Configuration conf = new Configuration();
+    FileSystem fileSystem = FileSystem.getLocal(conf).getRawFileSystem();
+    Path path = new Path(TEST_DIR.getPath(), "teststat2");
+    fileSystem.createNewFile(path);
+    String testFilePath = path.toString();
+
+    try {
+      doStatTest(testFilePath);
+      LOG.info("testStat() is successful.");
+    } finally {
+      ContractTestUtils.cleanup("cleanup test file: " + path.toString(),
+          fileSystem, path);
+    }
+  }
+
+  private boolean doStatTest(String testFilePath) throws Exception {
+    NativeIO.POSIX.Stat stat = NativeIO.POSIX.getStat(testFilePath);
+    String owner = stat.getOwner();
+    String group = stat.getGroup();
+    int mode = stat.getMode();
+
+    // direct check with System
+    String expectedOwner = System.getProperty("user.name");
+    assertEquals(expectedOwner, owner);
+    assertNotNull(group);
+    assertTrue(!group.isEmpty());
+
+    // cross check with ProcessBuilder
+    StatUtils.Permission expected =
+        StatUtils.getPermissionFromProcess(testFilePath);
+    StatUtils.Permission permission =
+        new StatUtils.Permission(owner, group, new FsPermission(mode));
+
+    assertEquals(expected.getOwner(), permission.getOwner());
+    assertEquals(expected.getGroup(), permission.getGroup());
+    assertEquals(expected.getFsPermission(), permission.getFsPermission());
+
+    LOG.info("Load permission test is successful for path: {}, stat: {}",
+        testFilePath, stat);
+    LOG.info("On mask, stat is owner: {}, group: {}, permission: {}",
+        owner, group, permission.getFsPermission().toOctal());
+    return true;
+  }
+
+  @Test
+  public void testStatOnError() throws Exception {
+    final String testNullFilePath = null;
+    LambdaTestUtils.intercept(IOException.class,
+            "Path is null",
+            () -> NativeIO.POSIX.getStat(testNullFilePath));
+
+    final String testInvalidFilePath = "C:\\nonexisting_path\\nonexisting_file";
+    LambdaTestUtils.intercept(IOException.class,
+            PathIOException.class.getName(),
+            () -> NativeIO.POSIX.getStat(testInvalidFilePath));
+  }
+
+  @Test (timeout = 30000)
+  public void testMultiThreadedStat() throws Exception {
+    Configuration conf = new Configuration();
+    FileSystem fileSystem = FileSystem.getLocal(conf).getRawFileSystem();
+    Path path = new Path(TEST_DIR.getPath(), "teststat2");
+    fileSystem.createNewFile(path);
+    String testFilePath = path.toString();
+
+    int numOfThreads = 10;
+    ExecutorService executorService =
+        Executors.newFixedThreadPool(numOfThreads);
+    executorService.awaitTermination(1000, TimeUnit.MILLISECONDS);
+    try {
+      for (int i = 0; i < numOfThreads; i++){
+        Future<Boolean> result =
+            executorService.submit(() -> doStatTest(testFilePath));
+        assertTrue(result.get());
+      }
+      LOG.info("testMultiThreadedStat() is successful.");
+    } finally {
+      executorService.shutdown();
+      ContractTestUtils.cleanup("cleanup test file: " + path.toString(),
+          fileSystem, path);
+    }
+  }
+
+  @Test
+  public void testMultiThreadedStatOnError() throws Exception {
+    final String testInvalidFilePath = "C:\\nonexisting_path\\nonexisting_file";
+
+    int numOfThreads = 10;
+    ExecutorService executorService =
+        Executors.newFixedThreadPool(numOfThreads);
+    for (int i = 0; i < numOfThreads; i++) {
+      try {
+        Future<Boolean> result =
+            executorService.submit(() -> doStatTest(testInvalidFilePath));
+        result.get();
+      } catch (Exception e) {
+        assertTrue(e.getCause() instanceof PathIOException);
+      }
+    }
+    executorService.shutdown();
   }
 
   @Test (timeout = 30000)
@@ -510,7 +624,7 @@ public class TestNativeIO {
         Assert.assertEquals(Errno.ENOENT, e.getErrno());
       }
     }
-    
+
     // Test renaming a file to itself.  It should succeed and do nothing.
     File sourceFile = new File(TEST_DIR, "source");
     Assert.assertTrue(sourceFile.createNewFile());
@@ -536,7 +650,9 @@ public class TestNativeIO {
       }
     }
 
-    FileUtils.deleteQuietly(TEST_DIR);
+    // Test renaming to an existing file
+    assertTrue(targetFile.exists());
+    NativeIO.renameTo(sourceFile, targetFile);
   }
 
   @Test(timeout=10000)
@@ -617,8 +733,8 @@ public class TestNativeIO {
       NativeIO.copyFileUnbuffered(srcFile, dstFile);
       Assert.assertEquals(srcFile.length(), dstFile.length());
     } finally {
-      IOUtils.cleanup(LOG, channel);
-      IOUtils.cleanup(LOG, raSrcFile);
+      IOUtils.cleanupWithLogger(LOG, channel);
+      IOUtils.cleanupWithLogger(LOG, raSrcFile);
       FileUtils.deleteQuietly(TEST_DIR);
     }
   }
@@ -667,5 +783,157 @@ public class TestNativeIO {
       POSIX_FADV_DONTNEED >= 0);
     assertTrue("Native POSIX_FADV_NOREUSE const not set",
       POSIX_FADV_NOREUSE >= 0);
+  }
+
+
+  @Test (timeout=10000)
+  public void testPmemCheckParameters() {
+    assumeNotWindows("Native PMDK not supported on Windows");
+    // Skip testing while the build or environment does not support PMDK
+    assumeTrue(NativeIO.POSIX.isPmdkAvailable());
+
+    // Please make sure /mnt/pmem0 is a persistent memory device with total
+    // volume size 'volumeSize'
+    String filePath = "/$:";
+    long length = 0;
+    long volumnSize = 16 * 1024 * 1024 * 1024L;
+
+    // Incorrect file length
+    try {
+      NativeIO.POSIX.Pmem.mapBlock(filePath, length, false);
+      fail("Illegal length parameter should be detected");
+    } catch (Exception e) {
+      LOG.info(e.getMessage());
+    }
+
+    // Incorrect file length
+    filePath = "/mnt/pmem0/test_native_io";
+    length = -1L;
+    try {
+      NativeIO.POSIX.Pmem.mapBlock(filePath, length, false);
+      fail("Illegal length parameter should be detected");
+    }catch (Exception e) {
+      LOG.info(e.getMessage());
+    }
+  }
+
+  @Test (timeout=10000)
+  public void testPmemMapMultipleFiles() {
+    assumeNotWindows("Native PMDK not supported on Windows");
+    // Skip testing while the build or environment does not support PMDK
+    assumeTrue(NativeIO.POSIX.isPmdkAvailable());
+
+    // Please make sure /mnt/pmem0 is a persistent memory device with total
+    // volume size 'volumeSize'
+    String filePath = "/mnt/pmem0/test_native_io";
+    long length = 0;
+    long volumnSize = 16 * 1024 * 1024 * 1024L;
+
+    // Multiple files, each with 128MB size, aggregated size exceeds volume
+    // limit 16GB
+    length = 128 * 1024 * 1024L;
+    long fileNumber = volumnSize / length;
+    LOG.info("File number = " + fileNumber);
+    for (int i = 0; i < fileNumber; i++) {
+      String path = filePath + i;
+      LOG.info("File path = " + path);
+      NativeIO.POSIX.Pmem.mapBlock(path, length, false);
+    }
+    try {
+      NativeIO.POSIX.Pmem.mapBlock(filePath, length, false);
+      fail("Request map extra file when persistent memory is all occupied");
+    } catch (Exception e) {
+      LOG.info(e.getMessage());
+    }
+  }
+
+  @Test (timeout=10000)
+  public void testPmemMapBigFile() {
+    assumeNotWindows("Native PMDK not supported on Windows");
+    // Skip testing while the build or environment does not support PMDK
+    assumeTrue(NativeIO.POSIX.isPmdkAvailable());
+
+    // Please make sure /mnt/pmem0 is a persistent memory device with total
+    // volume size 'volumeSize'
+    String filePath = "/mnt/pmem0/test_native_io_big";
+    long length = 0;
+    long volumeSize = 16 * 1024 * 1024 * 1024L;
+
+    // One file length exceeds persistent memory volume 16GB.
+    length = volumeSize + 1024L;
+    try {
+      LOG.info("File length = " + length);
+      NativeIO.POSIX.Pmem.mapBlock(filePath, length, false);
+      fail("File length exceeds persistent memory total volume size");
+    }catch (Exception e) {
+      LOG.info(e.getMessage());
+      deletePmemMappedFile(filePath);
+    }
+  }
+
+  @Test (timeout=10000)
+  public void testPmemCopy() throws IOException {
+    assumeNotWindows("Native PMDK not supported on Windows");
+    // Skip testing while the build or environment does not support PMDK
+    assumeTrue(NativeIO.POSIX.isPmdkAvailable());
+
+    // Create and map a block file. Please make sure /mnt/pmem0 is a persistent
+    // memory device.
+    String filePath = "/mnt/pmem0/copy";
+    long length = 4096;
+    PmemMappedRegion region = NativeIO.POSIX.Pmem.mapBlock(
+        filePath, length, false);
+    assertTrue(NativeIO.POSIX.Pmem.isPmem(region.getAddress(), length));
+    assertFalse(NativeIO.POSIX.Pmem.isPmem(region.getAddress(), length + 100));
+    assertFalse(NativeIO.POSIX.Pmem.isPmem(region.getAddress() + 100, length));
+    assertFalse(NativeIO.POSIX.Pmem.isPmem(region.getAddress() - 100, length));
+
+    // Copy content to mapped file
+    byte[] data = generateSequentialBytes(0, (int) length);
+    NativeIO.POSIX.Pmem.memCopy(data, region.getAddress(), region.isPmem(),
+        length);
+
+    // Read content before pmemSync
+    byte[] readBuf1 = new byte[(int)length];
+    IOUtils.readFully(new FileInputStream(filePath), readBuf1, 0, (int)length);
+    assertArrayEquals(data, readBuf1);
+
+    byte[] readBuf2 = new byte[(int)length];
+    // Sync content to persistent memory twice
+    NativeIO.POSIX.Pmem.memSync(region);
+    NativeIO.POSIX.Pmem.memSync(region);
+    // Read content after pmemSync twice
+    IOUtils.readFully(new FileInputStream(filePath), readBuf2, 0, (int)length);
+    assertArrayEquals(data, readBuf2);
+
+    //Read content after unmap twice
+    NativeIO.POSIX.Pmem.unmapBlock(region.getAddress(), length);
+    NativeIO.POSIX.Pmem.unmapBlock(region.getAddress(), length);
+    byte[] readBuf3 = new byte[(int)length];
+    IOUtils.readFully(new FileInputStream(filePath), readBuf3, 0, (int)length);
+    assertArrayEquals(data, readBuf3);
+  }
+
+  private static byte[] generateSequentialBytes(int start, int length) {
+    byte[] result = new byte[length];
+
+    for (int i = 0; i < length; i++) {
+      result[i] = (byte) ((start + i) % 127);
+    }
+    return result;
+  }
+
+  private static void deletePmemMappedFile(String filePath) {
+    try {
+      if (filePath != null) {
+        boolean result = Files.deleteIfExists(Paths.get(filePath));
+        if (!result) {
+          throw new IOException();
+        }
+      }
+    } catch (Throwable e) {
+      LOG.error("Failed to delete the mapped file " + filePath +
+          " from persistent memory", e);
+    }
   }
 }

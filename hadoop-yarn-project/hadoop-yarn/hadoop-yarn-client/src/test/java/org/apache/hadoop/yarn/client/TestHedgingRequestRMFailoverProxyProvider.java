@@ -18,22 +18,23 @@
 
 package org.apache.hadoop.yarn.client;
 
+import java.io.IOException;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.HAServiceProtocol;
 import org.apache.hadoop.yarn.client.api.YarnClient;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
+import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.MiniYARNCluster;
 import org.apache.hadoop.yarn.server.resourcemanager.HATestUtil;
 import org.junit.Assert;
 import org.junit.Test;
 
-
 public class TestHedgingRequestRMFailoverProxyProvider {
 
   @Test
   public void testHedgingRequestProxyProvider() throws Exception {
-    final MiniYARNCluster cluster =
-        new MiniYARNCluster("testHedgingRequestProxyProvider", 5, 0, 1, 1);
     Configuration conf = new YarnConfiguration();
 
     conf.setBoolean(YarnConfiguration.RM_HA_ENABLED, true);
@@ -46,38 +47,61 @@ public class TestHedgingRequestRMFailoverProxyProvider {
     conf.setLong(YarnConfiguration.RESOURCEMANAGER_CONNECT_RETRY_INTERVAL_MS,
         2000);
 
-    HATestUtil.setRpcAddressForRM("rm1", 10000, conf);
-    HATestUtil.setRpcAddressForRM("rm2", 20000, conf);
-    HATestUtil.setRpcAddressForRM("rm3", 30000, conf);
-    HATestUtil.setRpcAddressForRM("rm4", 40000, conf);
-    HATestUtil.setRpcAddressForRM("rm5", 50000, conf);
-    conf.setBoolean(YarnConfiguration.YARN_MINICLUSTER_FIXED_PORTS, true);
+    try (MiniYARNCluster cluster =
+        new MiniYARNCluster("testHedgingRequestProxyProvider", 5, 0, 1, 1)) {
 
-    cluster.init(conf);
-    cluster.start();
+      HATestUtil.setRpcAddressForRM("rm1", 10000, conf);
+      HATestUtil.setRpcAddressForRM("rm2", 20000, conf);
+      HATestUtil.setRpcAddressForRM("rm3", 30000, conf);
+      HATestUtil.setRpcAddressForRM("rm4", 40000, conf);
+      HATestUtil.setRpcAddressForRM("rm5", 50000, conf);
+      conf.setBoolean(YarnConfiguration.YARN_MINICLUSTER_FIXED_PORTS, true);
 
-    final YarnClient client = YarnClient.createYarnClient();
-    client.init(conf);
-    client.start();
+      cluster.init(conf);
+      cluster.start();
 
-    // Transition rm5 to active;
-    long start = System.currentTimeMillis();
-    makeRMActive(cluster, 4);
-    // client will retry until the rm becomes active.
-    client.getAllQueues();
-    long end = System.currentTimeMillis();
-    System.out.println("Client call succeeded at " + end);
-    // should return the response fast
-    Assert.assertTrue(end - start <= 10000);
+      final YarnClient client = YarnClient.createYarnClient();
+      client.init(conf);
+      client.start();
 
-    // transition rm5 to standby
-    cluster.getResourceManager(4).getRMContext().getRMAdminService()
-        .transitionToStandby(new HAServiceProtocol.StateChangeRequestInfo(
-            HAServiceProtocol.RequestSource.REQUEST_BY_USER));
+      // Transition rm5 to active;
+      long start = System.currentTimeMillis();
+      makeRMActive(cluster, 4);
 
-    makeRMActive(cluster, 2);
-    client.getAllQueues();
-    cluster.stop();
+      validateActiveRM(client);
+
+      long end = System.currentTimeMillis();
+      System.out.println("Client call succeeded at " + end);
+      // should return the response fast
+      Assert.assertTrue(end - start <= 10000);
+
+      // transition rm5 to standby
+      cluster.getResourceManager(4).getRMContext().getRMAdminService()
+          .transitionToStandby(new HAServiceProtocol.StateChangeRequestInfo(
+              HAServiceProtocol.RequestSource.REQUEST_BY_USER));
+
+      makeRMActive(cluster, 2);
+
+      validateActiveRM(client);
+
+    }
+  }
+
+  private void validateActiveRM(YarnClient client) throws IOException {
+    // first check if exception is thrown correctly;
+    try {
+      // client will retry until the rm becomes active.
+      client.getApplicationReport(null);
+      Assert.fail();
+    } catch (YarnException e) {
+      Assert.assertTrue(e instanceof ApplicationNotFoundException);
+    }
+    // now make a valid call.
+    try {
+      client.getAllQueues();
+    } catch (YarnException e) {
+      Assert.fail(e.toString());
+    }
   }
 
   private void makeRMActive(final MiniYARNCluster cluster, final int index) {

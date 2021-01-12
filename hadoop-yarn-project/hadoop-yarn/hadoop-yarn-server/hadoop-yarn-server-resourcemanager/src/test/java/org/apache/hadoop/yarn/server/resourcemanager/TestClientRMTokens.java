@@ -20,9 +20,9 @@ package org.apache.hadoop.yarn.server.resourcemanager;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyString;
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -36,12 +36,16 @@ import java.net.InetSocketAddress;
 import java.security.PrivilegedAction;
 import java.security.PrivilegedExceptionAction;
 
+import org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException;
+import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.token.delegation.TestDelegationToken;
+import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMDelegationTokenIdentifierData;
 import org.junit.AfterClass;
 import org.junit.Assert;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -80,7 +84,8 @@ import org.junit.Test;
 
 public class TestClientRMTokens {
 
-  private static final Log LOG = LogFactory.getLog(TestClientRMTokens.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestClientRMTokens.class);
   
   // Note : Any test case in ResourceManager package that creates a proxy has
   // to be run with enabling hadoop.security.token.service.use_ip. And reset
@@ -352,6 +357,46 @@ public class TestClientRMTokens {
         false);
   }
 
+  @Test
+  public void testReadOldFormatFields() throws IOException {
+    RMDelegationTokenIdentifier token = new RMDelegationTokenIdentifier(
+        new Text("alice"), new Text("bob"), new Text("colin"));
+    token.setIssueDate(123);
+    token.setMasterKeyId(321);
+    token.setMaxDate(314);
+    token.setSequenceNumber(12345);
+    DataInputBuffer inBuf = new DataInputBuffer();
+    DataOutputBuffer outBuf = new DataOutputBuffer();
+    token.writeInOldFormat(outBuf);
+    outBuf.writeLong(42);   // renewDate
+    inBuf.reset(outBuf.getData(), 0, outBuf.getLength());
+
+    RMDelegationTokenIdentifier identifier = null;
+
+    try {
+      RMDelegationTokenIdentifierData identifierData =
+          new RMDelegationTokenIdentifierData();
+      identifierData.readFields(inBuf);
+      fail("Should have thrown a "
+          + InvalidProtocolBufferException.class.getName()
+          + " because the token is not a protobuf");
+    } catch (InvalidProtocolBufferException e) {
+      identifier = new RMDelegationTokenIdentifier();
+      inBuf.reset();
+      identifier.readFieldsInOldFormat(inBuf);
+      assertEquals(42, inBuf.readLong());
+    }
+
+    assertEquals("alice", identifier.getUser().getUserName());
+    assertEquals(new Text("bob"), identifier.getRenewer());
+    assertEquals("colin", identifier.getUser().getRealUser().getUserName());
+    assertEquals(123, identifier.getIssueDate());
+    assertEquals(321, identifier.getMasterKeyId());
+    assertEquals(314, identifier.getMaxDate());
+    assertEquals(12345, identifier.getSequenceNumber());
+
+  }
+
   @SuppressWarnings("unchecked")
   private void checkShortCircuitRenewCancel(InetSocketAddress rmAddr,
                                             InetSocketAddress serviceAddr,
@@ -499,8 +544,9 @@ public class TestClientRMTokens {
         ResourceScheduler scheduler,
         RMDelegationTokenSecretManager rmDTSecretManager) {
       super(mock(RMContext.class), scheduler, mock(RMAppManager.class),
-          new ApplicationACLsManager(conf), new QueueACLsManager(scheduler,
-              conf), rmDTSecretManager);
+          new ApplicationACLsManager(conf),
+          QueueACLsManager.getQueueACLsManager(scheduler, conf),
+          rmDTSecretManager);
     }
 
     // Use a random port unless explicitly specified.
@@ -533,8 +579,11 @@ public class TestClientRMTokens {
   private static RMDelegationTokenSecretManager
       createRMDelegationTokenSecretManager(long secretKeyInterval,
           long tokenMaxLifetime, long tokenRenewInterval) {
+    ResourceManager rm = mock(ResourceManager.class);
     RMContext rmContext = mock(RMContext.class);
     when(rmContext.getStateStore()).thenReturn(new NullRMStateStore());
+    when(rm.getRMContext()).thenReturn(rmContext);
+    when(rmContext.getResourceManager()).thenReturn(rm);
 
     RMDelegationTokenSecretManager rmDtSecretManager =
         new RMDelegationTokenSecretManager(secretKeyInterval, tokenMaxLifetime,

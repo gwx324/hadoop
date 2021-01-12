@@ -20,9 +20,9 @@ package org.apache.hadoop.hdfs.server.namenode;
 import java.util.Collections;
 import java.util.List;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.permission.AclEntry;
@@ -73,11 +73,11 @@ public final class AclStorage {
    *
    * @param child INode newly created child
    */
-  public static void copyINodeDefaultAcl(INode child) {
+  public static boolean copyINodeDefaultAcl(INode child) {
     INodeDirectory parent = child.getParent();
     AclFeature parentAclFeature = parent.getAclFeature();
     if (parentAclFeature == null || !(child.isFile() || child.isDirectory())) {
-      return;
+      return false;
     }
 
     // Split parent's entries into access vs. default.
@@ -88,7 +88,7 @@ public final class AclStorage {
 
     // The parent may have an access ACL but no default ACL.  If so, exit.
     if (parentDefaultEntries.isEmpty()) {
-      return;
+      return false;
     }
 
     // Pre-allocate list size for access entries to copy from parent.
@@ -145,6 +145,7 @@ public final class AclStorage {
     }
 
     child.setPermission(newPerm);
+    return true;
   }
 
   /**
@@ -155,7 +156,7 @@ public final class AclStorage {
    *
    * @param inode INode to read
    * @param snapshotId int ID of snapshot to read
-   * @return List<AclEntry> containing extended inode ACL entries
+   * @return {@literal List<AclEntry>} containing extended inode ACL entries
    */
   public static List<AclEntry> readINodeAcl(INode inode, int snapshotId) {
     AclFeature f = inode.getAclFeature(snapshotId);
@@ -166,7 +167,7 @@ public final class AclStorage {
    * Reads the existing extended ACL entries of an INodeAttribute object.
    *
    * @param inodeAttr INode to read
-   * @return List<AclEntry> containing extended inode ACL entries
+   * @return {@code List<AclEntry>} containing extended inode ACL entries
    */
   public static List<AclEntry> readINodeAcl(INodeAttributes inodeAttr) {
     AclFeature f = inodeAttr.getAclFeature();
@@ -174,7 +175,7 @@ public final class AclStorage {
   }
 
   /**
-   * Build list of AclEntries from the AclFeature
+   * Build list of AclEntries from the {@link AclFeature}
    * @param aclFeature AclFeature
    * @return List of entries
    */
@@ -203,7 +204,7 @@ public final class AclStorage {
    * ACL modification APIs, which always apply a delta on top of current state.
    *
    * @param inode INode to read
-   * @return List<AclEntry> containing all logical inode ACL entries
+   * @return {@code List<AclEntry>} containing all logical inode ACL entries
    */
   public static List<AclEntry> readINodeLogicalAcl(INode inode) {
     FsPermission perm = inode.getFsPermission();
@@ -261,7 +262,7 @@ public final class AclStorage {
    * {@link AclFeature}.
    *
    * @param inode INode to update
-   * @param newAcl List<AclEntry> containing new ACL entries
+   * @param newAcl {@code List<AclEntry>} containing new ACL entries
    * @param snapshotId int latest snapshot ID of inode
    * @throws AclException if the ACL is invalid for the given inode
    * @throws QuotaExceededException if quota limit is exceeded
@@ -280,7 +281,8 @@ public final class AclStorage {
       // Only directories may have a default ACL.
       if (!defaultEntries.isEmpty() && !inode.isDirectory()) {
         throw new AclException(
-          "Invalid ACL: only directories may have a default ACL.");
+          "Invalid ACL: only directories may have a default ACL. "
+            + "Path: " + inode.getFullPathName());
       }
 
       // Attach entries to the feature.
@@ -310,8 +312,8 @@ public final class AclStorage {
   /**
    * Creates an AclFeature from the given ACL entries.
    *
-   * @param accessEntries List<AclEntry> access ACL entries
-   * @param defaultEntries List<AclEntry> default ACL entries
+   * @param accessEntries {@code List<AclEntry>} access ACL entries
+   * @param defaultEntries {@code List<AclEntry>} default ACL entries
    * @return AclFeature containing the required ACL entries
    */
   private static AclFeature createAclFeature(List<AclEntry> accessEntries,
@@ -345,7 +347,7 @@ public final class AclStorage {
    * POSIX ACLs model, which presents the mask as the permissions of the group
    * class.
    *
-   * @param accessEntries List<AclEntry> access ACL entries
+   * @param accessEntries {@code List<AclEntry>} access ACL entries
    * @param existingPerm FsPermission existing permissions
    * @return FsPermission new permissions
    */
@@ -363,7 +365,7 @@ public final class AclStorage {
    * group and other permissions are in order.  Also preserve sticky bit and
    * toggle ACL bit off.
    *
-   * @param accessEntries List<AclEntry> access ACL entries
+   * @param accessEntries {@code List<AclEntry>} access ACL entries
    * @param existingPerm FsPermission existing permissions
    * @return FsPermission new permissions
    */

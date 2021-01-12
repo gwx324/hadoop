@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.metrics2.sink;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -36,8 +36,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.configuration.SubsetConfiguration;
-import org.apache.commons.lang.time.FastDateFormat;
+import org.apache.commons.configuration2.SubsetConfiguration;
+import org.apache.commons.lang3.time.FastDateFormat;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -111,7 +111,7 @@ import org.apache.hadoop.security.UserGroupInformation;
  * <i>unknown</i>.</p>
  *
  * <p>Instead of appending to an existing file, by default the sink
- * will create a new file with a suffix of &quot;.&lt;n&gt;&quet;, where
+ * will create a new file with a suffix of &quot;.&lt;n&gt;&quot;, where
  * <i>n</i> is the next lowest integer that isn't already used in a file name,
  * similar to the Hadoop daemon logs.  NOTE: the file with the <b>highest</b>
  * sequence number is the <b>newest</b> file, unlike the Hadoop daemon logs.</p>
@@ -485,10 +485,10 @@ public class RollingFileSystemSink implements MetricsSink, Closeable {
 
     try {
       fs.append(basePath);
+    } catch (UnsupportedOperationException ex) {
+      canAppend = false;
     } catch (IOException ex) {
-      if (ex.getMessage().equals("Not supported")) {
-        canAppend = false;
-      }
+      // Ignore. The operation is supported.
     }
 
     return canAppend;

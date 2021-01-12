@@ -17,13 +17,15 @@
 
 package org.apache.hadoop.hdfs.server.diskbalancer.connectors;
 
-import com.google.common.base.Preconditions;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerCluster;
 import org.apache.hadoop.hdfs.server.diskbalancer.datamodel
     .DiskBalancerDataNode;
-import org.codehaus.jackson.map.ObjectMapper;
 
 import java.io.File;
 import java.net.URL;
@@ -35,6 +37,8 @@ import java.util.List;
 public class JsonNodeConnector implements ClusterConnector {
   private static final Logger LOG =
       LoggerFactory.getLogger(JsonNodeConnector.class);
+  private static final ObjectReader READER =
+      new ObjectMapper().readerFor(DiskBalancerCluster.class);
   private final URL clusterURI;
 
   /**
@@ -56,9 +60,7 @@ public class JsonNodeConnector implements ClusterConnector {
     Preconditions.checkNotNull(this.clusterURI);
     String dataFilePath = this.clusterURI.getPath();
     LOG.info("Reading cluster info from file : " + dataFilePath);
-    ObjectMapper mapper = new ObjectMapper();
-    DiskBalancerCluster cluster =
-        mapper.readValue(new File(dataFilePath), DiskBalancerCluster.class);
+    DiskBalancerCluster cluster = READER.readValue(new File(dataFilePath));
     String message = String.format("Found %d node(s)",
         cluster.getNodes().size());
     LOG.info(message);

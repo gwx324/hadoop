@@ -17,16 +17,6 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-
-import java.io.File;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.EnumSet;
-import java.util.List;
-import java.util.Random;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -41,17 +31,29 @@ import org.apache.hadoop.hdfs.client.HdfsDataOutputStream.SyncFlag;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.protocol.SnapshottableDirectoryStatus;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeFile;
+import org.apache.hadoop.hdfs.server.namenode.snapshot.DiffList;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiff;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotTestHelper;
+import org.apache.hadoop.hdfs.server.namenode.visitor.NamespacePrintVisitor;
 import org.apache.hadoop.hdfs.util.Canceler;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+import org.slf4j.event.Level;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Random;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Test FSImage save/load when Snapshot is supported
@@ -59,11 +61,11 @@ import org.junit.Test;
 public class TestFSImageWithSnapshot {
   {
     SnapshotTestHelper.disableLogs();
-    GenericTestUtils.setLogLevel(INode.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(INode.LOG, Level.TRACE);
   }
 
   static final long seed = 0;
-  static final short NUM_DATANODES = 3;
+  static final short NUM_DATANODES = 1;
   static final int BLOCKSIZE = 1024;
   static final long txid = 1;
 
@@ -141,7 +143,8 @@ public class TestFSImageWithSnapshot {
   private File saveFSImageToTempFile() throws IOException {
     SaveNamespaceContext context = new SaveNamespaceContext(fsn, txid,
         new Canceler());
-    FSImageFormatProtobuf.Saver saver = new FSImageFormatProtobuf.Saver(context);
+    FSImageFormatProtobuf.Saver saver = new FSImageFormatProtobuf.Saver(context,
+        conf);
     FSImageCompression compression = FSImageCompression.createCompression(conf);
     File imageFile = getImageFile(testDir, txid);
     fsn.readLock();
@@ -199,7 +202,7 @@ public class TestFSImageWithSnapshot {
     assertTrue("The children list of root should be empty", 
         rootNode.getChildrenList(Snapshot.CURRENT_STATE_ID).isEmpty());
     // one snapshot on root: s1
-    List<DirectoryDiff> diffList = rootNode.getDiffs().asList();
+    DiffList<DirectoryDiff> diffList = rootNode.getDiffs().asList();
     assertEquals(1, diffList.size());
     Snapshot s1 = rootNode.getSnapshot(DFSUtil.string2Bytes("s1"));
     assertEquals(s1.getId(), diffList.get(0).getSnapshotId());
@@ -510,4 +513,322 @@ public class TestFSImageWithSnapshot {
     fsn = cluster.getNamesystem();
     hdfs = cluster.getFileSystem();
   }
+
+  void rename(Path src, Path dst) throws Exception {
+    printTree("Before rename " + src + " -> " + dst);
+    hdfs.rename(src, dst);
+    printTree("After rename " + src + " -> " + dst);
+  }
+
+  void createFile(Path directory, String filename) throws Exception {
+    final Path f = new Path(directory, filename);
+    DFSTestUtil.createFile(hdfs, f, 0, NUM_DATANODES, seed);
+  }
+
+  void appendFile(Path directory, String filename) throws Exception {
+    final Path f = new Path(directory, filename);
+    DFSTestUtil.appendFile(hdfs, f, "more data");
+    printTree("appended " + f);
+  }
+
+  void deleteSnapshot(Path directory, String snapshotName) throws Exception {
+    hdfs.deleteSnapshot(directory, snapshotName);
+    printTree("deleted snapshot " + snapshotName);
+  }
+
+  @Test (timeout=60000)
+  public void testDoubleRename() throws Exception {
+    final Path parent = new Path("/parent");
+    hdfs.mkdirs(parent);
+    final Path sub1 = new Path(parent, "sub1");
+    final Path sub1foo = new Path(sub1, "foo");
+    hdfs.mkdirs(sub1);
+    hdfs.mkdirs(sub1foo);
+    createFile(sub1foo, "file0");
+
+    printTree("before s0");
+    hdfs.allowSnapshot(parent);
+    hdfs.createSnapshot(parent, "s0");
+
+    createFile(sub1foo, "file1");
+    createFile(sub1foo, "file2");
+
+    final Path sub2 = new Path(parent, "sub2");
+    hdfs.mkdirs(sub2);
+    final Path sub2foo = new Path(sub2, "foo");
+    // mv /parent/sub1/foo to /parent/sub2/foo
+    rename(sub1foo, sub2foo);
+
+    hdfs.createSnapshot(parent, "s1");
+    hdfs.createSnapshot(parent, "s2");
+    printTree("created snapshots: s1, s2");
+
+    appendFile(sub2foo, "file1");
+    createFile(sub2foo, "file3");
+
+    final Path sub3 = new Path(parent, "sub3");
+    hdfs.mkdirs(sub3);
+    // mv /parent/sub2/foo to /parent/sub3/foo
+    rename(sub2foo, sub3);
+
+    hdfs.delete(sub3,  true);
+    printTree("deleted " + sub3);
+
+    deleteSnapshot(parent, "s1");
+    restartCluster();
+
+    deleteSnapshot(parent, "s2");
+    restartCluster();
+  }
+
+  void restartCluster() throws Exception {
+    final File before = dumpTree2File("before.txt");
+
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    hdfs.saveNamespace();
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+
+    cluster.shutdown();
+    cluster = new MiniDFSCluster.Builder(conf).format(false)
+        .numDataNodes(NUM_DATANODES).build();
+    cluster.waitActive();
+    fsn = cluster.getNamesystem();
+    hdfs = cluster.getFileSystem();
+    final File after = dumpTree2File("after.txt");
+    SnapshotTestHelper.compareDumpedTreeInFile(before, after, true);
+  }
+
+  private final PrintWriter output = new PrintWriter(System.out, true);
+  private int printTreeCount = 0;
+
+  String printTree(String label) throws Exception {
+    output.println();
+    output.println();
+    output.println("***** " + printTreeCount++ + ": " + label);
+    final String b =
+        fsn.getFSDirectory().getINode("/").dumpTreeRecursively().toString();
+    output.println(b);
+
+    final String s = NamespacePrintVisitor.print2Sting(fsn);
+    Assert.assertEquals(b, s);
+    return b;
+  }
+
+  @Test (timeout=60000)
+  public void testFSImageWithDoubleRename() throws Exception {
+    final Path dir1 = new Path("/dir1");
+    final Path dir2 = new Path("/dir2");
+    hdfs.mkdirs(dir1);
+    hdfs.mkdirs(dir2);
+    Path dira = new Path(dir1, "dira");
+    Path dirx = new Path(dir1, "dirx");
+    Path dirb = new Path(dira, "dirb");
+    hdfs.mkdirs(dira);
+    hdfs.mkdirs(dirb);
+    hdfs.mkdirs(dirx);
+    hdfs.allowSnapshot(dir1);
+    hdfs.createSnapshot(dir1, "s0");
+    Path file1 = new Path(dirb, "file1");
+    DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, (short) 1, seed);
+    Path rennamePath = new Path(dirx, "dirb");
+    // mv /dir1/dira/dirb to /dir1/dirx/dirb
+    hdfs.rename(dirb, rennamePath);
+    hdfs.createSnapshot(dir1, "s1");
+    DFSTestUtil.appendFile(hdfs, new Path("/dir1/dirx/dirb/file1"),
+            "more data");
+    Path renamePath1 = new Path(dir2, "dira");
+    hdfs.mkdirs(renamePath1);
+    //mv dirx/dirb to /dir2/dira/dirb
+    hdfs.rename(rennamePath, renamePath1);
+    hdfs.delete(renamePath1, true);
+    hdfs.deleteSnapshot(dir1, "s1");
+    // save namespace and restart cluster
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    hdfs.saveNamespace();
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    cluster.shutdown();
+    cluster = new MiniDFSCluster.Builder(conf).format(false)
+            .numDataNodes(NUM_DATANODES).build();
+    cluster.waitActive();
+    fsn = cluster.getNamesystem();
+    hdfs = cluster.getFileSystem();
+  }
+
+
+  @Test (timeout=60000)
+  public void testFSImageWithRename1() throws Exception {
+    final Path dir1 = new Path("/dir1");
+    final Path dir2 = new Path("/dir2");
+    hdfs.mkdirs(dir1);
+    hdfs.mkdirs(dir2);
+    Path dira = new Path(dir1, "dira");
+    Path dirx = new Path(dir1, "dirx");
+    Path dirb = new Path(dirx, "dirb");
+    hdfs.mkdirs(dira);
+    hdfs.mkdirs(dirx);
+    hdfs.allowSnapshot(dir1);
+    hdfs.createSnapshot(dir1, "s0");
+    hdfs.mkdirs(dirb);
+    hdfs.createSnapshot(dir1, "s1");
+    Path rennamePath = new Path(dira, "dirb");
+    // mv /dir1/dirx/dirb to /dir1/dira/dirb
+    hdfs.rename(dirb, rennamePath);
+    hdfs.createSnapshot(dir1, "s2");
+    Path diry = new Path("/dir1/dira/dirb/diry");
+    hdfs.mkdirs(diry);
+    hdfs.createSnapshot(dir1, "s3");
+    Path file1 = new Path("/dir1/dira/dirb/diry/file1");
+    DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, (short) 1, seed);
+    hdfs.createSnapshot(dir1, "s4");
+    hdfs.delete(new Path("/dir1/dira/dirb"), true);
+    hdfs.deleteSnapshot(dir1, "s1");
+    hdfs.deleteSnapshot(dir1, "s3");
+    // file1 should exist in the last snapshot
+    assertTrue(hdfs.exists(
+        new Path("/dir1/.snapshot/s4/dira/dirb/diry/file1")));
+
+    // save namespace and restart cluster
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    hdfs.saveNamespace();
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+
+    cluster.shutdown();
+    cluster = new MiniDFSCluster.Builder(conf).format(false)
+            .numDataNodes(NUM_DATANODES).build();
+    cluster.waitActive();
+    fsn = cluster.getNamesystem();
+    hdfs = cluster.getFileSystem();
+  }
+
+  @Test (timeout=60000)
+  public void testFSImageWithRename2() throws Exception {
+    final Path dir1 = new Path("/dir1");
+    final Path dir2 = new Path("/dir2");
+    hdfs.mkdirs(dir1);
+    hdfs.mkdirs(dir2);
+    Path dira = new Path(dir1, "dira");
+    Path dirx = new Path(dir1, "dirx");
+    Path dirb = new Path(dirx, "dirb");
+    hdfs.mkdirs(dira);
+    hdfs.mkdirs(dirx);
+    hdfs.allowSnapshot(dir1);
+    hdfs.createSnapshot(dir1, "s0");
+    hdfs.mkdirs(dirb);
+    hdfs.createSnapshot(dir1, "s1");
+    Path rennamePath = new Path(dira, "dirb");
+    // mv /dir1/dirx/dirb to /dir1/dira/dirb
+    hdfs.rename(dirb, rennamePath);
+    hdfs.createSnapshot(dir1, "s2");
+    Path file1 = new Path("/dir1/dira/dirb/file1");
+    DFSTestUtil.createFile(hdfs,
+            new Path(
+                    "/dir1/dira/dirb/file1"), BLOCKSIZE, (short) 1, seed);
+    hdfs.createSnapshot(dir1, "s3");
+    hdfs.deleteSnapshot(dir1, "s1");
+    hdfs.deleteSnapshot(dir1, "s3");
+    assertTrue(hdfs.exists(file1));
+
+    // save namespace and restart cluster
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    hdfs.saveNamespace();
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+
+    cluster.shutdown();
+    cluster = new MiniDFSCluster.Builder(conf).format(false)
+            .numDataNodes(NUM_DATANODES).build();
+    cluster.waitActive();
+    fsn = cluster.getNamesystem();
+    hdfs = cluster.getFileSystem();
+  }
+
+  @Test(timeout = 60000)
+  public void testFSImageWithRename3() throws Exception {
+    final Path dir1 = new Path("/dir1");
+    final Path dir2 = new Path("/dir2");
+    hdfs.mkdirs(dir1);
+    hdfs.mkdirs(dir2);
+    Path dira = new Path(dir1, "dira");
+    Path dirx = new Path(dir1, "dirx");
+    Path dirb = new Path(dirx, "dirb");
+    hdfs.mkdirs(dira);
+    hdfs.mkdirs(dirx);
+    hdfs.allowSnapshot(dir1);
+    hdfs.createSnapshot(dir1, "s0");
+    hdfs.mkdirs(dirb);
+    hdfs.createSnapshot(dir1, "s1");
+    Path rennamePath = new Path(dira, "dirb");
+    // mv /dir1/dirx/dirb to /dir1/dira/dirb
+    hdfs.rename(dirb, rennamePath);
+    hdfs.createSnapshot(dir1, "s2");
+    Path diry = new Path("/dir1/dira/dirb/diry");
+    hdfs.mkdirs(diry);
+    hdfs.createSnapshot(dir1, "s3");
+    Path file1 = new Path("/dir1/dira/dirb/diry/file1");
+    DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, (short) 1, seed);
+    hdfs.createSnapshot(dir1, "s4");
+    hdfs.delete(new Path("/dir1/dira/dirb"), true);
+    hdfs.deleteSnapshot(dir1, "s1");
+    hdfs.deleteSnapshot(dir1, "s3");
+    // file1 should exist in the last snapshot
+    assertTrue(hdfs.exists(new Path(
+        "/dir1/.snapshot/s4/dira/dirb/diry/file1")));
+
+    // save namespace and restart cluster
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    hdfs.saveNamespace();
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+
+    cluster.shutdown();
+    cluster = new MiniDFSCluster.Builder(conf).format(false)
+            .numDataNodes(NUM_DATANODES).build();
+    cluster.waitActive();
+    fsn = cluster.getNamesystem();
+    hdfs = cluster.getFileSystem();
+  }
+
+  @Test (timeout=60000)
+  public void testFSImageWithRename4() throws Exception {
+    final Path dir1 = new Path("/dir1");
+    final Path dir2 = new Path("/dir2");
+    hdfs.mkdirs(dir1);
+    hdfs.mkdirs(dir2);
+    Path dira = new Path(dir1, "dira");
+    Path dirx = new Path(dir1, "dirx");
+    Path dirb = new Path(dirx, "dirb");
+    hdfs.mkdirs(dira);
+    hdfs.mkdirs(dirx);
+    hdfs.allowSnapshot(dir1);
+    hdfs.createSnapshot(dir1, "s0");
+    hdfs.mkdirs(dirb);
+    hdfs.createSnapshot(dir1, "s1");
+    Path renamePath = new Path(dira, "dirb");
+    // mv /dir1/dirx/dirb to /dir1/dira/dirb
+    hdfs.rename(dirb, renamePath);
+    hdfs.createSnapshot(dir1, "s2");
+    Path diry = new Path("/dir1/dira/dirb/diry");
+    hdfs.mkdirs(diry);
+    hdfs.createSnapshot(dir1, "s3");
+    Path file1 = new Path("/dir1/dira/dirb/diry/file1");
+    DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, (short) 1, seed);
+    hdfs.createSnapshot(dir1, "s4");
+    hdfs.delete(new Path("/dir1/dira/dirb/diry/file1"), false);
+    hdfs.deleteSnapshot(dir1, "s1");
+    hdfs.deleteSnapshot(dir1, "s3");
+    // file1 should exist in the last snapshot
+    assertTrue(hdfs.exists(
+        new Path("/dir1/.snapshot/s4/dira/dirb/diry/file1")));
+
+    // save namespace and restart cluster
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    hdfs.saveNamespace();
+    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+
+    cluster.shutdown();
+    cluster = new MiniDFSCluster.Builder(conf).format(false)
+            .numDataNodes(NUM_DATANODES).build();
+    cluster.waitActive();
+    fsn = cluster.getNamesystem();
+    hdfs = cluster.getFileSystem();
+  }
+
 }

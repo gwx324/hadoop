@@ -26,20 +26,19 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.service.AbstractService;
+import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
-import org.apache.hadoop.yarn.server.timelineservice.storage.HBaseTimelineWriterImpl;
 import org.apache.hadoop.yarn.server.timelineservice.storage.TimelineWriter;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Class that manages adding and removing collectors and their lifecycle. It
@@ -48,9 +47,9 @@ import com.google.common.annotations.VisibleForTesting;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
-public class TimelineCollectorManager extends AbstractService {
-  private static final Log LOG =
-      LogFactory.getLog(TimelineCollectorManager.class);
+public class TimelineCollectorManager extends CompositeService {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TimelineCollectorManager.class);
 
   private TimelineWriter writer;
   private ScheduledExecutorService writerFlusher;
@@ -58,11 +57,8 @@ public class TimelineCollectorManager extends AbstractService {
   private boolean writerFlusherRunning;
 
   @Override
-  public void serviceInit(Configuration conf) throws Exception {
-    writer = ReflectionUtils.newInstance(conf.getClass(
-        YarnConfiguration.TIMELINE_SERVICE_WRITER_CLASS,
-        HBaseTimelineWriterImpl.class,
-        TimelineWriter.class), conf);
+  protected void serviceInit(Configuration conf) throws Exception {
+    writer = createTimelineWriter(conf);
     writer.init(conf);
     // create a single dedicated thread for flushing the writer on a periodic
     // basis
@@ -73,6 +69,26 @@ public class TimelineCollectorManager extends AbstractService {
         YarnConfiguration.
         DEFAULT_TIMELINE_SERVICE_WRITER_FLUSH_INTERVAL_SECONDS);
     super.serviceInit(conf);
+  }
+
+  private TimelineWriter createTimelineWriter(final Configuration conf) {
+    String timelineWriterClassName = conf.get(
+        YarnConfiguration.TIMELINE_SERVICE_WRITER_CLASS,
+            YarnConfiguration.DEFAULT_TIMELINE_SERVICE_WRITER_CLASS);
+    LOG.info("Using TimelineWriter: " + timelineWriterClassName);
+    try {
+      Class<?> timelineWriterClazz = Class.forName(timelineWriterClassName);
+      if (TimelineWriter.class.isAssignableFrom(timelineWriterClazz)) {
+        return (TimelineWriter) ReflectionUtils.newInstance(
+            timelineWriterClazz, conf);
+      } else {
+        throw new YarnRuntimeException("Class: " + timelineWriterClassName
+            + " not instance of " + TimelineWriter.class.getCanonicalName());
+      }
+    } catch (ClassNotFoundException e) {
+      throw new YarnRuntimeException("Could not instantiate TimelineWriter: "
+          + timelineWriterClassName, e);
+    }
   }
 
   @Override
@@ -168,9 +184,11 @@ public class TimelineCollectorManager extends AbstractService {
     if (collector == null) {
       LOG.error("the collector for " + appId + " does not exist!");
     } else {
-      postRemove(appId, collector);
-      // stop the service to do clean up
-      collector.stop();
+      synchronized (collector) {
+        postRemove(appId, collector);
+        // stop the service to do clean up
+        collector.stop();
+      }
       LOG.info("The collector service for " + appId + " was removed");
     }
     return collector != null;
@@ -202,9 +220,11 @@ public class TimelineCollectorManager extends AbstractService {
 
   @Override
   protected void serviceStop() throws Exception {
-    if (collectors != null && collectors.size() > 1) {
-      for (TimelineCollector c : collectors.values()) {
-        c.serviceStop();
+    if (collectors != null && collectors.size() > 0) {
+      synchronized (collectors) {
+        for (TimelineCollector c : collectors.values()) {
+          c.serviceStop();
+        }
       }
     }
     // stop the flusher first
@@ -243,7 +263,12 @@ public class TimelineCollectorManager extends AbstractService {
 
     public void run() {
       try {
-        writer.flush();
+        // synchronize on the writer object to avoid flushing timeline
+        // entities placed on the buffer by synchronous putEntities
+        // requests.
+        synchronized (writer) {
+          writer.flush();
+        }
       } catch (Throwable th) {
         // we need to handle all exceptions or subsequent execution may be
         // suppressed

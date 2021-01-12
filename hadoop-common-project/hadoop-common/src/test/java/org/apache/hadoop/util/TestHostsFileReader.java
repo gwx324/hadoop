@@ -18,18 +18,20 @@
 package org.apache.hadoop.util;
 
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileWriter;
-import java.util.HashSet;
-import java.util.Set;
+import java.io.IOException;
+import java.nio.file.NoSuchFileException;
+import java.util.Map;
 
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.HostsFileReader.HostDetails;
 import org.junit.*;
+
 import static org.junit.Assert.*;
 
 /*
  * Test for HostsFileReader.java
- * 
+ *
  */
 public class TestHostsFileReader {
 
@@ -39,6 +41,7 @@ public class TestHostsFileReader {
   File INCLUDES_FILE = new File(HOSTS_TEST_DIR, "dfs.include");
   String excludesFile = HOSTS_TEST_DIR + "/dfs.exclude";
   String includesFile = HOSTS_TEST_DIR + "/dfs.include";
+  private String excludesXmlFile = HOSTS_TEST_DIR + "/dfs.exclude.xml";
 
   @Before
   public void setUp() throws Exception {
@@ -117,11 +120,11 @@ public class TestHostsFileReader {
     assertTrue(hfp.getExcludedHosts().contains("node1"));
     assertTrue(hfp.getHosts().contains("node2"));
 
-    Set<String> hostsList = new HashSet<String>();
-    Set<String> excludeList = new HashSet<String>();
-    hfp.getHostDetails(hostsList, excludeList);
-    assertTrue(excludeList.contains("node1"));
-    assertTrue(hostsList.contains("node2"));
+    HostDetails hostDetails = hfp.getHostDetails();
+    assertTrue(hostDetails.getExcludedHosts().contains("node1"));
+    assertTrue(hostDetails.getIncludedHosts().contains("node2"));
+    assertEquals(newIncludesFile, hostDetails.getIncludesFile());
+    assertEquals(newExcludesFile, hostDetails.getExcludesFile());
   }
 
   /*
@@ -133,8 +136,8 @@ public class TestHostsFileReader {
       new HostsFileReader(
           HOSTS_TEST_DIR + "/doesnt-exist",
           HOSTS_TEST_DIR + "/doesnt-exist");
-      Assert.fail("Should throw FileNotFoundException");
-    } catch (FileNotFoundException ex) {
+      Assert.fail("Should throw NoSuchFileException");
+    } catch (NoSuchFileException ex) {
       // Exception as expected
     }
   }
@@ -155,8 +158,8 @@ public class TestHostsFileReader {
     assertTrue(INCLUDES_FILE.delete());
     try {
       hfp.refresh();
-      Assert.fail("Should throw FileNotFoundException");
-    } catch (FileNotFoundException ex) {
+      Assert.fail("Should throw NoSuchFileException");
+    } catch (NoSuchFileException ex) {
       // Exception as expected
     }
   }
@@ -287,5 +290,120 @@ public class TestHostsFileReader {
     assertTrue(hfp.getExcludedHosts().contains("somehost2"));
     assertFalse(hfp.getExcludedHosts().contains("somehost5"));
 
+  }
+
+  /*
+   * Test if timeout values are provided in HostFile
+   */
+  @Test
+  public void testHostFileReaderWithTimeout() throws Exception {
+    FileWriter efw = new FileWriter(excludesXmlFile);
+    FileWriter ifw = new FileWriter(includesFile);
+
+    efw.write("<?xml version=\"1.0\"?>\n");
+    efw.write("<!-- yarn.nodes.exclude -->\n");
+    efw.write("<hosts>\n");
+    efw.write("<host><name>host1</name></host>\n");
+    efw.write("<host><name>host2</name><timeout>123</timeout></host>\n");
+    efw.write("<host><name>host3</name><timeout>-1</timeout></host>\n");
+    efw.write("<host><name>10000</name></host>\n");
+    efw.write("<host><name>10001</name><timeout>123</timeout></host>\n");
+    efw.write("<host><name>10002</name><timeout>-1</timeout></host>\n");
+    efw.write("<host><name>host4,host5, host6</name>" +
+              "<timeout>1800</timeout></host>\n");
+    efw.write("</hosts>\n");
+    efw.close();
+
+    ifw.write("#Hosts-in-DFS\n");
+    ifw.write("     \n");
+    ifw.write("   somehost \t  somehost2 \n somehost4");
+    ifw.write("   somehost3 \t # somehost5");
+    ifw.close();
+
+    HostsFileReader hfp = new HostsFileReader(includesFile, excludesXmlFile);
+
+    int includesLen = hfp.getHosts().size();
+    int excludesLen = hfp.getExcludedHosts().size();
+    assertEquals(4, includesLen);
+    assertEquals(9, excludesLen);
+
+    HostDetails hostDetails = hfp.getHostDetails();
+    Map<String, Integer> excludes = hostDetails.getExcludedMap();
+    assertTrue(excludes.containsKey("host1"));
+    assertTrue(excludes.containsKey("host2"));
+    assertTrue(excludes.containsKey("host3"));
+    assertTrue(excludes.containsKey("10000"));
+    assertTrue(excludes.containsKey("10001"));
+    assertTrue(excludes.containsKey("10002"));
+    assertTrue(excludes.containsKey("host4"));
+    assertTrue(excludes.containsKey("host5"));
+    assertTrue(excludes.containsKey("host6"));
+    assertTrue(excludes.get("host1") == null);
+    assertTrue(excludes.get("host2") == 123);
+    assertTrue(excludes.get("host3") == -1);
+    assertTrue(excludes.get("10000") == null);
+    assertTrue(excludes.get("10001") == 123);
+    assertTrue(excludes.get("10002") == -1);
+    assertTrue(excludes.get("host4") == 1800);
+    assertTrue(excludes.get("host5") == 1800);
+    assertTrue(excludes.get("host6") == 1800);
+  }
+
+  @Test
+  public void testLazyRefresh() throws IOException {
+    FileWriter efw = new FileWriter(excludesFile);
+    FileWriter ifw = new FileWriter(includesFile);
+
+    efw.write("host1\n");
+    efw.write("host2\n");
+    efw.close();
+    ifw.write("host3\n");
+    ifw.write("host4\n");
+    ifw.close();
+
+    HostsFileReader hfp = new HostsFileReader(includesFile, excludesFile);
+
+    ifw = new FileWriter(includesFile);
+    ifw.close();
+
+    efw = new FileWriter(excludesFile, true);
+    efw.write("host3\n");
+    efw.write("host4\n");
+    efw.close();
+
+    hfp.lazyRefresh(includesFile, excludesFile);
+
+    HostDetails details = hfp.getHostDetails();
+    HostDetails lazyDetails = hfp.getLazyLoadedHostDetails();
+
+    assertEquals("Details: no. of excluded hosts", 2,
+        details.getExcludedHosts().size());
+    assertEquals("Details: no. of included hosts", 2,
+        details.getIncludedHosts().size());
+    assertEquals("LazyDetails: no. of excluded hosts", 4,
+        lazyDetails.getExcludedHosts().size());
+    assertEquals("LayDetails: no. of included hosts", 0,
+        lazyDetails.getIncludedHosts().size());
+
+    hfp.finishRefresh();
+
+    details = hfp.getHostDetails();
+    assertEquals("Details: no. of excluded hosts", 4,
+        details.getExcludedHosts().size());
+    assertEquals("Details: no. of included hosts", 0,
+        details.getIncludedHosts().size());
+    assertNull("Lazy host details should be null",
+        hfp.getLazyLoadedHostDetails());
+  }
+
+  @Test(expected = IllegalStateException.class)
+  public void testFinishRefreshWithoutLazyRefresh() throws IOException {
+    FileWriter efw = new FileWriter(excludesFile);
+    FileWriter ifw = new FileWriter(includesFile);
+    efw.close();
+    ifw.close();
+
+    HostsFileReader hfp = new HostsFileReader(includesFile, excludesFile);
+    hfp.finishRefresh();
   }
 }

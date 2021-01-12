@@ -32,12 +32,14 @@ import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FSDataOutputStreamBuilder;
 import org.apache.hadoop.fs.FileChecksum;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FilterFileSystem;
 import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.fs.FsStatus;
+import org.apache.hadoop.fs.FutureDataInputStreamBuilder;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.QuotaUsage;
@@ -96,13 +98,12 @@ class ChRootedFileSystem extends FilterFileSystem {
   
   /**
    * Constructor
-   * @param uri base file system
-   * @param conf configuration
+   * @param fs base file system
+   * @param uri base uri
    * @throws IOException 
    */
-  public ChRootedFileSystem(final URI uri, Configuration conf)
-      throws IOException {
-    super(FileSystem.get(uri, conf));
+  ChRootedFileSystem(final FileSystem fs, URI uri) throws IOException {
+    super(fs);
     String pathString = uri.getPath();
     if (pathString.isEmpty()) {
       pathString = "/";
@@ -113,7 +114,18 @@ class ChRootedFileSystem extends FilterFileSystem {
     workingDir = getHomeDirectory();
     // We don't use the wd of the myFs
   }
-  
+
+  /**
+   * Constructor.
+   * @param uri base file system
+   * @param conf configuration
+   * @throws IOException
+   */
+  public ChRootedFileSystem(final URI uri, Configuration conf)
+      throws IOException {
+    this(FileSystem.get(uri, conf), uri);
+  }
+
   /** 
    * Called after a new FileSystem instance is constructed.
    * @param name a uri whose authority section names the host, port, etc.
@@ -135,7 +147,7 @@ class ChRootedFileSystem extends FilterFileSystem {
   /**
    * Strip out the root from the path.
    * @param p - fully qualified path p
-   * @return -  the remaining path  without the begining /
+   * @return -  the remaining path  without the beginning /
    * @throws IOException if the p is not prefixed with root
    */
   String stripOutRoot(final Path p) throws IOException {
@@ -222,9 +234,20 @@ class ChRootedFileSystem extends FilterFileSystem {
   }
 
   @Override
+  public FileChecksum getFileChecksum(final Path f, final long length)
+      throws IOException {
+    return super.getFileChecksum(fullPath(f), length);
+  }
+
+  @Override
   public FileStatus getFileStatus(final Path f) 
       throws IOException {
     return super.getFileStatus(fullPath(f));
+  }
+
+  @Override
+  public Path getLinkTarget(Path f) throws IOException {
+    return super.getLinkTarget(fullPath(f));
   }
 
   @Override
@@ -254,6 +277,11 @@ class ChRootedFileSystem extends FilterFileSystem {
   public boolean mkdirs(final Path f, final FsPermission permission)
       throws IOException {
     return super.mkdirs(fullPath(f), permission);
+  }
+
+  @Override
+  public boolean mkdirs(final Path f) throws IOException {
+    return super.mkdirs(fullPath(f));
   }
 
   @Override
@@ -355,6 +383,11 @@ class ChRootedFileSystem extends FilterFileSystem {
   }
 
   @Override
+  public boolean truncate(Path path, long newLength) throws IOException {
+    return super.truncate(fullPath(path), newLength);
+  }
+
+  @Override
   public List<String> listXAttrs(Path path) throws IOException {
     return super.listXAttrs(fullPath(path));
   }
@@ -434,6 +467,11 @@ class ChRootedFileSystem extends FilterFileSystem {
   }
 
   @Override
+  public void satisfyStoragePolicy(Path src) throws IOException {
+    super.satisfyStoragePolicy(fullPath(src));
+  }
+
+  @Override
   public void setStoragePolicy(Path src, String policyName) throws IOException {
     super.setStoragePolicy(fullPath(src), policyName);
   }
@@ -443,4 +481,20 @@ class ChRootedFileSystem extends FilterFileSystem {
     super.unsetStoragePolicy(fullPath(src));
   }
 
+  @Override
+  public FSDataOutputStreamBuilder createFile(final Path path) {
+    return super.createFile(fullPath(path));
+  }
+
+  @Override
+  public FutureDataInputStreamBuilder openFile(final Path path)
+      throws IOException, UnsupportedOperationException {
+    return super.openFile(fullPath(path));
+  }
+
+  @Override
+  public boolean hasPathCapability(final Path path, final String capability)
+      throws IOException {
+    return super.hasPathCapability(fullPath(path), capability);
+  }
 }

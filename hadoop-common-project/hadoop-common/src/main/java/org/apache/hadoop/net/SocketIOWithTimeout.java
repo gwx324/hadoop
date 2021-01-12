@@ -31,9 +31,9 @@ import java.nio.channels.spi.SelectorProvider;
 import java.util.Iterator;
 import java.util.LinkedList;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.util.Time;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This supports input and output streams for a socket channels. 
@@ -42,7 +42,7 @@ import org.apache.hadoop.util.Time;
 abstract class SocketIOWithTimeout {
   // This is intentionally package private.
 
-  static final Log LOG = LogFactory.getLog(SocketIOWithTimeout.class);    
+  static final Logger LOG = LoggerFactory.getLogger(SocketIOWithTimeout.class);
   
   private SelectableChannel channel;
   private long timeout;
@@ -326,34 +326,36 @@ abstract class SocketIOWithTimeout {
       
       SelectionKey key = null;
       int ret = 0;
+      long timeoutLeft = timeout;
       
       try {
         while (true) {
           long start = (timeout == 0) ? 0 : Time.now();
 
           key = channel.register(info.selector, ops);
-          ret = info.selector.select(timeout);
+          ret = info.selector.select(timeoutLeft);
           
           if (ret != 0) {
             return ret;
           }
           
-          if (Thread.currentThread().isInterrupted()) {
-            throw new InterruptedIOException("Interrupted while waiting for "
-                + "IO on channel " + channel + ". " + timeout
-                + " millis timeout left.");
-          }
-
           /* Sometimes select() returns 0 much before timeout for 
            * unknown reasons. So select again if required.
            */
           if (timeout > 0) {
-            timeout -= Time.now() - start;
-            if (timeout <= 0) {
-              return 0;
-            }
+            timeoutLeft -= Time.now() - start;
+            timeoutLeft = Math.max(0, timeoutLeft);
           }
           
+          if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedIOException("Interrupted while waiting for "
+                + "IO on channel " + channel + ". Total timeout mills is "
+                + timeout + ", " + timeoutLeft + " millis timeout left.");
+          }
+
+          if (timeoutLeft == 0) {
+            return 0;
+          }
         }
       } finally {
         if (key != null) {

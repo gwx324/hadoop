@@ -17,10 +17,11 @@
  */
 package org.apache.hadoop.mapreduce.v2.app;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.Matchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
@@ -41,8 +42,6 @@ import java.util.Map;
 
 import org.junit.Assert;
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileSystem;
@@ -77,6 +76,7 @@ import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -84,18 +84,19 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.apache.hadoop.yarn.util.ConverterUtils;
-import org.apache.log4j.Level;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
+import org.slf4j.event.Level;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestMRAppMaster {
-  private static final Log LOG = LogFactory.getLog(TestMRAppMaster.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestMRAppMaster.class);
   private static final Path TEST_ROOT_DIR =
       new Path(System.getProperty("test.build.data", "target/test-dir"));
   private static final Path testDir = new Path(TEST_ROOT_DIR,
@@ -408,8 +409,7 @@ public class TestMRAppMaster {
   @Test
   public void testMRAppMasterCredentials() throws Exception {
 
-    Logger rootLogger = LogManager.getRootLogger();
-    rootLogger.setLevel(Level.DEBUG);
+    GenericTestUtils.setRootLogLevel(Level.DEBUG);
 
     // Simulate credentials passed to AM via client->RM->NM
     Credentials credentials = new Credentials();
@@ -551,8 +551,8 @@ public class TestMRAppMaster {
         .handleEvent(captor.capture());
     HistoryEvent event = captor.getValue().getHistoryEvent();
     assertTrue(event instanceof JobUnsuccessfulCompletionEvent);
-    assertEquals(((JobUnsuccessfulCompletionEvent) event).getStatus()
-        , expectedJobState);
+    assertThat(((JobUnsuccessfulCompletionEvent) event).getStatus())
+        .isEqualTo(expectedJobState);
   }
 }
 class MRAppMasterTest extends MRAppMaster {

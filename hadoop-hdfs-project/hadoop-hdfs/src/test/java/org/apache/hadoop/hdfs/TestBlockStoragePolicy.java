@@ -24,8 +24,8 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.*;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockStoragePolicySpi;
@@ -35,6 +35,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.*;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.*;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
@@ -44,9 +45,11 @@ import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.net.Node;
+import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
 import org.junit.Assert;
+import static org.junit.Assert.fail;
 import org.junit.Test;
 
 /** Test {@link BlockStoragePolicy} */
@@ -58,7 +61,7 @@ public class TestBlockStoragePolicy {
   static {
     conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
     POLICY_SUITE = BlockStoragePolicySuite.createDefaultSuite();
     DEFAULT_STORAGE_POLICY = POLICY_SUITE.getDefaultPolicy();
   }
@@ -67,10 +70,11 @@ public class TestBlockStoragePolicy {
   static final EnumSet<StorageType> archive = EnumSet.of(StorageType.ARCHIVE);
   static final EnumSet<StorageType> disk = EnumSet.of(StorageType.DISK);
   static final EnumSet<StorageType> ssd = EnumSet.of(StorageType.SSD);
+  static final EnumSet<StorageType> nvdimm = EnumSet.of(StorageType.NVDIMM);
   static final EnumSet<StorageType> disk_archive = EnumSet.of(StorageType.DISK,
       StorageType.ARCHIVE);
   static final EnumSet<StorageType> all = EnumSet.of(StorageType.SSD,
-      StorageType.DISK, StorageType.ARCHIVE);
+      StorageType.DISK, StorageType.ARCHIVE, StorageType.NVDIMM);
 
   static final long FILE_LEN = 1024;
   static final short REPLICATION = 3;
@@ -81,6 +85,8 @@ public class TestBlockStoragePolicy {
   static final byte ONESSD  = HdfsConstants.ONESSD_STORAGE_POLICY_ID;
   static final byte ALLSSD  = HdfsConstants.ALLSSD_STORAGE_POLICY_ID;
   static final byte LAZY_PERSIST  = HdfsConstants.MEMORY_STORAGE_POLICY_ID;
+  static final byte PROVIDED  = HdfsConstants.PROVIDED_STORAGE_POLICY_ID;
+  static final byte ALLNVDIMM = HdfsConstants.ALLNVDIMM_STORAGE_POLICY_ID;
 
   @Test (timeout=300000)
   public void testConfigKeyEnabled() throws IOException {
@@ -140,6 +146,16 @@ public class TestBlockStoragePolicy {
     expectedPolicyStrings.put(ALLSSD, "BlockStoragePolicy{ALL_SSD:" + ALLSSD +
         ", storageTypes=[SSD], creationFallbacks=[DISK], " +
         "replicationFallbacks=[DISK]}");
+    expectedPolicyStrings.put(PROVIDED,
+        "BlockStoragePolicy{PROVIDED:" + PROVIDED
+            + ", storageTypes=[PROVIDED, DISK], "
+            + "creationFallbacks=[PROVIDED, DISK], "
+            + "replicationFallbacks=[PROVIDED, DISK]}");
+    expectedPolicyStrings.put(ALLNVDIMM,
+        "BlockStoragePolicy{ALL_NVDIMM:" + ALLNVDIMM
+            + ", storageTypes=[NVDIMM], "
+            + "creationFallbacks=[DISK], "
+            + "replicationFallbacks=[DISK]}");
 
     for(byte i = 1; i < 16; i++) {
       final BlockStoragePolicy policy = POLICY_SUITE.getPolicy(i); 
@@ -150,79 +166,86 @@ public class TestBlockStoragePolicy {
     }
     Assert.assertEquals(POLICY_SUITE.getPolicy(HOT), POLICY_SUITE.getDefaultPolicy());
     
-    { // check Cold policy
-      final BlockStoragePolicy cold = POLICY_SUITE.getPolicy(COLD);
-      for(short replication = 1; replication < 6; replication++) {
-        final List<StorageType> computed = cold.chooseStorageTypes(replication);
-        assertStorageType(computed, replication, StorageType.ARCHIVE);
-      }
-      assertCreationFallback(cold, null, null, null, null, null);
-      assertReplicationFallback(cold, null, null, null, null);
+    // check Cold policy
+    final BlockStoragePolicy cold = POLICY_SUITE.getPolicy(COLD);
+    for(short replication = 1; replication < 6; replication++) {
+      final List<StorageType> computed = cold.chooseStorageTypes(replication);
+      assertStorageType(computed, replication, StorageType.ARCHIVE);
     }
+    assertCreationFallback(cold, null, null, null, null, null, null);
+    assertReplicationFallback(cold, null, null, null, null, null);
     
-    { // check Warm policy
-      final BlockStoragePolicy warm = POLICY_SUITE.getPolicy(WARM);
-      for(short replication = 1; replication < 6; replication++) {
-        final List<StorageType> computed = warm.chooseStorageTypes(replication);
-        assertStorageType(computed, replication, StorageType.DISK, StorageType.ARCHIVE);
-      }
-      assertCreationFallback(warm, StorageType.DISK, StorageType.DISK,
-          StorageType.ARCHIVE, StorageType.DISK, null);
-      assertReplicationFallback(warm, StorageType.DISK, StorageType.DISK,
-          StorageType.ARCHIVE, StorageType.DISK);
+    // check Warm policy
+    final BlockStoragePolicy warm = POLICY_SUITE.getPolicy(WARM);
+    for(short replication = 1; replication < 6; replication++) {
+      final List<StorageType> computed = warm.chooseStorageTypes(replication);
+      assertStorageType(computed, replication, StorageType.DISK,
+        StorageType.ARCHIVE);
     }
+    assertCreationFallback(warm, StorageType.DISK, StorageType.DISK,
+      StorageType.ARCHIVE, StorageType.DISK, null, StorageType.DISK);
+    assertReplicationFallback(warm, StorageType.DISK, StorageType.DISK,
+      StorageType.ARCHIVE, StorageType.DISK, StorageType.DISK);
 
-    { // check Hot policy
-      final BlockStoragePolicy hot = POLICY_SUITE.getPolicy(HOT);
-      for(short replication = 1; replication < 6; replication++) {
-        final List<StorageType> computed = hot.chooseStorageTypes(replication);
-        assertStorageType(computed, replication, StorageType.DISK);
-      }
-      assertCreationFallback(hot, null, null, null, null, null);
-      assertReplicationFallback(hot, StorageType.ARCHIVE, null,
-          StorageType.ARCHIVE, StorageType.ARCHIVE);
+    // check Hot policy
+    final BlockStoragePolicy hot = POLICY_SUITE.getPolicy(HOT);
+    for(short replication = 1; replication < 6; replication++) {
+      final List<StorageType> computed = hot.chooseStorageTypes(replication);
+      assertStorageType(computed, replication, StorageType.DISK);
     }
+    assertCreationFallback(hot, null, null, null, null, null, null);
+    assertReplicationFallback(hot, StorageType.ARCHIVE, null,
+      StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
 
-    { // check ONE_SSD policy
-      final BlockStoragePolicy onessd = POLICY_SUITE.getPolicy(ONESSD);
-      for (short replication = 1; replication < 6; replication++) {
-        final List<StorageType> computed = onessd
-            .chooseStorageTypes(replication);
-        assertStorageType(computed, replication, StorageType.SSD,
-            StorageType.DISK);
-      }
-      assertCreationFallback(onessd, StorageType.SSD, StorageType.SSD,
-          StorageType.SSD, StorageType.DISK, StorageType.SSD);
-      assertReplicationFallback(onessd, StorageType.SSD, StorageType.SSD,
-          StorageType.SSD, StorageType.DISK);
+    // check ONE_SSD policy
+    final BlockStoragePolicy onessd = POLICY_SUITE.getPolicy(ONESSD);
+    for (short replication = 1; replication < 6; replication++) {
+      final List<StorageType> computed = onessd
+        .chooseStorageTypes(replication);
+      assertStorageType(computed, replication, StorageType.SSD,
+        StorageType.DISK);
     }
+    assertCreationFallback(onessd, StorageType.SSD, StorageType.SSD,
+      StorageType.SSD, StorageType.DISK, StorageType.SSD, StorageType.SSD);
+    assertReplicationFallback(onessd, StorageType.SSD, StorageType.SSD,
+      StorageType.SSD, StorageType.DISK, StorageType.SSD);
 
-    { // check ALL_SSD policy
-      final BlockStoragePolicy allssd = POLICY_SUITE.getPolicy(ALLSSD);
-      for (short replication = 1; replication < 6; replication++) {
-        final List<StorageType> computed = allssd
-            .chooseStorageTypes(replication);
-        assertStorageType(computed, replication, StorageType.SSD);
-      }
-      assertCreationFallback(allssd, StorageType.DISK, StorageType.DISK, null,
-          StorageType.DISK, null);
-      assertReplicationFallback(allssd, StorageType.DISK, StorageType.DISK,
-          null, StorageType.DISK);
+    // check ALL_SSD policy
+    final BlockStoragePolicy allssd = POLICY_SUITE.getPolicy(ALLSSD);
+    for (short replication = 1; replication < 6; replication++) {
+      final List<StorageType> computed = allssd
+        .chooseStorageTypes(replication);
+      assertStorageType(computed, replication, StorageType.SSD);
     }
+    assertCreationFallback(allssd, StorageType.DISK, StorageType.DISK, null,
+      StorageType.DISK, null, StorageType.DISK);
+    assertReplicationFallback(allssd, StorageType.DISK, StorageType.DISK,
+      null, StorageType.DISK, StorageType.DISK);
 
-    { // check LAZY_PERSIST policy
-      final BlockStoragePolicy lazyPersist = POLICY_SUITE
-          .getPolicy(LAZY_PERSIST);
-      for (short replication = 1; replication < 6; replication++) {
-        final List<StorageType> computed = lazyPersist
-            .chooseStorageTypes(replication);
-        assertStorageType(computed, replication, StorageType.DISK);
-      }
-      assertCreationFallback(lazyPersist, StorageType.DISK, StorageType.DISK,
-          null, StorageType.DISK, null);
-      assertReplicationFallback(lazyPersist, StorageType.DISK,
-          StorageType.DISK, null, StorageType.DISK);
+    // check LAZY_PERSIST policy
+    final BlockStoragePolicy lazyPersist = POLICY_SUITE
+      .getPolicy(LAZY_PERSIST);
+    for (short replication = 1; replication < 6; replication++) {
+      final List<StorageType> computed = lazyPersist
+        .chooseStorageTypes(replication);
+      assertStorageType(computed, replication, StorageType.DISK);
     }
+    assertCreationFallback(lazyPersist, StorageType.DISK, StorageType.DISK,
+      null, StorageType.DISK, null, StorageType.DISK);
+    assertReplicationFallback(lazyPersist, StorageType.DISK,
+      StorageType.DISK, null, StorageType.DISK, StorageType.DISK);
+
+    // check ALL_NVDIMM policy
+    final BlockStoragePolicy allnvdimm = POLICY_SUITE.getPolicy(ALLNVDIMM);
+    for (short replication = 1; replication < 6; replication++) {
+      final List<StorageType> computed = allnvdimm
+        .chooseStorageTypes(replication);
+      assertStorageType(computed, replication, StorageType.NVDIMM);
+    }
+    assertCreationFallback(allnvdimm, StorageType.DISK, StorageType.DISK,
+      null, StorageType.DISK, null, StorageType.DISK);
+    assertReplicationFallback(allnvdimm, StorageType.DISK,
+      StorageType.DISK, null, StorageType.DISK, StorageType.DISK);
   }
 
   static StorageType[] newStorageTypes(int nDisk, int nArchive) {
@@ -249,11 +272,12 @@ public class TestBlockStoragePolicy {
   static void assertCreationFallback(BlockStoragePolicy policy,
       StorageType noneExpected, StorageType archiveExpected,
       StorageType diskExpected, StorageType ssdExpected,
-      StorageType disk_archiveExpected) {
+      StorageType disk_archiveExpected, StorageType nvdimmExpected) {
     Assert.assertEquals(noneExpected, policy.getCreationFallback(none));
     Assert.assertEquals(archiveExpected, policy.getCreationFallback(archive));
     Assert.assertEquals(diskExpected, policy.getCreationFallback(disk));
     Assert.assertEquals(ssdExpected, policy.getCreationFallback(ssd));
+    Assert.assertEquals(nvdimmExpected, policy.getCreationFallback(nvdimm));
     Assert.assertEquals(disk_archiveExpected,
         policy.getCreationFallback(disk_archive));
     Assert.assertEquals(null, policy.getCreationFallback(all));
@@ -261,12 +285,14 @@ public class TestBlockStoragePolicy {
 
   static void assertReplicationFallback(BlockStoragePolicy policy,
       StorageType noneExpected, StorageType archiveExpected,
-      StorageType diskExpected, StorageType ssdExpected) {
+      StorageType diskExpected, StorageType ssdExpected,
+      StorageType nvdimmExpected) {
     Assert.assertEquals(noneExpected, policy.getReplicationFallback(none));
     Assert
         .assertEquals(archiveExpected, policy.getReplicationFallback(archive));
     Assert.assertEquals(diskExpected, policy.getReplicationFallback(disk));
     Assert.assertEquals(ssdExpected, policy.getReplicationFallback(ssd));
+    Assert.assertEquals(nvdimmExpected, policy.getReplicationFallback(nvdimm));
     Assert.assertEquals(null, policy.getReplicationFallback(all));
   }
 
@@ -368,6 +394,7 @@ public class TestBlockStoragePolicy {
     final BlockStoragePolicy hot = POLICY_SUITE.getPolicy(HOT);
     final BlockStoragePolicy warm = POLICY_SUITE.getPolicy(WARM);
     final BlockStoragePolicy cold = POLICY_SUITE.getPolicy(COLD);
+    final BlockStoragePolicy allnvdimm = POLICY_SUITE.getPolicy(ALLNVDIMM);
 
     final short replication = 3;
     {
@@ -378,6 +405,8 @@ public class TestBlockStoragePolicy {
           StorageType.DISK, StorageType.ARCHIVE, StorageType.ARCHIVE);
       method.checkChooseStorageTypes(cold, replication, chosen,
           StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
+      method.checkChooseStorageTypes(allnvdimm, replication, chosen,
+          StorageType.NVDIMM, StorageType.NVDIMM, StorageType.NVDIMM);
     }
 
     {
@@ -388,6 +417,8 @@ public class TestBlockStoragePolicy {
           StorageType.ARCHIVE, StorageType.ARCHIVE);
       method.checkChooseStorageTypes(cold, replication, chosen,
           StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
+      method.checkChooseStorageTypes(allnvdimm, replication, chosen,
+          StorageType.NVDIMM, StorageType.NVDIMM, StorageType.NVDIMM);
     }
 
     {
@@ -398,6 +429,8 @@ public class TestBlockStoragePolicy {
           StorageType.DISK, StorageType.ARCHIVE);
       method.checkChooseStorageTypes(cold, replication, chosen,
           StorageType.ARCHIVE, StorageType.ARCHIVE);
+      method.checkChooseStorageTypes(allnvdimm, replication, chosen,
+          StorageType.NVDIMM, StorageType.NVDIMM, StorageType.NVDIMM);
     }
 
     {
@@ -409,6 +442,8 @@ public class TestBlockStoragePolicy {
           StorageType.ARCHIVE, StorageType.ARCHIVE);
       method.checkChooseStorageTypes(cold, replication, chosen,
           StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
+      method.checkChooseStorageTypes(allnvdimm, replication, chosen,
+          StorageType.NVDIMM, StorageType.NVDIMM, StorageType.NVDIMM);
     }
 
     {
@@ -420,6 +455,8 @@ public class TestBlockStoragePolicy {
           StorageType.ARCHIVE);
       method.checkChooseStorageTypes(cold, replication, chosen,
           StorageType.ARCHIVE, StorageType.ARCHIVE);
+      method.checkChooseStorageTypes(allnvdimm, replication, chosen,
+          StorageType.NVDIMM, StorageType.NVDIMM, StorageType.NVDIMM);
     }
 
     {
@@ -431,6 +468,8 @@ public class TestBlockStoragePolicy {
           StorageType.DISK);
       method.checkChooseStorageTypes(cold, replication, chosen,
           StorageType.ARCHIVE);
+      method.checkChooseStorageTypes(allnvdimm, replication, chosen,
+          StorageType.NVDIMM, StorageType.NVDIMM, StorageType.NVDIMM);
     }
 
     {
@@ -441,6 +480,8 @@ public class TestBlockStoragePolicy {
           StorageType.ARCHIVE, StorageType.ARCHIVE);
       method.checkChooseStorageTypes(cold, replication, chosen,
           StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
+      method.checkChooseStorageTypes(allnvdimm, replication, chosen,
+          StorageType.NVDIMM, StorageType.NVDIMM, StorageType.NVDIMM);
     }
 
     {
@@ -452,6 +493,8 @@ public class TestBlockStoragePolicy {
           StorageType.ARCHIVE);
       method.checkChooseStorageTypes(cold, replication, chosen,
           StorageType.ARCHIVE, StorageType.ARCHIVE);
+      method.checkChooseStorageTypes(allnvdimm, replication, chosen,
+          StorageType.NVDIMM, StorageType.NVDIMM, StorageType.NVDIMM);
     }
 
     {
@@ -462,6 +505,8 @@ public class TestBlockStoragePolicy {
       method.checkChooseStorageTypes(warm, replication, chosen);
       method.checkChooseStorageTypes(cold, replication, chosen,
           StorageType.ARCHIVE);
+      method.checkChooseStorageTypes(allnvdimm, replication, chosen,
+          StorageType.NVDIMM, StorageType.NVDIMM, StorageType.NVDIMM);
     }
 
     {
@@ -472,6 +517,8 @@ public class TestBlockStoragePolicy {
       method.checkChooseStorageTypes(warm, replication, chosen,
           StorageType.DISK);
       method.checkChooseStorageTypes(cold, replication, chosen);
+      method.checkChooseStorageTypes(allnvdimm, replication, chosen,
+          StorageType.NVDIMM, StorageType.NVDIMM, StorageType.NVDIMM);
     }
   }
 
@@ -1093,7 +1140,7 @@ public class TestBlockStoragePolicy {
                                   int replicaNum, StorageType... types) {
     List<StorageType> typeList = Lists.newArrayList();
     Collections.addAll(typeList, types);
-    LocatedBlocks lbs = status.getBlockLocations();
+    LocatedBlocks lbs = status.getLocatedBlocks();
     Assert.assertEquals(blockNum, lbs.getLocatedBlocks().size());
     for (LocatedBlock lb : lbs.getLocatedBlocks()) {
       Assert.assertEquals(replicaNum, lb.getStorageTypes().length);
@@ -1268,7 +1315,7 @@ public class TestBlockStoragePolicy {
     }
 
     FileSystem.setDefaultUri(conf, "hdfs://localhost:0");
-    conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY, "0.0.0.0:0");
+        conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY, "0.0.0.0:0");
     File baseDir = PathUtils.getTestDir(TestReplicationPolicy.class);
     conf.set(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY,
         new File(baseDir, "name").getPath());
@@ -1378,10 +1425,12 @@ public class TestBlockStoragePolicy {
     map.put(StorageType.DISK, 1);
     map.put(StorageType.SSD, 1);
     map.put(StorageType.RAM_DISK, 1);
+    map.put(StorageType.NVDIMM, 1);
 
     {
       final Iterator<StorageType> i = map.keySet().iterator();
       Assert.assertEquals(StorageType.RAM_DISK, i.next());
+      Assert.assertEquals(StorageType.NVDIMM, i.next());
       Assert.assertEquals(StorageType.SSD, i.next());
       Assert.assertEquals(StorageType.DISK, i.next());
       Assert.assertEquals(StorageType.ARCHIVE, i.next());
@@ -1391,10 +1440,197 @@ public class TestBlockStoragePolicy {
       final Iterator<Map.Entry<StorageType, Integer>> i
           = map.entrySet().iterator();
       Assert.assertEquals(StorageType.RAM_DISK, i.next().getKey());
+      Assert.assertEquals(StorageType.NVDIMM, i.next().getKey());
       Assert.assertEquals(StorageType.SSD, i.next().getKey());
       Assert.assertEquals(StorageType.DISK, i.next().getKey());
       Assert.assertEquals(StorageType.ARCHIVE, i.next().getKey());
     }
   }
 
+  @Test
+  public void testStorageTypeCheckAccess(){
+    testStorageTypeCheckAccessResult(new StorageType[]{StorageType.DEFAULT},
+        new StorageType[]{StorageType.DEFAULT}, true);
+
+    testStorageTypeCheckAccessResult(StorageType.EMPTY_ARRAY,
+        StorageType.EMPTY_ARRAY, false);
+
+    testStorageTypeCheckAccessResult(new StorageType[]{StorageType.DISK},
+        StorageType.EMPTY_ARRAY, false);
+
+    testStorageTypeCheckAccessResult(StorageType.EMPTY_ARRAY,
+        new StorageType[]{StorageType.RAM_DISK}, true);
+
+    testStorageTypeCheckAccessResult(new StorageType[]{StorageType.DISK},
+        new StorageType[]{StorageType.DISK}, true);
+
+    testStorageTypeCheckAccessResult(new StorageType[]{StorageType.DISK},
+        new StorageType[]{StorageType.DISK, StorageType.DISK, StorageType.DISK},
+        false);
+
+    testStorageTypeCheckAccessResult(
+        new StorageType[]{StorageType.DISK, StorageType.DISK, StorageType.DISK},
+        new StorageType[]{StorageType.DISK, StorageType.DISK, StorageType.DISK},
+        true);
+
+    testStorageTypeCheckAccessResult(
+        new StorageType[]{StorageType.RAM_DISK, StorageType.SSD},
+        new StorageType[]{StorageType.DISK, StorageType.RAM_DISK,
+            StorageType.SSD},
+        false);
+
+    testStorageTypeCheckAccessResult(
+        new StorageType[]{StorageType.DISK, StorageType.SSD},
+        new StorageType[]{StorageType.SSD},
+        true);
+
+    testStorageTypeCheckAccessResult(new StorageType[]{StorageType.DISK},
+        new StorageType[]{StorageType.RAM_DISK}, false);
+
+    testStorageTypeCheckAccessResult(new StorageType[]{StorageType.DISK},
+        new StorageType[]{StorageType.RAM_DISK, StorageType.SSD,
+            StorageType.ARCHIVE},
+        false);
+
+    testStorageTypeCheckAccessResult(new StorageType[]{StorageType.RAM_DISK,
+        StorageType.SSD, StorageType.ARCHIVE},
+        new StorageType[]{StorageType.DISK}, false);
+
+    testStorageTypeCheckAccessResult(
+        new StorageType[]{StorageType.DISK, StorageType.SSD},
+        new StorageType[]{StorageType.SSD},
+        true);
+
+    testStorageTypeCheckAccessResult(new StorageType[]{StorageType.RAM_DISK},
+        new StorageType[]{StorageType.DISK}, false);
+
+    testStorageTypeCheckAccessResult(
+        new StorageType[]{StorageType.RAM_DISK, StorageType.SSD,
+            StorageType.ARCHIVE},
+        new StorageType[]{StorageType.DISK},
+        false);
+
+    testStorageTypeCheckAccessResult(
+        new StorageType[]{StorageType.RAM_DISK, StorageType.SSD,
+            StorageType.ARCHIVE},
+        new StorageType[]{StorageType.DISK},
+        false);
+
+    testStorageTypeCheckAccessResult(
+        new StorageType[]{StorageType.DISK, StorageType.NVDIMM},
+        new StorageType[]{StorageType.NVDIMM}, true);
+
+    testStorageTypeCheckAccessResult(
+        new StorageType[]{StorageType.RAM_DISK, StorageType.NVDIMM,
+            StorageType.ARCHIVE},
+        new StorageType[]{StorageType.SSD}, false);
+
+  }
+
+  private void testStorageTypeCheckAccessResult(StorageType[] requested,
+      StorageType[] allowed, boolean expAccess) {
+    try {
+      BlockTokenSecretManager.checkAccess(requested, allowed, "StorageTypes");
+      if (!expAccess) {
+        fail("No expected access with allowed StorageTypes "
+            + Arrays.toString(allowed) + " and requested StorageTypes "
+            + Arrays.toString(requested));
+      }
+    } catch (SecretManager.InvalidToken e) {
+      if (expAccess) {
+        fail("Expected access with allowed StorageTypes "
+            + Arrays.toString(allowed) + " and requested StorageTypes "
+            + Arrays.toString(requested));
+      }
+    }
+  }
+
+  @Test
+  public void testStorageIDCheckAccess() {
+    testStorageIDCheckAccessResult(
+        new String[]{"DN1-Storage1"},
+        new String[]{"DN1-Storage1"}, true);
+
+    testStorageIDCheckAccessResult(new String[]{"DN1-Storage1", "DN2-Storage1"},
+        new String[]{"DN1-Storage1"},
+        true);
+
+    testStorageIDCheckAccessResult(new String[]{"DN1-Storage1", "DN2-Storage1"},
+        new String[]{"DN1-Storage1", "DN1-Storage2"}, false);
+
+    testStorageIDCheckAccessResult(
+        new String[]{"DN1-Storage1", "DN1-Storage2"},
+        new String[]{"DN1-Storage1"}, true);
+
+    testStorageIDCheckAccessResult(
+        new String[]{"DN1-Storage1", "DN1-Storage2"},
+        new String[]{"DN2-Storage1"}, false);
+
+    testStorageIDCheckAccessResult(
+        new String[]{"DN1-Storage2", "DN2-Storage2"},
+        new String[]{"DN1-Storage1", "DN2-Storage1"}, false);
+
+    testStorageIDCheckAccessResult(new String[0], new String[0], false);
+
+    testStorageIDCheckAccessResult(new String[0], new String[]{"DN1-Storage1"},
+        true);
+
+    testStorageIDCheckAccessResult(new String[]{"DN1-Storage1"}, new String[0],
+        false);
+  }
+
+  private void testStorageIDCheckAccessResult(String[] requested,
+          String[] allowed, boolean expAccess) {
+    try {
+      BlockTokenSecretManager.checkAccess(requested, allowed, "StorageIDs");
+      if (!expAccess) {
+        fail("No expected access with allowed StorageIDs"
+            + Arrays.toString(allowed) + " and requested StorageIDs"
+            + Arrays.toString(requested));
+      }
+    } catch (SecretManager.InvalidToken e) {
+      if (expAccess) {
+        fail("Expected access with allowed StorageIDs "
+            + Arrays.toString(allowed) + " and requested StorageIDs"
+            + Arrays.toString(requested));
+      }
+    }
+  }
+
+  @Test
+  public void testCreateDefaultPoliciesFromConf() {
+    BlockStoragePolicySuite suite =
+        BlockStoragePolicySuite.createDefaultSuite();
+    Assert.assertEquals(HdfsConstants.StoragePolicy.HOT.value(),
+        suite.getDefaultPolicy().getId());
+
+    Configuration newConf = new Configuration();
+    newConf.setEnum(DFSConfigKeys.DFS_STORAGE_DEFAULT_POLICY,
+        HdfsConstants.StoragePolicy.ONE_SSD);
+    BlockStoragePolicySuite suiteConf =
+        BlockStoragePolicySuite.createDefaultSuite(newConf);
+    Assert.assertEquals(HdfsConstants.StoragePolicy.ONE_SSD.value(),
+        suiteConf.getDefaultPolicy().getId());
+  }
+
+  @Test
+  public void testCreateFileWithConfiguredDefaultPolicies()
+      throws IOException{
+    Configuration newConf = new HdfsConfiguration();
+    newConf.set(DFSConfigKeys.DFS_STORAGE_DEFAULT_POLICY,
+        HdfsConstants.StoragePolicy.WARM.name());
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(newConf)
+        .numDataNodes(0).build();
+    try {
+      cluster.waitActive();
+      final Path fooFile = new Path("/foo");
+      FileSystem newfs = cluster.getFileSystem();
+      DFSTestUtil.createFile(newfs, fooFile, 0, REPLICATION, 0L);
+
+      String policy = newfs.getStoragePolicy(fooFile).getName();
+      Assert.assertEquals(HdfsConstants.StoragePolicy.WARM.name(), policy);
+    } finally {
+      cluster.shutdown();
+    }
+  }
 }

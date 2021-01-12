@@ -18,15 +18,17 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentMap;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
+import org.apache.hadoop.yarn.ams.ApplicationMasterServiceContext;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.conf.ConfigurationProvider;
 import org.apache.hadoop.yarn.event.Dispatcher;
+import org.apache.hadoop.yarn.nodelabels.NodeAttributesManager;
+import org.apache.hadoop.yarn.proto.YarnServerCommonServiceProtos.SystemCredentialsForAppsProto;
 import org.apache.hadoop.yarn.server.resourcemanager.ahs.RMApplicationHistoryWriter;
 import org.apache.hadoop.yarn.server.resourcemanager.metrics.SystemMetricsPublisher;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
@@ -34,25 +36,32 @@ import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMDelegatedNodeL
 import org.apache.hadoop.yarn.server.resourcemanager.placement.PlacementManager;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSystem;
+import org.apache.hadoop.yarn.server.resourcemanager.resource.ResourceProfilesManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.AMLivelinessMonitor;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.monitor.RMAppLifetimeMonitor;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.ContainerAllocationExpirer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
-
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNode;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint.PlacementConstraintManager;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint.AllocationTagsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.distributed.QueueLimitCalculator;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.MultiNodeSortingManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.AMRMTokenSecretManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.DelegationTokenRenewer;
 import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
+import org.apache.hadoop.yarn.server.resourcemanager.security.ProxyCAManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMDelegationTokenSecretManager;
 import org.apache.hadoop.yarn.server.resourcemanager.timelineservice.RMTimelineCollectorManager;
+import org.apache.hadoop.yarn.server.resourcemanager.volume.csi.VolumeManager;
 
 /**
  * Context of the ResourceManager.
  */
-public interface RMContext {
+public interface RMContext extends ApplicationMasterServiceContext {
 
   Dispatcher getDispatcher();
 
@@ -63,8 +72,9 @@ public interface RMContext {
   RMStateStore getStateStore();
 
   ConcurrentMap<ApplicationId, RMApp> getRMApps();
-  
-  ConcurrentMap<ApplicationId, ByteBuffer> getSystemCredentialsForApps();
+
+  ConcurrentMap<ApplicationId, SystemCredentialsForAppsProto>
+      getSystemCredentialsForApps();
 
   ConcurrentMap<NodeId, RMNode> getInactiveRMNodes();
 
@@ -127,6 +137,10 @@ public interface RMContext {
   
   public void setNodeLabelManager(RMNodeLabelsManager mgr);
 
+  NodeAttributesManager getNodeAttributesManager();
+
+  void setNodeAttributesManager(NodeAttributesManager mgr);
+
   RMDelegatedNodeLabelsUpdater getRMDelegatedNodeLabelsUpdater();
 
   void setRMDelegatedNodeLabelsUpdater(
@@ -144,9 +158,49 @@ public interface RMContext {
   
   void setQueuePlacementManager(PlacementManager placementMgr);
 
-  void setLeaderElectorService(LeaderElectorService elector);
+  void setLeaderElectorService(EmbeddedElector elector);
 
-  LeaderElectorService getLeaderElectorService();
+  EmbeddedElector getLeaderElectorService();
 
   QueueLimitCalculator getNodeManagerQueueLimitCalculator();
+
+  void setRMAppLifetimeMonitor(RMAppLifetimeMonitor rmAppLifetimeMonitor);
+
+  RMAppLifetimeMonitor getRMAppLifetimeMonitor();
+
+  String getHAZookeeperConnectionState();
+
+  ResourceManager getResourceManager();
+
+  ResourceProfilesManager getResourceProfilesManager();
+
+  void setResourceProfilesManager(ResourceProfilesManager mgr);
+
+  String getAppProxyUrl(Configuration conf, ApplicationId applicationId);
+
+  AllocationTagsManager getAllocationTagsManager();
+
+  void setAllocationTagsManager(AllocationTagsManager allocationTagsManager);
+
+  PlacementConstraintManager getPlacementConstraintManager();
+
+  void setPlacementConstraintManager(
+      PlacementConstraintManager placementConstraintManager);
+
+  MultiNodeSortingManager<SchedulerNode> getMultiNodeSortingManager();
+
+  void setMultiNodeSortingManager(
+      MultiNodeSortingManager<SchedulerNode> multiNodeSortingManager);
+
+  ProxyCAManager getProxyCAManager();
+
+  void setProxyCAManager(ProxyCAManager proxyCAManager);
+
+  VolumeManager getVolumeManager();
+
+  void setVolumeManager(VolumeManager volumeManager);
+
+  long getTokenSequenceNo();
+
+  void incrTokenSequenceNo();
 }

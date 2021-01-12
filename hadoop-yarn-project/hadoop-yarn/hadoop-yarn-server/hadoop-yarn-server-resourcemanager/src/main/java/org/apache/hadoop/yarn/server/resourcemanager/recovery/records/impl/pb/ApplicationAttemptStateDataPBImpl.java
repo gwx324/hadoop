@@ -20,9 +20,10 @@ package org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.io.DataInputByteBuffer;
 import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.io.IOUtils;
@@ -40,12 +41,12 @@ import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.RMAp
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
 
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 
 public class ApplicationAttemptStateDataPBImpl extends
     ApplicationAttemptStateData {
-  private static Log LOG =
-      LogFactory.getLog(ApplicationAttemptStateDataPBImpl.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ApplicationAttemptStateDataPBImpl.class);
   ApplicationAttemptStateDataProto proto = 
       ApplicationAttemptStateDataProto.getDefaultInstance();
   ApplicationAttemptStateDataProto.Builder builder = null;
@@ -54,6 +55,9 @@ public class ApplicationAttemptStateDataPBImpl extends
   private ApplicationAttemptId attemptId = null;
   private Container masterContainer = null;
   private ByteBuffer appAttemptTokens = null;
+
+  private Map<String, Long> resourceSecondsMap;
+  private Map<String, Long> preemptedResourceSecondsMap;
 
   public ApplicationAttemptStateDataPBImpl() {
     builder = ApplicationAttemptStateDataProto.newBuilder();
@@ -263,6 +267,30 @@ public class ApplicationAttemptStateDataPBImpl extends
   }
 
   @Override
+  public long getPreemptedMemorySeconds() {
+    ApplicationAttemptStateDataProtoOrBuilder p = viaProto ? proto : builder;
+    return p.getPreemptedMemorySeconds();
+  }
+
+  @Override
+  public long getPreemptedVcoreSeconds() {
+    ApplicationAttemptStateDataProtoOrBuilder p = viaProto ? proto : builder;
+    return p.getPreemptedVcoreSeconds();
+  }
+
+  @Override
+  public void setPreemptedMemorySeconds(long memorySeconds) {
+    maybeInitBuilder();
+    builder.setPreemptedMemorySeconds(memorySeconds);
+  }
+
+  @Override
+  public void setPreemptedVcoreSeconds(long vcoreSeconds) {
+    maybeInitBuilder();
+    builder.setPreemptedVcoreSeconds(vcoreSeconds);
+  }
+
+  @Override
   public FinalApplicationStatus getFinalApplicationStatus() {
     ApplicationAttemptStateDataProtoOrBuilder p = viaProto ? proto : builder;
     if (!p.hasFinalApplicationStatus()) {
@@ -379,5 +407,63 @@ public class ApplicationAttemptStateDataPBImpl extends
     } finally {
       IOUtils.closeStream(dibb);
     }
+  }
+
+  @Override
+  public Map<String, Long> getResourceSecondsMap() {
+    if (this.resourceSecondsMap != null) {
+      return this.resourceSecondsMap;
+    }
+    ApplicationAttemptStateDataProtoOrBuilder p = viaProto ? proto : builder;
+    this.resourceSecondsMap = ProtoUtils.convertStringLongMapProtoListToMap(
+        p.getApplicationResourceUsageMapList());
+    return this.resourceSecondsMap;
+  }
+
+  @Override
+  public void setResourceSecondsMap(Map<String, Long> resourceSecondsMap) {
+    maybeInitBuilder();
+    builder.clearApplicationResourceUsageMap();
+    this.resourceSecondsMap = resourceSecondsMap;
+    if (resourceSecondsMap != null) {
+      builder.addAllApplicationResourceUsageMap(
+          ProtoUtils.convertMapToStringLongMapProtoList(resourceSecondsMap));
+    }
+  }
+
+  @Override
+  public Map<String, Long> getPreemptedResourceSecondsMap() {
+    if (this.preemptedResourceSecondsMap != null) {
+      return this.preemptedResourceSecondsMap;
+    }
+    ApplicationAttemptStateDataProtoOrBuilder p = viaProto ? proto : builder;
+    this.preemptedResourceSecondsMap = ProtoUtils
+        .convertStringLongMapProtoListToMap(
+            p.getApplicationResourceUsageMapList());
+    return this.preemptedResourceSecondsMap;
+  }
+
+  @Override
+  public void setPreemptedResourceSecondsMap(
+      Map<String, Long> preemptedResourceSecondsMap) {
+    maybeInitBuilder();
+    builder.clearPreemptedResourceUsageMap();
+    this.preemptedResourceSecondsMap = preemptedResourceSecondsMap;
+    if (preemptedResourceSecondsMap != null) {
+      builder.addAllPreemptedResourceUsageMap(ProtoUtils
+          .convertMapToStringLongMapProtoList(preemptedResourceSecondsMap));
+    }
+  }
+
+  @Override
+  public int getTotalAllocatedContainers() {
+    ApplicationAttemptStateDataProtoOrBuilder p = viaProto ? proto : builder;
+    return p.getTotalAllocatedContainers();
+  }
+
+  @Override
+  public void setTotalAllocatedContainers(int totalAllocatedContainers) {
+    maybeInitBuilder();
+    builder.setTotalAllocatedContainers(totalAllocatedContainers);
   }
 }

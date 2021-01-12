@@ -49,6 +49,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
 import org.apache.hadoop.crypto.key.kms.server.KMSConfiguration;
 import org.apache.hadoop.crypto.key.kms.server.MiniKMS;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileSystemTestWrapper;
 import org.apache.hadoop.fs.FileUtil;
@@ -85,6 +86,8 @@ public class TestSecureEncryptionZoneWithKMS {
   private static final Path TEST_PATH = new Path("/test-dir");
   private static HdfsConfiguration baseConf;
   private static File baseDir;
+  private static String keystoresDir;
+  private static String sslConfDir;
   private static final EnumSet< CreateEncryptionZoneFlag > NO_TRASH =
       EnumSet.of(CreateEncryptionZoneFlag.NO_TRASH);
 
@@ -104,6 +107,8 @@ public class TestSecureEncryptionZoneWithKMS {
   // MiniKMS
   private static MiniKMS miniKMS;
   private final String testKey = "test_key";
+  private static boolean testKeyCreated = false;
+  private static final long AUTH_TOKEN_VALIDITY = 1;
 
   // MiniDFS
   private MiniDFSCluster cluster;
@@ -125,7 +130,7 @@ public class TestSecureEncryptionZoneWithKMS {
   }
 
   @Rule
-  public Timeout timeout = new Timeout(30000);
+  public Timeout timeout = new Timeout(120000);
 
   @BeforeClass
   public static void init() throws Exception {
@@ -188,8 +193,8 @@ public class TestSecureEncryptionZoneWithKMS {
     baseConf.set(KMS_CLIENT_ENC_KEY_CACHE_SIZE, "4");
     baseConf.set(KMS_CLIENT_ENC_KEY_CACHE_LOW_WATERMARK, "0.5");
 
-    String keystoresDir = baseDir.getAbsolutePath();
-    String sslConfDir = KeyStoreTestUtil.getClasspathDir(
+    keystoresDir = baseDir.getAbsolutePath();
+    sslConfDir = KeyStoreTestUtil.getClasspathDir(
         TestSecureEncryptionZoneWithKMS.class);
     KeyStoreTestUtil.setupSSLConfig(keystoresDir, sslConfDir, baseConf, false);
     baseConf.set(DFS_CLIENT_HTTPS_KEYSTORE_RESOURCE_KEY,
@@ -212,6 +217,9 @@ public class TestSecureEncryptionZoneWithKMS {
         "HTTP/localhost");
     kmsConf.set("hadoop.kms.authentication.kerberos.name.rules", "DEFAULT");
     kmsConf.set("hadoop.kms.acl.GENERATE_EEK", "hdfs");
+    // set kms auth token expiration low for testCreateZoneAfterAuthTokenExpiry
+    kmsConf.setLong("hadoop.kms.authentication.token.validity",
+        AUTH_TOKEN_VALIDITY);
 
     Writer writer = new FileWriter(kmsFile);
     kmsConf.writeXml(writer);
@@ -224,7 +232,7 @@ public class TestSecureEncryptionZoneWithKMS {
   }
 
   @AfterClass
-  public static void destroy() {
+  public static void destroy() throws Exception {
     if (kdc != null) {
       kdc.stop();
     }
@@ -232,13 +240,15 @@ public class TestSecureEncryptionZoneWithKMS {
       miniKMS.stop();
     }
     FileUtil.fullyDelete(baseDir);
+    KeyStoreTestUtil.cleanupSSLConfig(keystoresDir, sslConfDir);
   }
 
   @Before
   public void setup() throws Exception {
     // Start MiniDFS Cluster
-    baseConf.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
-        getKeyProviderURI());
+    baseConf
+        .set(CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
+            getKeyProviderURI());
     baseConf.setBoolean(DFSConfigKeys
         .DFS_NAMENODE_DELEGATION_TOKEN_ALWAYS_USE_KEY, true);
 
@@ -255,7 +265,10 @@ public class TestSecureEncryptionZoneWithKMS {
     cluster.waitActive();
 
     // Create a test key
-    DFSTestUtil.createKey(testKey, cluster, conf);
+    if (!testKeyCreated) {
+      DFSTestUtil.createKey(testKey, cluster, conf);
+      testKeyCreated = true;
+    }
   }
 
   @After
@@ -301,5 +314,27 @@ public class TestSecureEncryptionZoneWithKMS {
             }
           }
         });
+  }
+
+  @Test
+  public void testCreateZoneAfterAuthTokenExpiry() throws Exception {
+    final UserGroupInformation ugi = UserGroupInformation
+        .loginUserFromKeytabAndReturnUGI(hdfsPrincipal, keytab);
+    LOG.info("Created ugi: {} ", ugi);
+
+    ugi.doAs((PrivilegedExceptionAction<Object>) () -> {
+      final Path zone = new Path("/expire1");
+      fsWrapper.mkdir(zone, FsPermission.getDirDefault(), true);
+      dfsAdmin.createEncryptionZone(zone, testKey, NO_TRASH);
+
+      final Path zone1 = new Path("/expire2");
+      fsWrapper.mkdir(zone1, FsPermission.getDirDefault(), true);
+      final long sleepInterval = (AUTH_TOKEN_VALIDITY + 1) * 1000;
+      LOG.info("Sleeping {} seconds to wait for kms auth token expiration",
+          sleepInterval);
+      Thread.sleep(sleepInterval);
+      dfsAdmin.createEncryptionZone(zone1, testKey, NO_TRASH);
+      return null;
+    });
   }
 }

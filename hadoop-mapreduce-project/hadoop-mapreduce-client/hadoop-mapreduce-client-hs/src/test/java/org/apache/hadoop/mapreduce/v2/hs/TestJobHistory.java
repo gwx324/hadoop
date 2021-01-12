@@ -24,7 +24,7 @@ import java.io.IOException;
 import java.util.LinkedList;
 import java.util.List;
 
-import com.google.common.cache.Cache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.Cache;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileStatus;
@@ -42,12 +42,13 @@ import org.junit.Test;
 import org.mockito.Mockito;
 
 import static junit.framework.TestCase.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -139,7 +140,7 @@ public class TestJobHistory {
         .getHistoryStorage());
 
     assertTrue(storage.getUseLoadedTasksCache());
-    assertEquals(storage.getLoadedTasksCacheSize(), 50);
+    assertThat(storage.getLoadedTasksCacheSize()).isEqualTo(50);
 
     // Create a bunch of smaller jobs (<< 50 tasks)
     Job[] jobs = new Job[10];
@@ -202,7 +203,7 @@ public class TestJobHistory {
         .getHistoryStorage());
 
     assertTrue(storage.getUseLoadedTasksCache());
-    assertEquals(storage.getLoadedTasksCacheSize(), 500);
+    assertThat(storage.getLoadedTasksCacheSize()).isEqualTo(500);
 
     // Create a bunch of large jobs (>> 50 tasks)
     Job[] lgJobs = new Job[10];
@@ -263,7 +264,7 @@ public class TestJobHistory {
         .getHistoryStorage());
 
     assertTrue(storage.getUseLoadedTasksCache());
-    assertEquals(storage.getLoadedTasksCacheSize(), 1);
+    assertThat(storage.getLoadedTasksCacheSize()).isOne();
   }
 
   @Test
@@ -281,7 +282,7 @@ public class TestJobHistory {
         .getHistoryStorage());
 
     assertTrue(storage.getUseLoadedTasksCache());
-    assertEquals(storage.getLoadedTasksCacheSize(), 1);
+    assertThat(storage.getLoadedTasksCacheSize()).isOne();
   }
 
   @Test
@@ -300,7 +301,7 @@ public class TestJobHistory {
         .getHistoryStorage());
 
     assertTrue(storage.getUseLoadedTasksCache());
-    assertEquals(storage.getLoadedTasksCacheSize(), 50);
+    assertThat(storage.getLoadedTasksCacheSize()).isEqualTo(50);
 
     // Create jobs for bad fileInfo results
     Job[] jobs = new Job[4];
@@ -443,6 +444,32 @@ public class TestJobHistory {
     // Today's jhist file will also be deleted now since it falls below the
     // retention threshold
     verify(fileInfo, timeout(20000).times(2)).delete();
+  }
+
+  @Test
+  public void testCachedStorageWaitsForFileMove() throws IOException {
+    HistoryFileManager historyManager = mock(HistoryFileManager.class);
+    jobHistory = spy(new JobHistory());
+    doReturn(historyManager).when(jobHistory).createHistoryFileManager();
+
+    Configuration conf = new Configuration();
+    jobHistory.init(conf);
+    jobHistory.start();
+
+    CachedHistoryStorage storage = spy((CachedHistoryStorage) jobHistory
+        .getHistoryStorage());
+
+    Job job  = mock(Job.class);
+    JobId jobId  = mock(JobId.class);
+    when(job.getID()).thenReturn(jobId);
+    when(job.getTotalMaps()).thenReturn(10);
+    when(job.getTotalReduces()).thenReturn(2);
+    HistoryFileInfo fileInfo = mock(HistoryFileInfo.class);
+    when(historyManager.getFileInfo(eq(jobId))).thenReturn(fileInfo);
+    when(fileInfo.loadJob()).thenReturn(job);
+
+    storage.getFullJob(jobId);
+    verify(fileInfo).waitUntilMoved();
   }
 
   @Test
