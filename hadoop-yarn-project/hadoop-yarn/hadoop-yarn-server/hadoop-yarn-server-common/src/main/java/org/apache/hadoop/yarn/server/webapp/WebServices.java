@@ -18,18 +18,20 @@
 
 package org.apache.hadoop.yarn.server.webapp;
 
+import java.io.IOException;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.WebApplicationException;
 
-import org.apache.commons.lang.math.LongRange;
+import org.apache.commons.lang3.Range;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.util.StringUtils;
@@ -51,18 +53,18 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetContainersRequest;
 import org.apache.hadoop.yarn.exceptions.ApplicationAttemptNotFoundException;
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.ContainerNotFoundException;
+import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.webapp.dao.AppAttemptInfo;
 import org.apache.hadoop.yarn.server.webapp.dao.AppAttemptsInfo;
 import org.apache.hadoop.yarn.server.webapp.dao.AppInfo;
 import org.apache.hadoop.yarn.server.webapp.dao.AppsInfo;
 import org.apache.hadoop.yarn.server.webapp.dao.ContainerInfo;
 import org.apache.hadoop.yarn.server.webapp.dao.ContainersInfo;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.webapp.BadRequestException;
 import org.apache.hadoop.yarn.webapp.ForbiddenException;
 import org.apache.hadoop.yarn.webapp.NotFoundException;
 
-public class WebServices {
+public class WebServices implements AppInfoProvider {
 
   protected ApplicationBaseProtocol appBaseProt;
 
@@ -73,7 +75,7 @@ public class WebServices {
   public AppsInfo getApps(HttpServletRequest req, HttpServletResponse res,
       String stateQuery, Set<String> statesQuery, String finalStatusQuery,
       String userQuery, String queueQuery, String count, String startedBegin,
-      String startedEnd, String finishBegin, String finishEnd,
+      String startedEnd, String finishBegin, String finishEnd, String nameQuery,
       Set<String> applicationTypes) {
     UserGroupInformation callerUGI = getUser(req);
     boolean checkEnd = false;
@@ -149,18 +151,18 @@ public class WebServices {
     final GetApplicationsRequest request =
         GetApplicationsRequest.newInstance();
     request.setLimit(countNum);
-    request.setStartRange(new LongRange(sBegin, sEnd));
+    request.setStartRange(Range.between(sBegin, sEnd));
     try {
       if (callerUGI == null) {
         // TODO: the request should take the params like what RMWebServices does
         // in YARN-1819.
-        appReports = appBaseProt.getApplications(request).getApplicationList();
+        appReports = getApplicationsReport(request);
       } else {
         appReports = callerUGI.doAs(
             new PrivilegedExceptionAction<Collection<ApplicationReport>> () {
           @Override
           public Collection<ApplicationReport> run() throws Exception {
-            return appBaseProt.getApplications(request).getApplicationList();
+            return getApplicationsReport(request);
           }
         });
       }
@@ -190,7 +192,8 @@ public class WebServices {
         }
       }
       if (queueQuery != null && !queueQuery.isEmpty()) {
-        if (!appReport.getQueue().equals(queueQuery)) {
+        if (appReport.getQueue() == null || !appReport.getQueue()
+            .equals(queueQuery)) {
           continue;
         }
       }
@@ -204,6 +207,11 @@ public class WebServices {
           && (appReport.getFinishTime() < fBegin || appReport.getFinishTime() > fEnd)) {
         continue;
       }
+
+      if (nameQuery != null && !nameQuery.equals(appReport.getName())) {
+        continue;
+      }
+
       AppInfo app = new AppInfo(appReport);
 
       allApps.add(app);
@@ -211,8 +219,18 @@ public class WebServices {
     return allApps;
   }
 
-  public AppInfo getApp(HttpServletRequest req, HttpServletResponse res,
-      String appId) {
+  public AppInfo getApp(HttpServletRequest req,
+      HttpServletResponse res, String appId) {
+    return getApp(req, appId);
+  }
+
+  @Override
+  public BasicAppInfo getApp(HttpServletRequest req, String appId,
+      String clusterId) {
+    return BasicAppInfo.fromAppInfo(getApp(req, appId));
+  }
+
+  public AppInfo getApp(HttpServletRequest req, String appId) {
     UserGroupInformation callerUGI = getUser(req);
     final ApplicationId id = parseApplicationId(appId);
     ApplicationReport app = null;
@@ -220,7 +238,7 @@ public class WebServices {
       if (callerUGI == null) {
         GetApplicationReportRequest request =
             GetApplicationReportRequest.newInstance(id);
-        app = appBaseProt.getApplicationReport(request).getApplicationReport();
+        app = getApplicationReport(request);
       } else {
         app = callerUGI.doAs(
             new PrivilegedExceptionAction<ApplicationReport> () {
@@ -228,7 +246,7 @@ public class WebServices {
           public ApplicationReport run() throws Exception {
             GetApplicationReportRequest request =
                 GetApplicationReportRequest.newInstance(id);
-            return appBaseProt.getApplicationReport(request).getApplicationReport();
+            return getApplicationReport(request);
           }
         });
       }
@@ -251,8 +269,7 @@ public class WebServices {
         GetApplicationAttemptsRequest request =
             GetApplicationAttemptsRequest.newInstance(id);
         appAttemptReports =
-            appBaseProt.getApplicationAttempts(request)
-              .getApplicationAttemptList();
+            getApplicationAttemptsReport(request);
       } else {
         appAttemptReports = callerUGI.doAs(
             new PrivilegedExceptionAction<Collection<ApplicationAttemptReport>> () {
@@ -260,8 +277,7 @@ public class WebServices {
           public Collection<ApplicationAttemptReport> run() throws Exception {
             GetApplicationAttemptsRequest request =
                 GetApplicationAttemptsRequest.newInstance(id);
-            return appBaseProt.getApplicationAttempts(request)
-                  .getApplicationAttemptList();
+            return getApplicationAttemptsReport(request);
           }
         });
       }
@@ -292,8 +308,7 @@ public class WebServices {
         GetApplicationAttemptReportRequest request =
             GetApplicationAttemptReportRequest.newInstance(aaid);
         appAttempt =
-            appBaseProt.getApplicationAttemptReport(request)
-              .getApplicationAttemptReport();
+            getApplicationAttemptReport(request);
       } else {
         appAttempt = callerUGI.doAs(
             new PrivilegedExceptionAction<ApplicationAttemptReport> () {
@@ -301,8 +316,7 @@ public class WebServices {
           public ApplicationAttemptReport run() throws Exception {
             GetApplicationAttemptReportRequest request =
                 GetApplicationAttemptReportRequest.newInstance(aaid);
-            return appBaseProt.getApplicationAttemptReport(request)
-                  .getApplicationAttemptReport();
+            return getApplicationAttemptReport(request);
           }
         });
       }
@@ -327,14 +341,14 @@ public class WebServices {
       if (callerUGI == null) {
         GetContainersRequest request = GetContainersRequest.newInstance(aaid);
         containerReports =
-            appBaseProt.getContainers(request).getContainerList();
+            getContainersReport(request);
       } else {
         containerReports = callerUGI.doAs(
             new PrivilegedExceptionAction<Collection<ContainerReport>> () {
           @Override
           public Collection<ContainerReport> run() throws Exception {
             GetContainersRequest request = GetContainersRequest.newInstance(aaid);
-            return appBaseProt.getContainers(request).getContainerList();
+            return getContainersReport(request);
           }
         });
       }
@@ -352,8 +366,17 @@ public class WebServices {
     return containersInfo;
   }
 
+  @Override
+  public String getNodeHttpAddress(HttpServletRequest req,
+      String appId, String appAttemptId,
+      String containerId, String clusterId) {
+    ContainerInfo containerInfo = getContainer(req, appId,
+        appAttemptId, containerId);
+    return containerInfo.getNodeHttpAddress();
+  }
+
   public ContainerInfo getContainer(HttpServletRequest req,
-      HttpServletResponse res, String appId, String appAttemptId,
+      String appId, String appAttemptId,
       String containerId) {
     UserGroupInformation callerUGI = getUser(req);
     ApplicationId aid = parseApplicationId(appId);
@@ -366,7 +389,7 @@ public class WebServices {
         GetContainerReportRequest request =
             GetContainerReportRequest.newInstance(cid);
         container =
-            appBaseProt.getContainerReport(request).getContainerReport();
+            getContainerReport(request);
       } else {
         container = callerUGI.doAs(
             new PrivilegedExceptionAction<ContainerReport> () {
@@ -374,7 +397,7 @@ public class WebServices {
           public ContainerReport run() throws Exception {
             GetContainerReportRequest request =
                 GetContainerReportRequest.newInstance(cid);
-            return appBaseProt.getContainerReport(request).getContainerReport();
+            return getContainerReport(request);
           }
         });
       }
@@ -388,12 +411,18 @@ public class WebServices {
     return new ContainerInfo(container);
   }
 
-  protected void init(HttpServletResponse response) {
+  public ContainerInfo getContainer(HttpServletRequest req,
+      HttpServletResponse res, String appId, String appAttemptId,
+      String containerId) {
+    return getContainer(req, appId, appAttemptId, containerId);
+  }
+
+  protected void initForReadableEndpoints(HttpServletResponse response) {
     // clear content type
     response.setContentType(null);
   }
 
-  protected static Set<String>
+  public static Set<String>
       parseQueries(Set<String> queries, boolean isState) {
     Set<String> params = new HashSet<String>();
     if (!queries.isEmpty()) {
@@ -516,4 +545,36 @@ public class WebServices {
     }
   }
 
+  protected ApplicationReport getApplicationReport(
+      GetApplicationReportRequest request) throws YarnException, IOException {
+    return appBaseProt.getApplicationReport(request).getApplicationReport();
+  }
+
+  protected List<ApplicationReport> getApplicationsReport(
+      final GetApplicationsRequest request) throws YarnException, IOException {
+    return appBaseProt.getApplications(request).getApplicationList();
+  }
+
+  protected ApplicationAttemptReport getApplicationAttemptReport(
+      GetApplicationAttemptReportRequest request)
+      throws YarnException, IOException {
+    return appBaseProt.getApplicationAttemptReport(request)
+        .getApplicationAttemptReport();
+  }
+
+  protected List<ApplicationAttemptReport> getApplicationAttemptsReport(
+      GetApplicationAttemptsRequest request) throws YarnException, IOException {
+    return appBaseProt.getApplicationAttempts(request)
+        .getApplicationAttemptList();
+  }
+
+  protected ContainerReport getContainerReport(
+      GetContainerReportRequest request) throws YarnException, IOException {
+    return appBaseProt.getContainerReport(request).getContainerReport();
+  }
+
+  protected List<ContainerReport> getContainersReport(
+      GetContainersRequest request) throws YarnException, IOException {
+    return appBaseProt.getContainers(request).getContainerList();
+  }
 }

@@ -19,13 +19,15 @@
 package org.apache.hadoop.yarn.server.nodemanager.amrmproxy;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.registry.client.api.RegistryOperations;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 
 /**
- * Interface that can be used by the intercepter plugins to get the information
+ * Interface that can be used by the interceptor plugins to get the information
  * about one application.
  *
  */
@@ -65,6 +67,20 @@ public interface AMRMProxyApplicationContext {
    * Gets the NMContext object.
    * @return the NMContext.
    */
-  Context getNMCotext();
+  Context getNMContext();
+
+  /**
+   * Gets the credentials of this application.
+   *
+   * @return the credentials.
+   */
+  Credentials getCredentials();
+
+  /**
+   * Gets the registry client.
+   *
+   * @return the registry.
+   */
+  RegistryOperations getRegistryClient();
 
 }

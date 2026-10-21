@@ -33,7 +33,7 @@ import org.apache.hadoop.hdfs.util.ByteArrayManager;
 import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.Progressable;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * This class extends {@link DataStreamer} to support writing striped blocks
@@ -71,7 +71,7 @@ public class StripedDataStreamer extends DataStreamer {
 
   @Override
   protected void endBlock() {
-    coordinator.offerEndBlock(index, block);
+    coordinator.offerEndBlock(index, block.getCurrentBlock());
     super.endBlock();
   }
 
@@ -90,28 +90,29 @@ public class StripedDataStreamer extends DataStreamer {
   }
 
   @Override
-  protected LocatedBlock nextBlockOutputStream() throws IOException {
+  protected void setupPipelineForCreate() throws IOException {
     boolean success;
     LocatedBlock lb = getFollowingBlock();
-    block = lb.getBlock();
+    block.setCurrentBlock(lb.getBlock());
     block.setNumBytes(0);
     bytesSent = 0;
     accessToken = lb.getBlockToken();
 
     DatanodeInfo[] nodes = lb.getLocations();
     StorageType[] storageTypes = lb.getStorageTypes();
-
+    String[] storageIDs = lb.getStorageIDs();
     // Connect to the DataNode. If fail the internal error state will be set.
-    success = createBlockOutputStream(nodes, storageTypes, 0L, false);
+    success = createBlockOutputStream(nodes, storageTypes, storageIDs, 0L,
+        false);
 
     if (!success) {
-      block = null;
+      block.setCurrentBlock(null);
       final DatanodeInfo badNode = nodes[getErrorState().getBadNodeIndex()];
       LOG.warn("Excluding datanode " + badNode);
       excludedNodes.put(badNode, badNode);
       throw new IOException("Unable to create new block." + this);
     }
-    return lb;
+    setPipeline(lb);
   }
 
   @VisibleForTesting
@@ -120,17 +121,18 @@ public class StripedDataStreamer extends DataStreamer {
   }
 
   @Override
-  protected void setupPipelineInternal(DatanodeInfo[] nodes,
-      StorageType[] nodeStorageTypes) throws IOException {
+  protected boolean setupPipelineInternal(DatanodeInfo[] nodes,
+      StorageType[] nodeStorageTypes, String[] nodeStorageIDs)
+      throws IOException {
     boolean success = false;
     while (!success && !streamerClosed() && dfsClient.clientRunning) {
       if (!handleRestartingDatanode()) {
-        return;
+        return false;
       }
       if (!handleBadDatanode()) {
         // for striped streamer if it is datanode error then close the stream
         // and return. no need to replace datanode
-        return;
+        return false;
       }
 
       // get a new generation stamp and an access token
@@ -140,8 +142,10 @@ public class StripedDataStreamer extends DataStreamer {
 
       // set up the pipeline again with the remaining nodes. when a striped
       // data streamer comes here, it must be in external error state.
-      assert getErrorState().hasExternalError();
-      success = createBlockOutputStream(nodes, nodeStorageTypes, newGS, true);
+      assert getErrorState().hasExternalError()
+          || getErrorState().doWaitForRestart();
+      success = createBlockOutputStream(nodes, nodeStorageTypes,
+          nodeStorageIDs, newGS, true);
 
       failPacket4Testing();
       getErrorState().checkRestartingNodeDeadline(nodes);
@@ -161,7 +165,7 @@ public class StripedDataStreamer extends DataStreamer {
         success = coordinator.takeStreamerUpdateResult(index);
         if (success) {
           // if all succeeded, update its block using the new GS
-          block = newBlock(block, newGS);
+          updateBlockGS(newGS);
         } else {
           // otherwise close the block stream and restart the recovery process
           closeStream();
@@ -174,6 +178,7 @@ public class StripedDataStreamer extends DataStreamer {
         setStreamerAsClosed();
       }
     } // while
+    return success;
   }
 
   void setExternalError() {

@@ -18,12 +18,12 @@
 package org.apache.hadoop.hdfs.server.namenode;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.*;
-import static org.junit.Assert.assertEquals;
 
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Iterator;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -34,10 +34,18 @@ import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifie
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenSecretManager;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.*;
 
 /**
@@ -159,7 +167,7 @@ public class TestSecurityTokenEditLog {
         FSEditLogLoader loader = new FSEditLogLoader(namesystem, 0);        
         long numEdits = loader.loadFSEdits(
             new EditLogFileInputStream(editFile), 1);
-        assertEquals("Verification for " + editFile, expectedTransactions, numEdits);
+        assertEquals(expectedTransactions, numEdits, "Verification for " + editFile);
       }
     } finally {
       if(fileSys != null) fileSys.close();
@@ -167,7 +175,8 @@ public class TestSecurityTokenEditLog {
     }
   }
   
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testEditsForCancelOnTokenExpire() throws IOException,
   InterruptedException {
     long renewInterval = 2000;
@@ -180,8 +189,25 @@ public class TestSecurityTokenEditLog {
     Text renewer = new Text(UserGroupInformation.getCurrentUser().getUserName());
     FSImage fsImage = mock(FSImage.class);
     FSEditLog log = mock(FSEditLog.class);
-    doReturn(log).when(fsImage).getEditLog();   
+    doReturn(log).when(fsImage).getEditLog();
+    // verify that the namesystem read lock is held while logging token
+    // expirations.  the namesystem is not updated, so write lock is not
+    // necessary, but the lock is required because edit log rolling is not
+    // thread-safe.
+    final AtomicReference<FSNamesystem> fsnRef = new AtomicReference<>();
+    doAnswer(
+      new Answer<Void>() {
+        @Override
+        public Void answer(InvocationOnMock invocation) throws Throwable {
+          // fsn claims read lock if either read or write locked.
+          assertTrue(fsnRef.get().hasReadLock(RwLockMode.FS));
+          assertFalse(fsnRef.get().hasWriteLock(RwLockMode.FS));
+          return null;
+        }
+      }
+    ).when(log).logCancelDelegationToken(any(DelegationTokenIdentifier.class));
     FSNamesystem fsn = new FSNamesystem(conf, fsImage);
+    fsnRef.set(fsn);
     
     DelegationTokenSecretManager dtsm = fsn.getDelegationTokenSecretManager();
     try {

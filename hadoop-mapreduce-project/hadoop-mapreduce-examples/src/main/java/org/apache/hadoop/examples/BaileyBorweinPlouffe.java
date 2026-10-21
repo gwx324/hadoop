@@ -25,12 +25,11 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintStream;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FileSystem;
@@ -49,10 +48,12 @@ import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Charsets;
 
 /**
  * A map/reduce program that uses Bailey-Borwein-Plouffe to compute exact 
@@ -83,7 +84,8 @@ public class BaileyBorweinPlouffe extends Configured implements Tool {
   private static final String DIGIT_SIZE_PROPERTY = NAME + ".digit.size";
   private static final String DIGIT_PARTS_PROPERTY = NAME + ".digit.parts";
 
-  private static final Log LOG = LogFactory.getLog(BaileyBorweinPlouffe.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(BaileyBorweinPlouffe.class);
 
   /** Mapper class computing digits of Pi. */
   public static class BbpMapper extends
@@ -156,7 +158,7 @@ public class BaileyBorweinPlouffe extends Configured implements Tool {
         final OutputStream outputstream = fs.create(outfile);
         try {
           final PrintWriter out = new PrintWriter(
-              new OutputStreamWriter(outputstream, Charsets.UTF_8), true);
+              new OutputStreamWriter(outputstream, StandardCharsets.UTF_8), true);
           // write hex text
           print(out, hex.iterator(), "Pi = 0x3.", "%02X", 5, 5);
           out.println("Total number of hexadecimal digits is "
@@ -379,7 +381,7 @@ public class BaileyBorweinPlouffe extends Configured implements Tool {
 
     // start a map/reduce job
     out.println("\nStarting Job ...");
-    final long startTime = System.currentTimeMillis();
+    final long startTime = Time.monotonicNow();
     try {
       if (!job.waitForCompletion(true)) {
         out.println("Job failed.");
@@ -388,7 +390,7 @@ public class BaileyBorweinPlouffe extends Configured implements Tool {
     } catch (Exception e) {
       throw new RuntimeException(e);
     } finally {
-      final double duration = (System.currentTimeMillis() - startTime)/1000.0;
+      final double duration = (Time.monotonicNow() - startTime)/1000.0;
       out.println("Duration is " + duration + " seconds.");
     }
     out.println("Output file: " + hexfile);

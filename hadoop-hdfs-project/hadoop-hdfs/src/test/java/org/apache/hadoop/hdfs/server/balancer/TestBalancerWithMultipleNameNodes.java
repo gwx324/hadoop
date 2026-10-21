@@ -30,7 +30,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
+import org.slf4j.Logger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -50,22 +50,25 @@ import org.apache.hadoop.hdfs.server.balancer.BalancerParameters;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Test;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Test balancer with multiple NameNodes
  */
 public class TestBalancerWithMultipleNameNodes {
-  static final Log LOG = Balancer.LOG;
+  static final Logger LOG = Balancer.LOG;
   {
-    GenericTestUtils.setLogLevel(LOG, Level.ALL);
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(LOG, Level.TRACE);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
   }
 
   
-  private static final long CAPACITY = 500L;
+  private static final long CAPACITY = 5000L;
   private static final String RACK0 = "/rack0";
   private static final String RACK1 = "/rack1";
   private static final String RACK2 = "/rack2";
@@ -98,6 +101,19 @@ public class TestBalancerWithMultipleNameNodes {
       // hard coding replication factor to 1 so logical and raw HDFS size are
       // equal
       replication = 1;
+      this.parameters = parameters;
+    }
+
+    Suite(MiniDFSCluster cluster, final int nNameNodes, final int nDataNodes,
+          BalancerParameters parameters, Configuration conf, short
+              replicationFactor) throws IOException {
+      this.conf = conf;
+      this.cluster = cluster;
+      clients = new ClientProtocol[nNameNodes];
+      for(int i = 0; i < nNameNodes; i++) {
+        clients[i] = cluster.getNameNode(i).getRpcServer();
+      }
+      replication = replicationFactor;
       this.parameters = parameters;
     }
   }
@@ -133,15 +149,16 @@ public class TestBalancerWithMultipleNameNodes {
   }
 
   /* wait for one heartbeat */
-  static void wait(final ClientProtocol[] clients,
+  static void wait(final Suite suite,
       long expectedUsedSpace, long expectedTotalSpace) throws IOException {
     LOG.info("WAIT expectedUsedSpace=" + expectedUsedSpace
         + ", expectedTotalSpace=" + expectedTotalSpace);
-    for(int n = 0; n < clients.length; n++) {
+    suite.cluster.triggerHeartbeats();
+    for(int n = 0; n < suite.clients.length; n++) {
       int i = 0;
       for(boolean done = false; !done; ) {
-        final long[] s = clients[n].getStats();
-        done = s[0] == expectedTotalSpace && s[1] == expectedUsedSpace;
+        final long[] s = suite.clients[n].getStats();
+        done = s[0] == expectedTotalSpace && s[1] >= expectedUsedSpace;
         if (!done) {
           sleep(100L);
           if (++i % 100 == 0) {
@@ -154,12 +171,12 @@ public class TestBalancerWithMultipleNameNodes {
 
   static void runBalancer(Suite s,
       final long totalUsed, final long totalCapacity) throws Exception {
-    final double avg = totalUsed*100.0/totalCapacity;
+    double avg = totalUsed*100.0/totalCapacity;
 
     LOG.info("BALANCER 0: totalUsed=" + totalUsed
         + ", totalCapacity=" + totalCapacity
         + ", avg=" + avg);
-    wait(s.clients, totalUsed, totalCapacity);
+    wait(s, totalUsed, totalCapacity);
     LOG.info("BALANCER 1");
 
     // get storage reports for relevant blockpools so that we can compare
@@ -170,21 +187,24 @@ public class TestBalancerWithMultipleNameNodes {
     // start rebalancing
     final Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(s.conf);
     final int r = Balancer.run(namenodes, s.parameters, s.conf);
-    Assert.assertEquals(ExitStatus.SUCCESS.getExitCode(), r);
+    assertEquals(ExitStatus.SUCCESS.getExitCode(), r);
 
     LOG.info("BALANCER 2");
-    wait(s.clients, totalUsed, totalCapacity);
+    wait(s, totalUsed, totalCapacity);
     LOG.info("BALANCER 3");
 
     int i = 0;
     for(boolean balanced = false; !balanced; i++) {
       final long[] used = new long[s.cluster.getDataNodes().size()];
       final long[] cap = new long[used.length];
+      final long[][] bpUsed = new long[s.clients.length][s.cluster
+          .getDataNodes().size()];
+
 
       for(int n = 0; n < s.clients.length; n++) {
         final DatanodeInfo[] datanodes = s.clients[n].getDatanodeReport(
             DatanodeReportType.ALL);
-        Assert.assertEquals(datanodes.length, used.length);
+        assertEquals(datanodes.length, used.length);
 
         for(int d = 0; d < datanodes.length; d++) {
           if (n == 0) {
@@ -196,33 +216,60 @@ public class TestBalancerWithMultipleNameNodes {
                   + ", getCapacity()=" + datanodes[d].getCapacity());
             }
           } else {
-            Assert.assertEquals(used[d], datanodes[d].getDfsUsed());
-            Assert.assertEquals(cap[d], datanodes[d].getCapacity());
+            assertEquals(used[d], datanodes[d].getDfsUsed());
+            assertEquals(cap[d], datanodes[d].getCapacity());
           }
+          bpUsed[n][d] = datanodes[d].getBlockPoolUsed();
         }
       }
 
+
+
       balanced = true;
       for(int d = 0; d < used.length; d++) {
-        final double p = used[d]*100.0/cap[d];
-        balanced = p <= avg + s.parameters.getThreshold();
-        if (!balanced) {
-          if (i % 100 == 0) {
-            LOG.warn("datanodes " + d + " is not yet balanced: "
-                + "used=" + used[d] + ", cap=" + cap[d] + ", avg=" + avg);
-            LOG.warn("TestBalancer.sum(used)=" + TestBalancer.sum(used)
-                + ", TestBalancer.sum(cap)=" + TestBalancer.sum(cap));
+        double p;
+        if(s.parameters.getBalancingPolicy() == BalancingPolicy.Pool.INSTANCE) {
+          for (int k = 0; k < s.parameters.getBlockPools().size(); k++) {
+            avg = TestBalancer.sum(bpUsed[k])*100/totalCapacity;
+            p = bpUsed[k][d] * 100.0 / cap[d];
+            balanced = p <= avg + s.parameters.getThreshold();
+            if (!balanced) {
+              if (i % 100 == 0) {
+                LOG.warn("datanodes " + d + " is not yet balanced: "
+                    + "block pool used=" + bpUsed[d][k] + ", cap=" + cap[d] +
+                    ", avg=" + avg);
+                LOG.warn("sum(blockpoolUsed)=" + TestBalancer.sum(bpUsed[k])
+                    + ", sum(cap)=" + TestBalancer.sum(cap));
+              }
+              sleep(100);
+              break;
+            }
           }
-          sleep(100);
-          break;
+          if (!balanced) {
+            break;
+          }
+        } else {
+          p = used[d] * 100.0 / cap[d];
+          balanced = p <= avg + s.parameters.getThreshold();
+          if (!balanced) {
+            if (i % 100 == 0) {
+              LOG.warn("datanodes " + d + " is not yet balanced: "
+                  + "used=" + used[d] + ", cap=" + cap[d] + ", avg=" + avg);
+              LOG.warn("sum(used)=" + TestBalancer.sum(used)
+                  + ", sum(cap)=" + TestBalancer.sum(cap));
+            }
+            sleep(100);
+            break;
+          }
         }
       }
     }
+
     LOG.info("BALANCER 6");
     // cluster is balanced, verify that only selected blockpools were touched
     Map<Integer, DatanodeStorageReport[]> postBalancerPoolUsages =
         getStorageReports(s);
-    Assert.assertEquals(preBalancerPoolUsages.size(),
+    assertEquals(preBalancerPoolUsages.size(),
         postBalancerPoolUsages.size());
     for (Map.Entry<Integer, DatanodeStorageReport[]> entry
         : preBalancerPoolUsages.entrySet()) {
@@ -240,15 +287,14 @@ public class TestBalancerWithMultipleNameNodes {
    */
   private static void compareTotalPoolUsage(DatanodeStorageReport[] preReports,
       DatanodeStorageReport[] postReports) {
-    Assert.assertNotNull(preReports);
-    Assert.assertNotNull(postReports);
-    Assert.assertEquals(preReports.length, postReports.length);
+    assertNotNull(preReports);
+    assertNotNull(postReports);
+    assertEquals(preReports.length, postReports.length);
     for (DatanodeStorageReport preReport : preReports) {
       String dnUuid = preReport.getDatanodeInfo().getDatanodeUuid();
-      for(DatanodeStorageReport postReport : postReports) {
-        if(postReport.getDatanodeInfo().getDatanodeUuid().equals(dnUuid)) {
-          Assert.assertEquals(getTotalPoolUsage(preReport),
-              getTotalPoolUsage(postReport));
+      for (DatanodeStorageReport postReport : postReports) {
+        if (postReport.getDatanodeInfo().getDatanodeUuid().equals(dnUuid)) {
+          assertEquals(getTotalPoolUsage(preReport), getTotalPoolUsage(postReport));
           LOG.info("Comparision of datanode pool usage pre/post balancer run. "
               + "PrePoolUsage: " + getTotalPoolUsage(preReport)
               + ", PostPoolUsage: " + getTotalPoolUsage(postReport));
@@ -309,7 +355,7 @@ public class TestBalancerWithMultipleNameNodes {
     try {
       Thread.sleep(ms);
     } catch(InterruptedException e) {
-      LOG.error(e);
+      LOG.error("{}", e);
     }
   }
   
@@ -373,13 +419,19 @@ public class TestBalancerWithMultipleNameNodes {
     }
 
     conf.set(DFSConfigKeys.DFS_NAMENODE_SAFEMODE_THRESHOLD_PCT_KEY, "0.0f");
+    // Adjust the capacity of each DN since it will redistribute blocks
+    // nNameNodes times in the following operations.
+    long[] newCapacities = new long[nDataNodes];
+    for (int i = 0; i < nDataNodes; i++) {
+      newCapacities[i] = capacities[i] * nNameNodes;
+    }
     {
       LOG.info("UNEVEN 10");
       final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
           .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(nNameNodes))
           .numDataNodes(nDataNodes)
           .racks(racks)
-          .simulatedCapacities(capacities)
+          .simulatedCapacities(newCapacities)
           .format(false)
           .build();
       LOG.info("UNEVEN 11");
@@ -407,7 +459,7 @@ public class TestBalancerWithMultipleNameNodes {
           LOG.info("UNEVEN 13: n=" + n);
         }
     
-        final long totalCapacity = TestBalancer.sum(capacities);
+        final long totalCapacity = TestBalancer.sum(newCapacities);
         final long totalUsed = nNameNodes*usedSpacePerNN;
         LOG.info("UNEVEN 14");
         runBalancer(s, totalUsed, totalCapacity);
@@ -425,19 +477,26 @@ public class TestBalancerWithMultipleNameNodes {
    * It then adds an empty node and start balancing.
    *
    * @param nNameNodes Number of NameNodes
-   * @param capacities Capacities of the datanodes
    * @param racks Rack names
-   * @param newCapacity the capacity of the new DataNode
    * @param newRack the rack for the new DataNode
    * @param conf Configuration
+   * @param nNameNodestoBalance noOfNameNodestoBalance
+   * @param balancerParameters BalancerParameters
    */ 
-  private void runTest(final int nNameNodes, long[] capacities, String[] racks,
-      long newCapacity, String newRack, Configuration conf) throws Exception {
-    final int nDataNodes = capacities.length;
+  private void runTest(final int nNameNodes, String[] racks,
+                       String[] newRack, Configuration conf,
+                       int nNameNodestoBalance,
+                       BalancerParameters balancerParameters)
+      throws Exception {
+    final int nDataNodes = racks.length;
+    final long[] capacities = new long[nDataNodes];
+    Arrays.fill(capacities, CAPACITY);
     LOG.info("nNameNodes=" + nNameNodes + ", nDataNodes=" + nDataNodes);
-    Assert.assertEquals(nDataNodes, racks.length);
+    assertEquals(nDataNodes, racks.length);
 
-    LOG.info("RUN_TEST -1");
+    LOG.info("RUN_TEST -1: start a cluster with nNameNodes=" + nNameNodes
+        + ", nDataNodes=" + nDataNodes);
+
     final MiniDFSCluster cluster = new MiniDFSCluster
         .Builder(new Configuration(conf))
         .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(nNameNodes))
@@ -451,44 +510,63 @@ public class TestBalancerWithMultipleNameNodes {
     try {
       cluster.waitActive();
       LOG.info("RUN_TEST 1");
-      final Suite s =
-          new Suite(cluster, nNameNodes, nDataNodes,
-              BalancerParameters.DEFAULT, conf);
+
+      Suite s;
+
+      Set<String> blockpools = new HashSet<>();
+      if(balancerParameters == null) {
+        s = new Suite(cluster, nNameNodes, nDataNodes,
+            BalancerParameters.DEFAULT, conf);
+
+      } else {
+        for (int i=0; i< nNameNodestoBalance; i++) {
+          blockpools.add(cluster.getNamesystem(i).getBlockPoolId());
+        }
+        BalancerParameters.Builder b =
+            new BalancerParameters.Builder();
+        b.setBalancingPolicy(balancerParameters.getBalancingPolicy());
+        b.setBlockpools(blockpools);
+        BalancerParameters params = b.build();
+        s = new Suite(cluster, nNameNodes, nDataNodes, params, conf, (short)2);
+      }
       long totalCapacity = TestBalancer.sum(capacities);
 
-      LOG.info("RUN_TEST 2");
+      LOG.info("RUN_TEST 2: create files");
       // fill up the cluster to be 30% full
-      final long totalUsed = totalCapacity*3/10;
+      final long totalUsed = totalCapacity * 3 / 10;
       final long size = (totalUsed/nNameNodes)/s.replication;
       for(int n = 0; n < nNameNodes; n++) {
         createFile(s, n, size);
       }
 
-      LOG.info("RUN_TEST 3");
+      LOG.info("RUN_TEST 3: " + newRack.length + " new datanodes");
       // start up an empty node with the same capacity and on the same rack
-      cluster.startDataNodes(conf, 1, true, null,
-          new String[]{newRack}, new long[]{newCapacity});
+      final long[] newCapacity = new long[newRack.length];
+      Arrays.fill(newCapacity, CAPACITY);
+      cluster.startDataNodes(conf, newCapacity.length, true, null,
+          newRack, newCapacity);
 
-      totalCapacity += newCapacity;
+      totalCapacity += TestBalancer.sum(newCapacity);
 
-      LOG.info("RUN_TEST 4");
+      LOG.info("RUN_TEST 4: run Balancer");
       // run RUN_TEST and validate results
       runBalancer(s, totalUsed, totalCapacity);
       LOG.info("RUN_TEST 5");
     } finally {
       cluster.shutdown();
     }
-    LOG.info("RUN_TEST 6");
+    LOG.info("RUN_TEST 6: done");
   }
+
   
   /** Test a cluster with even distribution, 
-   * then a new empty node is added to the cluster
+   * then a new empty node is added to the cluster.
    */
   @Test
-  public void testBalancer() throws Exception {
+  public void testTwoOneOne() throws Exception {
     final Configuration conf = createConf();
-    runTest(2, new long[]{CAPACITY}, new String[]{RACK0},
-        CAPACITY/2, RACK0, conf);
+    runTest(2, new String[]{RACK0}, new String[] {RACK0}, conf,
+        2, null);
   }
 
   /** Test unevenly distributed cluster */
@@ -517,4 +595,39 @@ public class TestBalancerWithMultipleNameNodes {
         5 * CAPACITY / 100, 10 * CAPACITY / 100 }, new long[] { CAPACITY,
         CAPACITY, CAPACITY }, new String[] { RACK0, RACK1, RACK2 }, conf);
   }
+
+  /** Even distribution with 2 Namenodes, 4 Datanodes and 2 new Datanodes. */
+  @Test
+  @Timeout(value = 600)
+  public void testTwoFourTwo() throws Exception {
+    final Configuration conf = createConf();
+    runTest(2, new String[]{RACK0, RACK0, RACK1, RACK1},
+        new String[]{RACK2, RACK2}, conf, 2, null);
+  }
+
+  @Test
+  @Timeout(value = 600)
+  public void testBalancingBlockpoolsWithBlockPoolPolicy() throws Exception {
+    final Configuration conf = createConf();
+    BalancerParameters balancerParameters = new BalancerParameters.Builder()
+        .setBalancingPolicy(BalancingPolicy.Pool.INSTANCE).build();
+    runTest(2, new String[]{RACK0, RACK0, RACK1, RACK1},
+        new String[]{RACK2, RACK2}, conf, 2,
+        balancerParameters);
+  }
+
+  @Test
+  @Timeout(value = 600)
+  public void test1OutOf2BlockpoolsWithBlockPoolPolicy()
+      throws
+      Exception {
+    final Configuration conf = createConf();
+    BalancerParameters balancerParameters = new BalancerParameters.Builder()
+        .setBalancingPolicy(BalancingPolicy.Pool.INSTANCE).build();
+    runTest(2, new String[]{RACK0, RACK0, RACK1, RACK1},
+        new String[]{RACK2, RACK2}, conf, 1,
+        balancerParameters);
+  }
+
+
 }

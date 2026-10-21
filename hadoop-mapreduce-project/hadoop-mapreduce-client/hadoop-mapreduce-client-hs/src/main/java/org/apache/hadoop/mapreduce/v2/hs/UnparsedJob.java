@@ -183,7 +183,7 @@ public class UnparsedJob implements org.apache.hadoop.mapreduce.v2.app.job.Job {
   @Override
   public TaskCompletionEvent[] getMapAttemptCompletionEvents(
       int startIndex, int maxEvents) {
-    return new TaskCompletionEvent[0];
+    return TaskCompletionEvent.EMPTY_ARRAY;
   }
 
   @Override
@@ -207,5 +207,25 @@ public class UnparsedJob implements org.apache.hadoop.mapreduce.v2.app.job.Job {
   public void setJobPriority(Priority priority) {
     throw new UnsupportedOperationException(
         "Can't set job's priority in history");
+  }
+
+  @Override
+  public int getFailedMaps() {
+    return -1;
+  }
+
+  @Override
+  public int getFailedReduces() {
+    return -1;
+  }
+
+  @Override
+  public int getKilledMaps() {
+    return -1;
+  }
+
+  @Override
+  public int getKilledReduces() {
+    return -1;
   }
 }

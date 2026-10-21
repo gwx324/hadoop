@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.tools.offlineImageViewer;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.IOException;
@@ -26,88 +26,102 @@ import java.io.IOException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.SnapshotAccessControlException;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
 import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestOfflineImageViewerWithStripedBlocks {
-  private static int dataBlocks = StripedFileTestUtil.NUM_DATA_BLOCKS;
-  private static int parityBlocks = StripedFileTestUtil.NUM_PARITY_BLOCKS;
+  private final ErasureCodingPolicy ecPolicy =
+      StripedFileTestUtil.getDefaultECPolicy();
+  private int dataBlocks = ecPolicy.getNumDataUnits();
+  private int parityBlocks = ecPolicy.getNumParityUnits();
 
   private static MiniDFSCluster cluster;
   private static DistributedFileSystem fs;
-  private static final int cellSize = StripedFileTestUtil.BLOCK_STRIPED_CELL_SIZE;
-  private static final int stripesPerBlock = 3;
-  private static final int blockSize = cellSize * stripesPerBlock;
+  private final int cellSize = ecPolicy.getCellSize();
+  private final int stripesPerBlock = 3;
+  private final int blockSize = cellSize * stripesPerBlock;
 
-  @BeforeClass
-  public static void setup() throws IOException {
+  @BeforeEach
+  public void setup() throws IOException {
     int numDNs = dataBlocks + parityBlocks + 2;
     Configuration conf = new Configuration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDNs).build();
     cluster.waitActive();
-    cluster.getFileSystem().getClient().setErasureCodingPolicy("/", null);
+    cluster.getFileSystem().getClient().setErasureCodingPolicy("/",
+        StripedFileTestUtil.getDefaultECPolicy().getName());
     fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(
+        StripedFileTestUtil.getDefaultECPolicy().getName());
     Path eczone = new Path("/eczone");
     fs.mkdirs(eczone);
   }
 
-  @AfterClass
-  public static void tearDown() {
+  @AfterEach
+  public void tearDown() {
     if (cluster != null) {
       cluster.shutdown();
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testFileEqualToOneStripe() throws Exception {
     int numBytes = cellSize;
     testFileSize(numBytes);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testFileLessThanOneStripe() throws Exception {
     int numBytes = cellSize - 100;
     testFileSize(numBytes);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testFileHavingMultipleBlocks() throws Exception {
     int numBytes = blockSize * 3;
     testFileSize(numBytes);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testFileLargerThanABlockGroup1() throws IOException {
     testFileSize(blockSize * dataBlocks + cellSize + 123);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testFileLargerThanABlockGroup2() throws IOException {
     testFileSize(blockSize * dataBlocks * 3 + cellSize * dataBlocks + cellSize
         + 123);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testFileFullBlockGroup() throws IOException {
     testFileSize(blockSize * dataBlocks);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testFileMoreThanOneStripe() throws Exception {
     int numBytes = blockSize + blockSize / 2;
     testFileSize(numBytes);
@@ -115,7 +129,7 @@ public class TestOfflineImageViewerWithStripedBlocks {
 
   private void testFileSize(int numBytes) throws IOException,
       UnresolvedLinkException, SnapshotAccessControlException {
-    fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    fs.setSafeMode(SafeModeAction.LEAVE);
     File orgFsimage = null;
     Path file = new Path("/eczone/striped");
     FSDataOutputStream out = fs.create(file, true);
@@ -124,7 +138,7 @@ public class TestOfflineImageViewerWithStripedBlocks {
     out.close();
 
     // Write results to the fsimage file
-    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER, false);
+    fs.setSafeMode(SafeModeAction.ENTER, false);
     fs.saveNamespace();
 
     // Determine location of fsimage file
@@ -140,23 +154,25 @@ public class TestOfflineImageViewerWithStripedBlocks {
     // Verify space consumed present in BlockInfoStriped
     FSDirectory fsdir = cluster.getNamesystem().getFSDirectory();
     INodeFile fileNode = fsdir.getINode4Write(file.toString()).asFile();
-    assertTrue("Invalid block size", fileNode.getBlocks().length > 0);
+    assertEquals(StripedFileTestUtil.getDefaultECPolicy().getId(),
+        fileNode.getErasureCodingPolicyID());
+    assertTrue(fileNode.getBlocks().length > 0, "Invalid block size");
     long actualFileSize = 0;
     for (BlockInfo blockInfo : fileNode.getBlocks()) {
-      assertTrue("Didn't find block striped information",
-          blockInfo instanceof BlockInfoStriped);
+      assertTrue(blockInfo instanceof BlockInfoStriped,
+          "Didn't find block striped information");
       actualFileSize += blockInfo.getNumBytes();
     }
 
-    assertEquals("Wrongly computed file size contains striped blocks",
-        expectedFileSize, actualFileSize);
+    assertEquals(expectedFileSize, actualFileSize,
+        "Wrongly computed file size contains striped blocks");
 
     // Verify space consumed present in filestatus
     String EXPECTED_FILE_SIZE = "\"length\":"
         + String.valueOf(expectedFileSize);
     assertTrue(
+        fileStatus.contains(EXPECTED_FILE_SIZE),
         "Wrongly computed file size contains striped blocks, file status:"
-            + fileStatus + ". Expected file size is : " + EXPECTED_FILE_SIZE,
-        fileStatus.contains(EXPECTED_FILE_SIZE));
+            + fileStatus + ". Expected file size is : " + EXPECTED_FILE_SIZE);
   }
 }

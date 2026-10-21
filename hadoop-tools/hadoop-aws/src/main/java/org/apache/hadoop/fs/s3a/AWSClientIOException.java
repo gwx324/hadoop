@@ -18,28 +18,28 @@
 
 package org.apache.hadoop.fs.s3a;
 
-import com.amazonaws.AmazonClientException;
-import com.google.common.base.Preconditions;
+import software.amazon.awssdk.core.exception.SdkException;
+import org.apache.hadoop.util.Preconditions;
 
 import java.io.IOException;
 
 /**
- * IOException equivalent of an {@link AmazonClientException}.
+ * IOException equivalent of an {@link SdkException}.
  */
 public class AWSClientIOException extends IOException {
 
   private final String operation;
 
   public AWSClientIOException(String operation,
-      AmazonClientException cause) {
+      SdkException cause) {
     super(cause);
     Preconditions.checkArgument(operation != null, "Null 'operation' argument");
     Preconditions.checkArgument(cause != null, "Null 'cause' argument");
     this.operation = operation;
   }
 
-  public AmazonClientException getCause() {
-    return (AmazonClientException) super.getCause();
+  public SdkException getCause() {
+    return (SdkException) super.getCause();
   }
 
   @Override
@@ -47,4 +47,15 @@ public class AWSClientIOException extends IOException {
     return operation + ": " + getCause().getMessage();
   }
 
+  /**
+   * Query inner cause for retryability.
+   * @return what the cause says.
+   */
+  public boolean retryable() {
+    return getCause().retryable();
+  }
+
+  public String getOperation() {
+    return operation;
+  }
 }

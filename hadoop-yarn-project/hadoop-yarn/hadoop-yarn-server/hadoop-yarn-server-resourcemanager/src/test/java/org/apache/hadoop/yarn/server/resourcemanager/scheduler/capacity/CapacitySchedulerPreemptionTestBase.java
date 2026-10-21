@@ -18,11 +18,9 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.service.Service;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.server.resourcemanager.Application;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.monitor.SchedulingEditPolicy;
@@ -32,13 +30,13 @@ import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NullRMNodeLabels
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerNode;
 import org.apache.hadoop.yarn.util.Clock;
-import org.junit.Assert;
-import org.junit.Before;
+import org.junit.jupiter.api.BeforeEach;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -46,21 +44,23 @@ public class CapacitySchedulerPreemptionTestBase {
 
   final int GB = 1024;
 
-  Configuration conf;
+  CapacitySchedulerConfiguration conf;
 
   RMNodeLabelsManager mgr;
 
   Clock clock;
 
-  @Before
+  @BeforeEach
   void setUp() throws Exception {
-    conf = new YarnConfiguration();
+    conf = new CapacitySchedulerConfiguration();
     conf.setClass(YarnConfiguration.RM_SCHEDULER, CapacityScheduler.class,
         ResourceScheduler.class);
     conf.setBoolean(YarnConfiguration.RM_SCHEDULER_ENABLE_MONITORS, true);
     conf.setClass(YarnConfiguration.RM_SCHEDULER_MONITOR_POLICIES,
         ProportionalCapacityPreemptionPolicy.class, SchedulingEditPolicy.class);
-    conf = TestUtils.getConfigurationWithMultipleQueues(this.conf);
+    conf = (CapacitySchedulerConfiguration) TestUtils
+        .getConfigurationWithMultipleQueues(this.conf);
+    conf.setInt(YarnConfiguration.RM_SCHEDULER_MAXIMUM_ALLOCATION_MB, 100 * GB);
 
     // Set preemption related configurations
     conf.setInt(CapacitySchedulerConfiguration.PREEMPTION_WAIT_TIME_BEFORE_KILL,
@@ -107,7 +107,7 @@ public class CapacitySchedulerPreemptionTestBase {
       waitNum++;
     }
 
-    Assert.fail();
+    fail();
   }
 
   public void waitNumberOfReservedContainersFromApp(FiCaSchedulerApp app,
@@ -123,15 +123,16 @@ public class CapacitySchedulerPreemptionTestBase {
       waitNum++;
     }
 
-    Assert.fail();
+    fail();
   }
 
   public void waitNumberOfLiveContainersOnNodeFromApp(FiCaSchedulerNode node,
       ApplicationAttemptId appId, int expected) throws InterruptedException {
     int waitNum = 0;
+    int total = 0;
 
     while (waitNum < 500) {
-      int total = 0;
+      total = 0;
       for (RMContainer c : node.getCopiedListOfRunningContainers()) {
         if (c.getApplicationAttemptId().equals(appId)) {
           total++;
@@ -144,6 +145,22 @@ public class CapacitySchedulerPreemptionTestBase {
       waitNum++;
     }
 
-    Assert.fail();
+    fail(
+        "Check #live-container-on-node-from-app, actual=" + total + " expected="
+            + expected);
+  }
+
+  public void checkNumberOfPreemptionCandidateFromApp(
+      ProportionalCapacityPreemptionPolicy policy, int expected,
+      ApplicationAttemptId attemptId) {
+    int total = 0;
+
+    for (RMContainer rmContainer : policy.getToPreemptContainers().keySet()) {
+      if (rmContainer.getApplicationAttemptId().equals(attemptId)) {
+        ++ total;
+      }
+    }
+
+    assertEquals(expected, total);
   }
 }

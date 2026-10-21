@@ -15,11 +15,7 @@
 Reservation System
 ==================
 
-
-* [Purpose](#Purpose)
-* [Overview](#Overview)
-* [Flow of a Reservation](#Flow_of_a_Reservation)
-* [Configuring the Reservation System](#Configuring_the_Reservation_System)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Purpose
 -------
@@ -45,7 +41,7 @@ With reference to the figure above, a typical reservation proceeds as follows:
 
  * **Step 2**  The ReservationSystem leverages a ReservationAgent (GREE in the figure) to find a plausible allocation for the reservation in the Plan, a data structure tracking all reservation currently accepted and the available resources in the system.
 
- * **Step 3**  The SharingPolicy provides a way to enforce invariants on the reservation being accepted, potentially rejecting reservations. For example, the CapacityOvertimePolicy allows enforcement of both instantaneous max-capacity a user can request across all of his/her reservations and a limit on the integral of resources over a period of time, e.g., the user can reserve up to 50% of the cluster capacity instantanesouly, but in any 24h period of time he/she cannot exceed 10% average.
+ * **Step 3**  The SharingPolicy provides a way to enforce invariants on the reservation being accepted, potentially rejecting reservations. For example, the CapacityOvertimePolicy allows enforcement of both instantaneous max-capacity a user can request across all of his/her reservations and a limit on the integral of resources over a period of time, e.g., the user can reserve up to 50% of the cluster capacity instantaneously, but in any 24h period of time he/she cannot exceed 10% average.
 
  * **Step 4**  Upon a successful validation the ReservationSystem returns to the user a ReservationId (think of it as an airline ticket).
 
@@ -64,4 +60,4 @@ With reference to the figure above, a typical reservation proceeds as follows:
 Configuring the Reservation System
 ----------------------------------
 
-Configuring the `ReservationSystem` is simple. Currently we have added support for *reservations* in both `CapacityScheduler` and `FairScheduler`. You can mark any **leaf queue** in the **capacity-scheduler.xml** or **fair-scheduler.xml** as available for "reservations" (see [CapacityScheduler](http://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/CapacityScheduler.html#Configuring_ReservationSystem_with_CapacityScheduler) and the [FairScheduler](http://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/FairScheduler.html) for details). Then the capacity/fair share within that queue can be used for making reservations. Jobs can still be submitted to the *reservable queue* without a reservation, in which case they will be run in best-effort mode in whatever capacity is left over by the jobs running within active reservations.
+Configuring the `ReservationSystem` is simple. Currently we have added support for *reservations* in both `CapacityScheduler` and `FairScheduler`. You can mark any **leaf queue** in the **capacity-scheduler.xml** or **fair-scheduler.xml** as available for "reservations" (see [CapacityScheduler](./CapacityScheduler.html#Configuring_ReservationSystem_with_CapacityScheduler) and the [FairScheduler](./FairScheduler.html#Configuring_ReservationSystem) for details). Then the capacity/fair share within that queue can be used for making reservations. Jobs can still be submitted to the *reservable queue* without a reservation, in which case they will be run in best-effort mode in whatever capacity is left over by the jobs running within active reservations.

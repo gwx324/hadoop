@@ -23,8 +23,6 @@ import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Arrays;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
@@ -33,13 +31,13 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.BinaryComparable;
 import org.apache.hadoop.io.IOUtils;
-import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.RawComparator;
-import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Partitioner effecting a total order by reading split points from
@@ -59,15 +57,16 @@ public class TotalOrderPartitioner<K,V>
   public static final String NATURAL_ORDER = 
     "mapreduce.totalorderpartitioner.naturalorder";
   Configuration conf;
-  private static final Log LOG = LogFactory.getLog(TotalOrderPartitioner.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TotalOrderPartitioner.class);
 
   public TotalOrderPartitioner() { }
 
   /**
    * Read in the partition file and build indexing data structures.
    * If the keytype is {@link org.apache.hadoop.io.BinaryComparable} and
-   * <tt>total.order.partitioner.natural.order</tt> is not false, a trie
-   * of the first <tt>total.order.partitioner.max.trie.depth</tt>(2) + 1 bytes
+   * <code>total.order.partitioner.natural.order</code> is not false, a trie
+   * of the first <code>total.order.partitioner.max.trie.depth</code>(2) + 1 bytes
    * will be built. Otherwise, keys will be located using a binary search of
    * the partition keyset using the {@link org.apache.hadoop.io.RawComparator}
    * defined for this job. The input file must be sorted with the same
@@ -129,7 +128,7 @@ public class TotalOrderPartitioner<K,V>
 
   /**
    * Set the path to the SequenceFile storing the sorted partition keyset.
-   * It must be the case that for <tt>R</tt> reduces, there are <tt>R-1</tt>
+   * It must be the case that for <code>R</code> reduces, there are <code>R-1</code>
    * keys in the SequenceFile.
    */
   public static void setPartitionFile(Configuration conf, Path p) {
@@ -157,7 +156,7 @@ public class TotalOrderPartitioner<K,V>
 
   /**
    * Base class for trie nodes. If the keytype is memcomp-able, this builds
-   * tries of the first <tt>total.order.partitioner.max.trie.depth</tt>
+   * tries of the first <code>total.order.partitioner.max.trie.depth</code>
    * bytes.
    */
   static abstract class TrieNode implements Node<BinaryComparable> {
@@ -172,7 +171,7 @@ public class TotalOrderPartitioner<K,V>
 
   /**
    * For types that are not {@link org.apache.hadoop.io.BinaryComparable} or
-   * where disabled by <tt>total.order.partitioner.natural.order</tt>,
+   * where disabled by <code>total.order.partitioner.natural.order</code>,
    * search the partition keyset with a binary search.
    */
   class BinarySearchNode implements Node<K> {
@@ -311,7 +310,7 @@ public class TotalOrderPartitioner<K,V>
       reader.close();
       reader = null;
     } finally {
-      IOUtils.cleanup(LOG, reader);
+      IOUtils.cleanupWithLogger(LOG, reader);
     }
     return parts.toArray((K[])Array.newInstance(keyClass, parts.size()));
   }

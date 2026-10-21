@@ -24,6 +24,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -34,8 +35,6 @@ import java.util.Properties;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -60,8 +59,10 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppImpl;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 /** 
  * Utilities used in unit test.
@@ -69,7 +70,7 @@ import com.google.common.base.Supplier;
  */
 public class UtilsForTests {
 
-  static final Log LOG = LogFactory.getLog(UtilsForTests.class);
+  static final Logger LOG = LoggerFactory.getLogger(UtilsForTests.class);
 
   final static long KB = 1024L * 1;
   final static long MB = 1024L * KB;
@@ -90,7 +91,7 @@ public class UtilsForTests {
   }
 
   public static String formatBytes(long numBytes) {
-    StringBuffer buf = new StringBuffer();
+    StringBuilder buf = new StringBuilder();
     boolean bDetails = true;
     double num = numBytes;
 
@@ -115,7 +116,7 @@ public class UtilsForTests {
   }
 
   public static String formatBytes2(long numBytes) {
-    StringBuffer buf = new StringBuffer();
+    StringBuilder buf = new StringBuilder();
     long u = 0;
     if (numBytes >= TB) {
       u = numBytes / TB;
@@ -144,7 +145,7 @@ public class UtilsForTests {
   static final String regexpSpecials = "[]()?*+|.!^-\\~@";
 
   public static String regexpEscape(String plain) {
-    StringBuffer buf = new StringBuffer();
+    StringBuilder buf = new StringBuilder();
     char[] ch = plain.toCharArray();
     int csup = ch.length;
     for (int c = 0; c < csup; c++) {
@@ -180,7 +181,7 @@ public class UtilsForTests {
     String contents = null;
     try {
       in.read(buf, 0, len);
-      contents = new String(buf, "UTF-8");
+      contents = new String(buf, StandardCharsets.UTF_8);
     } finally {
       in.close();
     }
@@ -194,7 +195,7 @@ public class UtilsForTests {
     String contents = null;
     try {
       in.read(buf, 0, len);
-      contents = new String(buf, "UTF-8");
+      contents = new String(buf, StandardCharsets.UTF_8);
     } finally {
       in.close();
     }

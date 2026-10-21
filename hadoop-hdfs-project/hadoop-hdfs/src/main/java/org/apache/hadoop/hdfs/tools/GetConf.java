@@ -20,11 +20,13 @@ package org.apache.hadoop.hdfs.tools;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.InetSocketAddress;
+import java.net.URISyntaxException;
 import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.conf.Configuration;
@@ -33,6 +35,7 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.DFSUtil.ConfiguredNNAddress;
+import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Tool;
@@ -68,6 +71,7 @@ public class GetConf extends Configured implements Tool {
     SECONDARY("-secondaryNameNodes", 
         "gets list of secondary namenodes in the cluster."),
     BACKUP("-backupNodes", "gets list of backup nodes in the cluster."),
+    JOURNALNODE("-journalNodes", "gets list of journal nodes in the cluster."),
     INCLUDE_FILE("-includeFile",
         "gets the include file path that defines the datanodes " +
         "that can join the cluster."),
@@ -86,6 +90,8 @@ public class GetConf extends Configured implements Tool {
           new SecondaryNameNodesCommandHandler());
       map.put(StringUtils.toLowerCase(BACKUP.getName()),
           new BackupNodesCommandHandler());
+      map.put(StringUtils.toLowerCase(JOURNALNODE.getName()),
+          new JournalNodeCommandHandler());
       map.put(StringUtils.toLowerCase(INCLUDE_FILE.getName()),
           new CommandHandler(DFSConfigKeys.DFS_HOSTS));
       map.put(StringUtils.toLowerCase(EXCLUDE_FILE.getName()),
@@ -202,7 +208,19 @@ public class GetConf extends Configured implements Tool {
       return 0;
     }
   }
-  
+
+  /**
+   * Handler for {@linke Command#JOURNALNODE}.
+   */
+  static class JournalNodeCommandHandler extends CommandHandler {
+    @Override
+    public int doWorkInternal(GetConf tool, String[] args)
+        throws URISyntaxException, IOException {
+      tool.printSet(DFSUtil.getJournalNodeAddresses(tool.getConf()));
+      return 0;
+    }
+  }
+
   /**
    * Handler for {@link Command#SECONDARY}
    */
@@ -228,7 +246,7 @@ public class GetConf extends Configured implements Tool {
       if (!cnnlist.isEmpty()) {
         for (ConfiguredNNAddress cnn : cnnlist) {
           InetSocketAddress rpc = cnn.getAddress();
-          tool.printOut(rpc.getHostName()+":"+rpc.getPort());
+          tool.printOut(NetUtils.getHostPortString(rpc));
         }
         return 0;
       }
@@ -284,6 +302,18 @@ public class GetConf extends Configured implements Tool {
         buffer.append(" ");
       }
       buffer.append(address.getHostName());
+    }
+    printOut(buffer.toString());
+  }
+
+  void printSet(Set<String> journalnodes) {
+    StringBuilder buffer = new StringBuilder();
+
+    for (String journalnode : journalnodes) {
+      if (buffer.length() > 0) {
+        buffer.append(" ");
+      }
+      buffer.append(journalnode);
     }
     printOut(buffer.toString());
   }

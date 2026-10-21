@@ -21,11 +21,9 @@ package org.apache.hadoop.mapreduce.v2.hs;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.mapreduce.v2.api.HSAdminRefreshProtocol;
 import org.apache.hadoop.mapreduce.v2.api.HSAdminRefreshProtocolPB;
@@ -38,11 +36,13 @@ import org.apache.hadoop.security.protocolPB.RefreshUserMappingsProtocolPB;
 import org.apache.hadoop.tools.GetUserMappingsProtocol;
 import org.apache.hadoop.tools.protocolPB.GetUserMappingsProtocolClientSideTranslatorPB;
 import org.apache.hadoop.tools.protocolPB.GetUserMappingsProtocolPB;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Private
 public class HSProxies {
 
-  private static final Log LOG = LogFactory.getLog(HSProxies.class);
+  private static final Logger LOG = LoggerFactory.getLogger(HSProxies.class);
 
   @SuppressWarnings("unchecked")
   public static <T> T createProxy(Configuration conf, InetSocketAddress hsaddr,
@@ -93,7 +93,7 @@ public class HSProxies {
   private static Object createHSProxy(InetSocketAddress address,
       Configuration conf, UserGroupInformation ugi, Class<?> xface,
       int rpcTimeout) throws IOException {
-    RPC.setProtocolEngine(conf, xface, ProtobufRpcEngine.class);
+    RPC.setProtocolEngine(conf, xface, ProtobufRpcEngine2.class);
     Object proxy = RPC.getProxy(xface, RPC.getProtocolVersion(xface), address,
         ugi, conf, NetUtils.getDefaultSocketFactory(conf), rpcTimeout);
     return proxy;

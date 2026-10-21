@@ -18,16 +18,18 @@
 
 package org.apache.hadoop.net;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-
 public class ServerSocketUtil {
 
-  private static final Log LOG = LogFactory.getLog(ServerSocketUtil.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ServerSocketUtil.class);
   private static Random rand = new Random();
 
   /**
@@ -48,7 +50,8 @@ public class ServerSocketUtil {
       if (tryPort == 0) {
         continue;
       }
-      try (ServerSocket s = new ServerSocket(tryPort)) {
+      try (ServerSocket s = new ServerSocket(tryPort, 50,
+          InetAddress.getLoopbackAddress())) {
         LOG.info("Using port " + tryPort);
         return tryPort;
       } catch (IOException e) {
@@ -101,5 +104,28 @@ public class ServerSocketUtil {
         Thread.sleep(1000);
       }
     }
+  }
+
+  /**
+   * Find the specified number of unique ports available.
+   * The ports are all closed afterwards,
+   * so other network services started may grab those same ports.
+   *
+   * @param numPorts number of required port nubmers
+   * @return array of available port numbers
+   * @throws IOException
+   */
+  public static int[] getPorts(int numPorts) throws IOException {
+    ServerSocket[] sockets = new ServerSocket[numPorts];
+    int[] ports = new int[numPorts];
+    for (int i = 0; i < numPorts; i++) {
+      ServerSocket sock = new ServerSocket(0);
+      sockets[i] = sock;
+      ports[i] = sock.getLocalPort();
+    }
+    for (ServerSocket sock : sockets) {
+      sock.close();
+    }
+    return ports;
   }
 }

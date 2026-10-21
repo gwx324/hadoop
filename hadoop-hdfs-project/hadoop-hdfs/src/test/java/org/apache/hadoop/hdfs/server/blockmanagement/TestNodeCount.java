@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.TimeoutException;
 
@@ -32,8 +32,10 @@ import org.apache.hadoop.hdfs.MiniDFSCluster.DataNodeProperties;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.util.Time;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Test if live nodes count per node is correct 
@@ -47,7 +49,8 @@ public class TestNodeCount {
   Block lastBlock = null;
   NumberReplicas lastNum = null;
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testNodeCount() throws Exception {
     final Configuration conf = new HdfsConfiguration();
 
@@ -56,7 +59,7 @@ public class TestNodeCount {
         60);
 
     // reduce intervals to make test execution time shorter
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
 
     // start a mini dfs cluster of 2 nodes
@@ -174,14 +177,14 @@ public class TestNodeCount {
   /* threadsafe read of the replication counts for this block */
   NumberReplicas countNodes(Block block, FSNamesystem namesystem) {
     BlockManager blockManager = namesystem.getBlockManager();
-    namesystem.readLock();
+    namesystem.readLock(RwLockMode.BM);
     try {
       lastBlock = block;
       lastNum = blockManager.countNodes(blockManager.getStoredBlock(block));
       return lastNum;
     }
     finally {
-      namesystem.readUnlock();
+      namesystem.readUnlock(RwLockMode.BM, "countNodes");
     }
   }
 }

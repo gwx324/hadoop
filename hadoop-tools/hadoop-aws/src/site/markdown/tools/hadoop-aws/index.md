@@ -14,1250 +14,1958 @@
 
 # Hadoop-AWS module: Integration with Amazon Web Services
 
-<!-- MACRO{toc|fromDepth=0|toDepth=5} -->
+<!-- MACRO{toc|fromDepth=0|toDepth=2} -->
 
-## Overview
 
-The `hadoop-aws` module provides support for AWS integration. The generated
-JAR file, `hadoop-aws.jar` also declares a transitive dependency on all
-external artifacts which are needed for this support —enabling downstream
-applications to easily use this support.
 
-To make it part of Apache Hadoop's default classpath, simply make sure that
-HADOOP_OPTIONAL_TOOLS in hadoop-env.sh has 'hadoop-aws' in the list.
+## <a name="compatibility"></a> Compatibility
 
-### Features
 
-**NOTE: `s3:` is being phased out. Use `s3n:` or `s3a:` instead.**
+###  <a name="directory-marker-compatibility"></a> Directory Marker Compatibility
 
-1. The second-generation, `s3n:` filesystem, making it easy to share
-data between hadoop and other applications via the S3 object store.
-1. The third generation, `s3a:` filesystem. Designed to be a switch in
-replacement for `s3n:`, this filesystem binding supports larger files and promises
-higher performance.
+This release never delete directory markers when creating
+files or directories underneath.
+This is incompatible with versions of the Hadoop S3A client released
+before 2021.
 
-The specifics of using these filesystems are documented below.
+Consult [S3A and Directory Markers](directory_markers.html) for
+full details.
 
-### Warning #1: Object Stores are not filesystems.
+## <a name="documents"></a> Documents
+
+* [Connecting](./connecting.html)
+* [Encryption](./encryption.html)
+* [Performance](./performance.html)
+* [The upgrade to AWS Java SDK V2](./aws_sdk_upgrade.html)
+* [Working with Third-party S3 Stores](./third_party_stores.html)
+* [Troubleshooting](./troubleshooting_s3a.html)
+* [Prefetching](./prefetching.html)
+* [S3A and Directory Markers](directory_markers.html).
+* [Auditing](./auditing.html).
+* [Committing work to S3 with the "S3A Committers"](./committers.html)
+* [S3A Committers Architecture](./committer_architecture.html)
+* [Working with IAM Assumed Roles](./assumed_roles.html)
+* [S3A Delegation Token Support](./delegation_tokens.html)
+* [S3A Delegation Token Architecture](delegation_token_architecture.html).
+* [Auditing Architecture](./auditing_architecture.html).
+* [Testing](./testing.html)
+* [Qualifying a new SDK](./qualifying_a_new_sdk.html)
+* [S3Guard](./s3guard.html)
+
+## <a name="overview"></a> Overview
+
+Apache Hadoop's `hadoop-aws` module provides support for AWS integration.
+
+To include the S3A client in Apache Hadoop's default classpath:
+
+1. Make sure that`HADOOP_OPTIONAL_TOOLS` in `hadoop-env.sh` includes `hadoop-aws`
+in its list of optional modules to add in the classpath.
+
+1. For client side interaction, you can declare that relevant JARs must be loaded
+in your `~/.hadooprc` file:
+
+        hadoop_add_to_classpath_tools hadoop-aws
+
+The settings in this file does not propagate to deployed applications, but it will
+work for local clients such as the `hadoop fs` command.
+
+
+## <a name="introduction"></a> Introducing the Hadoop S3A client.
+
+Hadoop's "S3A" client offers high-performance IO against Amazon S3 object store
+and compatible implementations.
+
+* Directly reads and writes S3 objects.
+* Compatible with standard S3 clients.
+* Compatible with files created by Amazon EMR's `s3://` client (EMRFS).
+* Supports partitioned uploads for many-GB objects.
+* Offers a high-performance random IO mode for working with columnar data such
+as Apache ORC and Apache Parquet files.
+* Uses Amazon's Java V2 SDK with support for latest S3 features and authentication
+schemes.
+* Supports authentication via: environment variables, Hadoop configuration
+properties, the Hadoop key management store and IAM roles.
+* Supports per-bucket configuration.
+* Supports S3 "Server Side Encryption" for both reading and writing:
+ SSE-S3, SSE-KMS and SSE-C.
+* Supports S3-CSE client side encryption.
+* Instrumented with Hadoop metrics.
+* Actively maintained by the open source community.
+
+
+### Other S3 Connectors
+
+There other Hadoop connectors to S3. Only S3A is actively maintained by
+the Hadoop project itself.
+
+1. Amazon EMR's `s3://` client. This is from the Amazon EMR team, who actively
+maintain it.
+
+
+
+## <a name="getting_started"></a> Getting Started
+
+S3A depends upon two JARs, alongside `hadoop-common` and its dependencies.
+
+* `hadoop-aws` JAR. This contains the S3A connector.
+* `bundle` JAR. This contains the full shaded AWS V2 SDK.
+
+The versions of `hadoop-common` and `hadoop-aws` must be identical.
+
+To import the libraries into a Maven build, add `hadoop-aws` JAR to the
+build dependencies; it will pull in a compatible aws-sdk JAR.
+
+The `hadoop-aws` JAR *does not* declare any dependencies other than that
+dependencies unique to it, the AWS SDK JAR. This is simplify excluding/tuning
+Hadoop dependency JARs in downstream applications. The `hadoop-client` or
+`hadoop-common` dependency must be declared
+
+
+```xml
+<properties>
+ <!-- Your exact Hadoop version here-->
+  <hadoop.version>3.0.0</hadoop.version>
+</properties>
+
+<dependencies>
+  <dependency>
+    <groupId>org.apache.hadoop</groupId>
+    <artifactId>hadoop-client</artifactId>
+    <version>${hadoop.version}</version>
+  </dependency>
+  <dependency>
+    <groupId>org.apache.hadoop</groupId>
+    <artifactId>hadoop-aws</artifactId>
+    <version>${hadoop.version}</version>
+  </dependency>
+</dependencies>
+```
+
+## <a name="warning"></a> Warnings
 
 Amazon S3 is an example of "an object store". In order to achieve scalability
 and especially high availability, S3 has —as many other cloud object stores have
 done— relaxed some of the constraints which classic "POSIX" filesystems promise.
 
-Specifically
-
-1. Files that are newly created from the Hadoop Filesystem APIs may not be
-immediately visible.
-2. File delete and update operations may not immediately propagate. Old
-copies of the file may exist for an indeterminate time period.
-3. Directory operations: `delete()` and `rename()` are implemented by
-recursive file-by-file operations. They take time at least proportional to
-the number of files, during which time partial updates may be visible. If
-the operations are interrupted, the filesystem is left in an intermediate state.
-
-### Warning #2: Because Object stores don't track modification times of directories,
-features of Hadoop relying on this can have unexpected behaviour. E.g. the
-AggregatedLogDeletionService of YARN will not remove the appropriate logfiles.
-
 For further discussion on these topics, please consult
 [The Hadoop FileSystem API Definition](../../../hadoop-project-dist/hadoop-common/filesystem/index.html).
 
-### Warning #3: your AWS credentials are valuable
+
+### Warning #1: Directories are mimicked
+
+The S3A clients mimics directories by:
+
+1. Creating a stub entry after a `mkdirs` call, deleting it when a file
+is added anywhere underneath
+1. When listing a directory, searching for all objects whose path starts with
+the directory path, and returning them as the listing.
+1. When renaming a directory, taking such a listing and asking S3 to copying the
+individual objects to new objects with the destination filenames.
+1. When deleting a directory, taking such a listing and deleting the entries in
+batches.
+1. When renaming or deleting directories, taking such a listing and working
+on the individual files.
+
+
+Here are some of the consequences:
+
+* Directories may lack modification times.
+Parts of Hadoop relying on this can have unexpected behaviour. E.g. the
+`AggregatedLogDeletionService` of YARN will not remove the appropriate logfiles.
+* Directory listing can be slow. Use `listFiles(path, recursive)` for high
+performance recursive listings whenever possible.
+* It is possible to create files under files if the caller tries hard.
+* The time to rename a directory is proportional to the number of files
+underneath it (directory or indirectly) and the size of the files. (The copy is
+executed inside the S3 storage, so the time is independent of the bandwidth
+from client to S3).
+* Directory renames are not atomic: they can fail partway through, and callers
+cannot safely rely on atomic renames as part of a commit algorithm.
+* Directory deletion is not atomic and can fail partway through.
+
+The final three issues surface when using S3 as the immediate destination
+of work, as opposed to HDFS or other "real" filesystem.
+
+The [S3A committers](./committers.html) are the sole mechanism available
+to safely save the output of queries directly into S3 object stores
+through the S3A filesystem when the filesystem structure is
+how the table is represented.
+
+
+### Warning #2: Object stores have different authorization models
+
+The object authorization model of S3 is much different from the file
+authorization model of HDFS and traditional file systems.
+The S3A client simply reports stub information from APIs that would query this metadata:
+
+* File owner is reported as the current user.
+* File group also is reported as the current user.
+* Directory permissions are reported as 777.
+* File permissions are reported as 666.
+
+S3A does not really enforce any authorization checks on these stub permissions.
+Users authenticate to an S3 bucket using AWS credentials.  It's possible that
+object ACLs have been defined to enforce authorization at the S3 side, but this
+happens entirely within the S3 service, not within the S3A implementation.
+
+### Warning #4: Your AWS credentials are very, very valuable
 
 Your AWS credentials not only pay for services, they offer read and write
 access to the data. Anyone with the credentials can not only read your datasets
 —they can delete them.
 
-Do not inadvertently share these credentials through means such as
+Do not inadvertently share these credentials through means such as:
+
 1. Checking in to SCM any configuration files containing the secrets.
 1. Logging them to a console, as they invariably end up being seen.
-1. Defining filesystem URIs with the credentials in the URL, such as
-`s3a://AK0010:secret@landsat/`. They will end up in logs and error messages.
 1. Including the secrets in bug reports.
+1. Logging the `AWS_` environment variables.
 
 If you do any of these: change your credentials immediately!
 
-### Warning #4: the S3 client provided by Amazon EMR are not from the Apache
-Software foundation, and are only supported by Amazon.
 
-Specifically: on Amazon EMR, s3a is not supported, and amazon recommend
-a different filesystem implementation. If you are using Amazon EMR, follow
-these instructions —and be aware that all issues related to S3 integration
-in EMR can only be addressed by Amazon themselves: please raise your issues
-with them.
+## Connecting to Amazon S3 or a third-party store
 
-## S3
+See [Connecting to an Amazon S3 Bucket through the S3A Connector](connecting.html).
 
-The `s3://` filesystem is the original S3 store in the Hadoop codebase.
-It implements an inode-style filesystem atop S3, and was written to
-provide scaleability when S3 had significant limits on the size of blobs.
-It is incompatible with any other application's use of data in S3.
+Also, please check [S3 endpoint and region settings in detail](connecting.html#s3_endpoint_region_details).
 
-It is now deprecated and will be removed in Hadoop 3. Please do not use,
-and migrate off data which is on it.
+## <a name="authenticating"></a> Authenticating with S3
 
-### Dependencies
+See [Authenticating with S3](authentication.html).
 
-* `jets3t` jar
-* `commons-codec` jar
-* `commons-logging` jar
-* `httpclient` jar
-* `httpcore` jar
-* `java-xmlbuilder` jar
+## <a name="hadoop_credential_providers"></a>Storing secrets with Hadoop Credential Providers
 
-### Authentication properties
+The Hadoop Credential Provider Framework allows secure "Credential Providers"
+to keep secrets outside Hadoop configuration files, storing them in encrypted
+files in local or Hadoop filesystems, and including them in requests.
 
-    <property>
-      <name>fs.s3.awsAccessKeyId</name>
-      <description>AWS access key ID</description>
-    </property>
+The S3A configuration options with sensitive data
+(`fs.s3a.secret.key`, `fs.s3a.access.key`,  `fs.s3a.session.token`
+and `fs.s3a.encryption.key`) can
+have their data saved to a binary file stored, with the values being read in
+when the S3A filesystem URL is used for data access. The reference to this
+credential provider then declared in the Hadoop configuration.
 
-    <property>
-      <name>fs.s3.awsSecretAccessKey</name>
-      <description>AWS secret key</description>
-    </property>
-
-
-## S3N
-
-S3N was the first S3 Filesystem client which used "native" S3 objects, hence
-the schema `s3n://`.
-
-### Features
-
-* Directly reads and writes S3 objects.
-* Compatible with standard S3 clients.
-* Supports partitioned uploads for many-GB objects.
-* Available across all Hadoop 2.x releases.
-
-The S3N filesystem client, while widely used, is no longer undergoing
-active maintenance except for emergency security issues. There are
-known bugs, especially: it reads to end of a stream when closing a read;
-this can make `seek()` slow on large files. The reason there has been no
-attempt to fix this is that every upgrade of the Jets3t library, while
-fixing some problems, has unintentionally introduced new ones in either the changed
-Hadoop code, or somewhere in the Jets3t/Httpclient code base.
-The number of defects remained constant, they merely moved around.
-
-By freezing the Jets3t jar version and avoiding changes to the code,
-we reduce the risk of making things worse.
-
-The S3A filesystem client can read all files created by S3N. Accordingly
-it should be used wherever possible.
-
-
-### Dependencies
-
-* `jets3t` jar
-* `commons-codec` jar
-* `commons-logging` jar
-* `httpclient` jar
-* `httpcore` jar
-* `java-xmlbuilder` jar
-
-
-### Authentication properties
-
-    <property>
-      <name>fs.s3n.awsAccessKeyId</name>
-      <description>AWS access key ID</description>
-    </property>
-
-    <property>
-      <name>fs.s3n.awsSecretAccessKey</name>
-      <description>AWS secret key</description>
-    </property>
-
-### Other properties
-
-    <property>
-      <name>fs.s3.buffer.dir</name>
-      <value>${hadoop.tmp.dir}/s3</value>
-      <description>Determines where on the local filesystem the s3:/s3n: filesystem
-      should store files before sending them to S3
-      (or after retrieving them from S3).
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3.maxRetries</name>
-      <value>4</value>
-      <description>The maximum number of retries for reading or writing files to
-        S3, before we signal failure to the application.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3.sleepTimeSeconds</name>
-      <value>10</value>
-      <description>The number of seconds to sleep between each S3 retry.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3n.block.size</name>
-      <value>67108864</value>
-      <description>Block size to use when reading files using the native S3
-      filesystem (s3n: URIs).</description>
-    </property>
-
-    <property>
-      <name>fs.s3n.multipart.uploads.enabled</name>
-      <value>false</value>
-      <description>Setting this property to true enables multiple uploads to
-      native S3 filesystem. When uploading a file, it is split into blocks
-      if the size is larger than fs.s3n.multipart.uploads.block.size.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3n.multipart.uploads.block.size</name>
-      <value>67108864</value>
-      <description>The block size for multipart uploads to native S3 filesystem.
-      Default size is 64MB.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3n.multipart.copy.block.size</name>
-      <value>5368709120</value>
-      <description>The block size for multipart copy in native S3 filesystem.
-      Default size is 5GB.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3n.server-side-encryption-algorithm</name>
-      <value></value>
-      <description>Specify a server-side encryption algorithm for S3.
-      Unset by default, and the only other currently allowable value is AES256.
-      </description>
-    </property>
-
-## S3A
-
-
-The S3A filesystem client, prefix `s3a://`, is the S3 client undergoing
-active development and maintenance.
-While this means that there is a bit of instability
-of configuration options and behavior, it also means
-that the code is getting better in terms of reliability, performance,
-monitoring and other features.
-
-### Features
-
-* Directly reads and writes S3 objects.
-* Compatible with standard S3 clients.
-* Can read data created with S3N.
-* Can write data back that is readable by S3N. (Note: excluding encryption).
-* Supports partitioned uploads for many-GB objects.
-* Instrumented with Hadoop metrics.
-* Performance optimized operations, including `seek()` and `readFully()`.
-* Uses Amazon's Java S3 SDK with support for latest S3 features and authentication
-schemes.
-* Supports authentication via: environment variables, Hadoop configuration
-properties, the Hadoop key management store and IAM roles.
-* Supports S3 "Server Side Encryption" for both reading and writing.
-* Supports proxies
-* Test suites includes distcp and suites in downstream projects.
-* Available since Hadoop 2.6; considered production ready in Hadoop 2.7.
-* Actively maintained.
-
-S3A is now the recommended client for working with S3 objects. It is also the
-one where patches for functionality and performance are very welcome.
-
-### Dependencies
-
-* `hadoop-aws` jar.
-* `aws-java-sdk-s3` jar.
-* `aws-java-sdk-core` jar.
-* `aws-java-sdk-kms` jar.
-* `joda-time` jar; use version 2.8.1 or later.
-* `httpclient` jar.
-* Jackson `jackson-core`, `jackson-annotations`, `jackson-databind` jars.
-
-### Authentication properties
-
-    <property>
-      <name>fs.s3a.access.key</name>
-      <description>AWS access key ID. Omit for IAM role-based or provider-based authentication.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.secret.key</name>
-      <description>AWS secret key. Omit for IAM role-based or provider-based authentication.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.aws.credentials.provider</name>
-      <description>
-        Class name of a credentials provider that implements
-        com.amazonaws.auth.AWSCredentialsProvider.  Omit if using access/secret keys
-        or another authentication mechanism.  The specified class must provide an
-        accessible constructor accepting java.net.URI and
-        org.apache.hadoop.conf.Configuration, or an accessible default constructor.
-        Specifying org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider allows
-        anonymous access to a publicly accessible S3 bucket without any credentials.
-        Please note that allowing anonymous access to an S3 bucket compromises
-        security and therefore is unsuitable for most use cases.  It can be useful
-        for accessing public data sets without requiring AWS credentials.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3a.session.token</name>
-      <description>Session token, when using org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider as the providers.</description>
-    </property>
-
-#### Authentication methods
-
-The standard way to authenticate is with an access key and secret key using the
-properties above. You can also avoid configuring credentials if the EC2
-instances in your cluster are configured with IAM instance profiles that grant
-the appropriate S3 access.
-
-A temporary set of credentials can also be obtained from Amazon STS; these
-consist of an access key, a secret key, and a session token. To use these
-temporary credentials you must include the `aws-java-sdk-sts` JAR in your
-classpath (consult the POM for the current version) and set the
-`TemporaryAWSCredentialsProvider` class as the provider. The session key
-must be set in the property `fs.s3a.session.token` —and the access and secret
-key properties to those of this temporary session.
-
-    <property>
-      <name>fs.s3a.aws.credentials.provider</name>
-      <value>org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider</value>
-    </property>
-
-    <property>
-      <name>fs.s3a.access.key</name>
-      <value>SESSION-ACCESS-KEY</value>
-    </property>
-
-    <property>
-      <name>fs.s3a.secret.key</name>
-      <value>SESSION-SECRET-KEY</value>
-    </property>
-
-    <property>
-      <name>fs.s3a.session.token</name>
-      <value>SECRET-SESSION-TOKEN</value>
-    </property>
-
-#### Protecting the AWS Credentials in S3A
-
-To protect the access/secret keys from prying eyes, it is recommended that you
-use either IAM role-based authentication (such as EC2 instance profile) or
-the credential provider framework securely storing them and accessing them
-through configuration. The following describes using the latter for AWS
-credentials in S3AFileSystem.
-
-For additional reading on the credential provider API see:
+For additional reading on the Hadoop Credential Provider API see:
 [Credential Provider API](../../../hadoop-project-dist/hadoop-common/CredentialProviderAPI.html).
 
-#### Authenticating via environment variables
 
-S3A supports configuration via [the standard AWS environment variables](http://docs.aws.amazon.com/cli/latest/userguide/cli-chap-getting-started.html#cli-environment).
-
-The core environment variables are for the access key and associated secret:
+The following configuration options can be stored in Hadoop Credential Provider
+stores.
 
 ```
-export AWS_ACCESS_KEY_ID=my.aws.key
-export AWS_SECRET_ACCESS_KEY=my.secret.key
+fs.s3a.access.key
+fs.s3a.secret.key
+fs.s3a.session.token
+fs.s3a.encryption.key
+fs.s3a.encryption.algorithm
 ```
 
-These environment variables can be used to set the authentication credentials
-instead of properties in the Hadoop configuration. *Important:* these
-environment variables are not propagated from client to server when
-YARN applications are launched. That is: having the AWS environment variables
-set when an application is launched will not permit the launched application
-to access S3 resources. The environment variables must (somehow) be set
-on the hosts/processes where the work is executed.
+The first three are for authentication; the final two for
+[encryption](./encryption.html). Of the latter, only the encryption key can
+be considered "sensitive". However, being able to include the algorithm in
+the credentials allows for a JCECKS file to contain all the options needed
+to encrypt new data written to S3.
 
-##### End to End Steps for Distcp and S3 with Credential Providers
+### Step 1: Create a credential file
 
-###### provision
+A credential file can be created on any Hadoop filesystem; when creating one on HDFS or
+a Unix filesystem the permissions are automatically set to keep the file
+private to the reader —though as directory permissions are not touched,
+users should verify that the directory containing the file is readable only by
+the current user.
 
+```bash
+hadoop credential create fs.s3a.access.key -value 123 \
+    -provider jceks://hdfs@nn1.example.com:9001/user/backup/s3.jceks
+
+hadoop credential create fs.s3a.secret.key -value 456 \
+    -provider jceks://hdfs@nn1.example.com:9001/user/backup/s3.jceks
 ```
-% hadoop credential create fs.s3a.access.key -value 123
-    -provider localjceks://file/home/lmccay/aws.jceks
-```
 
-```
-% hadoop credential create fs.s3a.secret.key -value 456
-    -provider localjceks://file/home/lmccay/aws.jceks
-```
+A credential file can be listed, to see what entries are kept inside it
 
-###### configure core-site.xml or command line system property
+```bash
+hadoop credential list -provider jceks://hdfs@nn1.example.com:9001/user/backup/s3.jceks
 
+Listing aliases for CredentialProvider: jceks://hdfs@nn1.example.com:9001/user/backup/s3.jceks
+fs.s3a.secret.key
+fs.s3a.access.key
 ```
+At this point, the credentials are ready for use.
+
+### Step 2: Configure the `hadoop.security.credential.provider.path` property
+
+The URL to the provider must be set in the configuration property
+`hadoop.security.credential.provider.path`, either on the command line or
+in XML configuration files.
+
+```xml
 <property>
   <name>hadoop.security.credential.provider.path</name>
-  <value>localjceks://file/home/lmccay/aws.jceks</value>
+  <value>jceks://hdfs@nn1.example.com:9001/user/backup/s3.jceks</value>
   <description>Path to interrogate for protected credentials.</description>
 </property>
 ```
-###### distcp
 
-```
-% hadoop distcp
-    [-D hadoop.security.credential.provider.path=localjceks://file/home/lmccay/aws.jceks]
-    hdfs://hostname:9001/user/lmccay/007020615 s3a://lmccay/
-```
-
-NOTE: You may optionally add the provider path property to the distcp command line instead of
-added job specific configuration to a generic core­site.xml. The square brackets above illustrate
-this capability.
-
-### Other properties
-
-    <property>
-      <name>fs.s3a.connection.maximum</name>
-      <value>15</value>
-      <description>Controls the maximum number of simultaneous connections to S3.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.connection.ssl.enabled</name>
-      <value>true</value>
-      <description>Enables or disables SSL connections to S3.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.endpoint</name>
-      <description>AWS S3 endpoint to connect to. An up-to-date list is
-        provided in the AWS Documentation: regions and endpoints. Without this
-        property, the standard region (s3.amazonaws.com) is assumed.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3a.path.style.access</name>
-      <value>false</value>
-      <description>Enable S3 path style access ie disabling the default virtual hosting behaviour.
-        Useful for S3A-compliant storage providers as it removes the need to set up DNS for virtual hosting.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3a.proxy.host</name>
-      <description>Hostname of the (optional) proxy server for S3 connections.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.proxy.port</name>
-      <description>Proxy server port. If this property is not set
-        but fs.s3a.proxy.host is, port 80 or 443 is assumed (consistent with
-        the value of fs.s3a.connection.ssl.enabled).</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.proxy.username</name>
-      <description>Username for authenticating with proxy server.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.proxy.password</name>
-      <description>Password for authenticating with proxy server.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.proxy.domain</name>
-      <description>Domain for authenticating with proxy server.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.proxy.workstation</name>
-      <description>Workstation for authenticating with proxy server.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.attempts.maximum</name>
-      <value>20</value>
-      <description>How many times we should retry commands on transient errors.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.connection.establish.timeout</name>
-      <value>5000</value>
-      <description>Socket connection setup timeout in milliseconds.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.connection.timeout</name>
-      <value>200000</value>
-      <description>Socket connection timeout in milliseconds.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.paging.maximum</name>
-      <value>5000</value>
-      <description>How many keys to request from S3 when doing
-         directory listings at a time.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.threads.max</name>
-      <value>10</value>
-      <description> Maximum number of concurrent active (part)uploads,
-      which each use a thread from the threadpool.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.socket.send.buffer</name>
-      <value>8192</value>
-      <description>Socket send buffer hint to amazon connector. Represented in bytes.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.socket.recv.buffer</name>
-      <value>8192</value>
-      <description>Socket receive buffer hint to amazon connector. Represented in bytes.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.threads.keepalivetime</name>
-      <value>60</value>
-      <description>Number of seconds a thread can be idle before being
-        terminated.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.max.total.tasks</name>
-      <value>5</value>
-      <description>Number of (part)uploads allowed to the queue before
-      blocking additional uploads.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.multipart.size</name>
-      <value>104857600</value>
-      <description>How big (in bytes) to split upload or copy operations up into.
-      This also controls the partition size in renamed files, as rename() involves
-      copying the source file(s)</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.multipart.threshold</name>
-      <value>2147483647</value>
-      <description>Threshold before uploads or copies use parallel multipart operations.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.multiobjectdelete.enable</name>
-      <value>true</value>
-      <description>When enabled, multiple single-object delete requests are replaced by
-        a single 'delete multiple objects'-request, reducing the number of requests.
-        Beware: legacy S3-compatible object stores might not support this request.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3a.acl.default</name>
-      <description>Set a canned ACL for newly created and copied objects. Value may be private,
-         public-read, public-read-write, authenticated-read, log-delivery-write,
-         bucket-owner-read, or bucket-owner-full-control.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.multipart.purge</name>
-      <value>false</value>
-      <description>True if you want to purge existing multipart uploads that may not have been
-         completed/aborted correctly</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.multipart.purge.age</name>
-      <value>86400</value>
-      <description>Minimum age in seconds of multipart uploads to purge</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.signing-algorithm</name>
-      <description>Override the default signing algorithm so legacy
-        implementations can still be used</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.server-side-encryption-algorithm</name>
-      <description>Specify a server-side encryption algorithm for s3a: file system.
-        Unset by default, and the only other currently allowable value is AES256.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3a.buffer.dir</name>
-      <value>${hadoop.tmp.dir}/s3a</value>
-      <description>Comma separated list of directories that will be used to buffer file
-        uploads to. No effect if fs.s3a.fast.upload is true.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.block.size</name>
-      <value>33554432</value>
-      <description>Block size to use when reading files using s3a: file system.
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3a.user.agent.prefix</name>
-      <value></value>
-      <description>
-        Sets a custom value that will be prepended to the User-Agent header sent in
-        HTTP requests to the S3 back-end by S3AFileSystem.  The User-Agent header
-        always includes the Hadoop version number followed by a string generated by
-        the AWS SDK.  An example is "User-Agent: Hadoop 2.8.0, aws-sdk-java/1.10.6".
-        If this optional property is set, then its value is prepended to create a
-        customized User-Agent.  For example, if this configuration property was set
-        to "MyApp", then an example of the resulting User-Agent would be
-        "User-Agent: MyApp, Hadoop 2.8.0, aws-sdk-java/1.10.6".
-      </description>
-    </property>
-
-    <property>
-      <name>fs.s3a.impl</name>
-      <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
-      <description>The implementation class of the S3A Filesystem</description>
-    </property>
-
-    <property>
-      <name>fs.AbstractFileSystem.s3a.impl</name>
-      <value>org.apache.hadoop.fs.s3a.S3A</value>
-      <description>The implementation class of the S3A AbstractFileSystem.</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.readahead.range</name>
-      <value>65536</value>
-      <description>Bytes to read ahead during a seek() before closing and
-      re-opening the S3 HTTP connection. This option will be overridden if
-      any call to setReadahead() is made to an open stream.</description>
-    </property>
-
-### S3AFastOutputStream
- **Warning: NEW in hadoop 2.7. UNSTABLE, EXPERIMENTAL: use at own risk**
-
-    <property>
-      <name>fs.s3a.fast.upload</name>
-      <value>false</value>
-      <description>Upload directly from memory instead of buffering to
-      disk first. Memory usage and parallelism can be controlled as up to
-      fs.s3a.multipart.size memory is consumed for each (part)upload actively
-      uploading (fs.s3a.threads.max) or queueing (fs.s3a.max.total.tasks)</description>
-    </property>
-
-    <property>
-      <name>fs.s3a.fast.buffer.size</name>
-      <value>1048576</value>
-      <description>Size (in bytes) of initial memory buffer allocated for an
-      upload. No effect if fs.s3a.fast.upload is false.</description>
-    </property>
-
-Writes are buffered in memory instead of to a file on local disk. This
-removes the throughput bottleneck of the local disk write and read cycle
-before starting the actual upload. Furthermore, it allows handling files that
-are larger than the remaining local disk space.
-
-However, non-trivial memory tuning is needed for optimal results and careless
-settings could cause memory overflow. Up to `fs.s3a.threads.max` parallel
-(part)uploads are active. Furthermore, up to `fs.s3a.max.total.tasks`
-additional part(uploads) can be waiting (and thus memory buffers are created).
-The memory buffer is uploaded as a single upload if it is not larger than
-`fs.s3a.multipart.threshold`. Else, a multi-part upload is initiated and
-parts of size `fs.s3a.multipart.size` are used to protect against overflowing
-the available memory. These settings should be tuned to the envisioned
-workflow (some large files, many small ones, ...) and the physical
-limitations of the machine and cluster (memory, network bandwidth).
-
-### S3A Experimental "fadvise" input policy support
-
-**Warning: EXPERIMENTAL: behavior may change in future**
-
-The S3A Filesystem client supports the notion of input policies, similar
-to that of the Posix `fadvise()` API call. This tunes the behavior of the S3A
-client to optimise HTTP GET requests for the different use cases.
-
-#### "sequential" (default)
-
-Read through the file, possibly with some short forward seeks.
-
-The whole document is requested in a single HTTP request; forward seeks
-within the readahead range are supported by skipping over the intermediate
-data.
-
-This is leads to maximum read throughput —but with very expensive
-backward seeks.
-
-
-#### "normal"
-
-This is currently the same as "sequential".
-
-#### "random"
-
-Optimised for random IO, specifically the Hadoop `PositionedReadable`
-operations —though `seek(offset); read(byte_buffer)` also benefits.
-
-Rather than ask for the whole file, the range of the HTTP request is
-set to that that of the length of data desired in the `read` operation
-(Rounded up to the readahead value set in `setReadahead()` if necessary).
-
-By reducing the cost of closing existing HTTP requests, this is
-highly efficient for file IO accessing a binary file
-through a series of `PositionedReadable.read()` and `PositionedReadable.readFully()`
-calls. Sequential reading of a file is expensive, as now many HTTP requests must
-be made to read through the file.
-
-For operations simply reading through a file: copying, distCp, reading
-Gzipped or other compressed formats, parsing .csv files, etc, the `sequential`
-policy is appropriate. This is the default: S3A does not need to be configured.
-
-For the specific case of high-performance random access IO, the `random` policy
-may be considered. The requirements are:
-
-* Data is read using the `PositionedReadable` API.
-* Long distance (many MB) forward seeks
-* Backward seeks as likely as forward seeks.
-* Little or no use of single character `read()` calls or small `read(buffer)`
-calls.
-* Applications running close to the S3 data store. That is: in EC2 VMs in
-the same datacenter as the S3 instance.
-
-The desired fadvise policy must be set in the configuration option
-`fs.s3a.experimental.input.fadvise` when the filesystem instance is created.
-That is: it can only be set on a per-filesystem basis, not on a per-file-read
-basis.
-
-    <property>
-      <name>fs.s3a.experimental.input.fadvise</name>
-      <value>random</value>
-      <description>Policy for reading files.
-       Values: 'random', 'sequential' or 'normal'
-       </description>
-    </property>
-
-[HDFS-2744](https://issues.apache.org/jira/browse/HDFS-2744),
-*Extend FSDataInputStream to allow fadvise* proposes adding a public API
-to set fadvise policies on input streams. Once implemented,
-this will become the supported mechanism used for configuring the input IO policy.
-
-## Troubleshooting S3A
-
-Common problems working with S3A are
-
-1. Classpath
-1. Authentication
-1. S3 Inconsistency side-effects
-
-Classpath is usually the first problem. For the S3x filesystem clients,
-you need the Hadoop-specific filesystem clients, third party S3 client libraries
-compatible with the Hadoop code, and any dependent libraries compatible with
-Hadoop and the specific JVM.
-
-The classpath must be set up for the process talking to S3: if this is code
-running in the Hadoop cluster, the JARs must be on that classpath. That
-includes `distcp`.
-
-
-### `ClassNotFoundException: org.apache.hadoop.fs.s3a.S3AFileSystem`
-
-(or `org.apache.hadoop.fs.s3native.NativeS3FileSystem`, `org.apache.hadoop.fs.s3.S3FileSystem`).
-
-These are the Hadoop classes, found in the `hadoop-aws` JAR. An exception
-reporting one of these classes is missing means that this JAR is not on
-the classpath.
-
-### `ClassNotFoundException: com.amazonaws.services.s3.AmazonS3Client`
-
-(or other `com.amazonaws` class.)
-`
-This means that one or more of the `aws-*-sdk` JARs are missing. Add them.
-
-### Missing method in AWS class
-
-This can be triggered by incompatibilities between the AWS SDK on the classpath
-and the version which Hadoop was compiled with.
-
-The AWS SDK JARs change their signature enough between releases that the only
-way to safely update the AWS SDK version is to recompile Hadoop against the later
-version.
-
-There's nothing the Hadoop team can do here: if you get this problem, then sorry,
-but you are on your own. The Hadoop developer team did look at using reflection
-to bind to the SDK, but there were too many changes between versions for this
-to work reliably. All it did was postpone version compatibility problems until
-the specific codepaths were executed at runtime —this was actually a backward
-step in terms of fast detection of compatibility problems.
-
-### Missing method in a Jackson class
-
-This is usually caused by version mismatches between Jackson JARs on the
-classpath. All Jackson JARs on the classpath *must* be of the same version.
-
-
-### Authentication failure
-
-One authentication problem is caused by classpath mismatch; see the joda time
-issue above.
-
-Otherwise, the general cause is: you have the wrong credentials —or somehow
-the credentials were not readable on the host attempting to read or write
-the S3 Bucket.
-
-There's not much that Hadoop can do/does for diagnostics here,
-though enabling debug logging for the package `org.apache.hadoop.fs.s3a`
-can help.
-
-There is also some logging in the AWS libraries which provide some extra details.
-In particular, the setting the log `com.amazonaws.auth.AWSCredentialsProviderChain`
-to log at DEBUG level will mean the invidual reasons for the (chained)
-authentication clients to fail will be printed.
-
-Otherwise, try to use the AWS command line tools with the same credentials.
-If you set the environment variables, you can take advantage of S3A's support
-of environment-variable authentication by attempting to use the `hdfs fs` command
-to read or write data on S3. That is: comment out the `fs.s3a` secrets and rely on
-the environment variables.
-
-S3 Frankfurt is a special case. It uses the V4 authentication API.
-
-### Authentication failures running on Java 8u60+
-
-A change in the Java 8 JVM broke some of the `toString()` string generation
-of Joda Time 2.8.0, which stopped the amazon s3 client from being able to
-generate authentication headers suitable for validation by S3.
-
-Fix: make sure that the version of Joda Time is 2.8.1 or later.
-
-## Visible S3 Inconsistency
-
-Amazon S3 is *an eventually consistent object store*. That is: not a filesystem.
-
-It offers read-after-create consistency: a newly created file is immediately
-visible. Except, there is a small quirk: a negative GET may be cached, such
-that even if an object is immediately created, the fact that there "wasn't"
-an object is still remembered.
-
-That means the following sequence on its own will be consistent
-```
-touch(path) -> getFileStatus(path)
+Because this property only supplies the path to the secrets file, the configuration
+option itself is no longer a sensitive item.
+
+The property `hadoop.security.credential.provider.path` is global to all
+filesystems and secrets.
+There is another property, `fs.s3a.security.credential.provider.path`
+which only lists credential providers for S3A filesystems.
+The two properties are combined into one, with the list of providers in the
+`fs.s3a.` property taking precedence
+over that of the `hadoop.security` list (i.e. they are prepended to the common list).
+
+```xml
+<property>
+  <name>fs.s3a.security.credential.provider.path</name>
+  <value />
+  <description>
+    Optional comma separated list of credential providers, a list
+    which is prepended to that set in hadoop.security.credential.provider.path
+  </description>
+</property>
 ```
 
-But this sequence *may* be inconsistent.
+This was added to support binding different credential providers on a per
+bucket basis, without adding alternative secrets in the credential list.
+However, some applications (e.g Hive) prevent the list of credential providers
+from being dynamically updated by users. As per-bucket secrets are now supported,
+it is better to include per-bucket keys in JCEKS files and other sources
+of credentials.
+
+### Using secrets from credential providers
+
+Once the provider is set in the Hadoop configuration, Hadoop commands
+work exactly as if the secrets were in an XML file.
+
+```bash
+hadoop distcp \
+    hdfs://nn1.example.com:9001/user/backup/007020615 s3a://glacier1/
+
+hadoop fs -ls s3a://glacier1/
+```
+
+The path to the provider can also be set on the command line:
+
+```bash
+hadoop distcp \
+    -D hadoop.security.credential.provider.path=jceks://hdfs@nn1.example.com:9001/user/backup/s3.jceks \
+    hdfs://nn1.example.com:9001/user/backup/007020615 s3a://glacier1/
+
+hadoop fs \
+  -D fs.s3a.security.credential.provider.path=jceks://hdfs@nn1.example.com:9001/user/backup/s3.jceks \
+  -ls s3a://glacier1/
+```
+
+Because the provider path is not itself a sensitive secret, there is no risk
+from placing its declaration on the command line.
+
+
+## <a name="general_configuration"></a>General S3A Client configuration
+
+All S3A client options are configured with options with the prefix `fs.s3a.`.
+
+The client supports [Per-bucket configuration](#per_bucket_configuration)
+to allow different buckets to override the shared settings. This is commonly
+used to change the endpoint, encryption and authentication mechanisms of buckets.
+and various minor options.
+
+Here are some the S3A properties for use in production.
+
+* See [Performance](./performance.html) for performance related settings including
+  thread and network pool options.
+* Testing-related options are covered in [Testing](./testing.html).
+
+
+```xml
+
+<property>
+  <name>fs.s3a.aws.credentials.provider</name>
+  <value>
+    org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider,
+    org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider,
+    software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider,
+    org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider
+  </value>
+  <description>
+    Comma-separated class names of credential provider classes which implement
+    software.amazon.awssdk.auth.credentials.AwsCredentialsProvider.
+
+    When S3A delegation tokens are not enabled, this list will be used
+    to directly authenticate with S3 and other AWS services.
+    When S3A Delegation tokens are enabled, depending upon the delegation
+    token binding it may be used
+    to communicate wih the STS endpoint to request session/role
+    credentials.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.security.credential.provider.path</name>
+  <value />
+  <description>
+    Optional comma separated list of credential providers, a list
+    which is prepended to that set in hadoop.security.credential.provider.path
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.assumed.role.arn</name>
+  <value />
+  <description>
+    AWS ARN for the role to be assumed.
+    Required if the fs.s3a.aws.credentials.provider contains
+    org.apache.hadoop.fs.s3a.AssumedRoleCredentialProvider
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.assumed.role.session.name</name>
+  <value />
+  <description>
+    Session name for the assumed role, must be valid characters according to
+    the AWS APIs.
+    Only used if AssumedRoleCredentialProvider is the AWS credential provider.
+    If not set, one is generated from the current Hadoop/Kerberos username.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.assumed.role.policy</name>
+  <value/>
+  <description>
+    JSON policy to apply to the role.
+    Only used if AssumedRoleCredentialProvider is the AWS credential provider.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.assumed.role.session.duration</name>
+  <value>30m</value>
+  <description>
+    Duration of assumed roles before a refresh is attempted.
+    Used when session tokens are requested.
+    Range: 15m to 1h
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.assumed.role.sts.endpoint</name>
+  <value/>
+  <description>
+    AWS Security Token Service Endpoint.
+    If unset, uses the default endpoint.
+    Only used if AssumedRoleCredentialProvider is the AWS credential provider.
+    Used by the AssumedRoleCredentialProvider and in Session and Role delegation
+    tokens.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.assumed.role.sts.endpoint.region</name>
+  <value></value>
+  <description>
+    AWS Security Token Service Endpoint's region;
+    Needed if fs.s3a.assumed.role.sts.endpoint points to an endpoint
+    other than the default one and the v4 signature is used.
+    Used by the AssumedRoleCredentialProvider and in Session and Role delegation
+    tokens.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.assumed.role.credentials.provider</name>
+  <value>org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</value>
+  <description>
+    List of credential providers to authenticate with the STS endpoint and
+    retrieve short-lived role credentials.
+    Only used if AssumedRoleCredentialProvider is the AWS credential provider.
+    If unset, uses "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider".
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.delegation.token.binding</name>
+  <value></value>
+  <description>
+    The name of a class to provide delegation tokens support in S3A.
+    If unset: delegation token support is disabled.
+
+    Note: for job submission to actually collect these tokens,
+    Kerberos must be enabled.
+
+    Bindings available in hadoop-aws are:
+    org.apache.hadoop.fs.s3a.auth.delegation.SessionTokenBinding
+    org.apache.hadoop.fs.s3a.auth.delegation.FullCredentialsTokenBinding
+    org.apache.hadoop.fs.s3a.auth.delegation.RoleTokenBinding
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.connection.maximum</name>
+  <value>96</value>
+  <description>Controls the maximum number of simultaneous connections to S3.
+    This must be bigger than the value of fs.s3a.threads.max so as to stop
+    threads being blocked waiting for new HTTPS connections.
+    Why not equal? The AWS SDK transfer manager also uses these connections.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.attempts.maximum</name>
+  <value>5</value>
+  <description>
+    Number of times the AWS client library should retry errors before
+    escalating to the S3A code: {@value}.
+    The S3A connector does its own selective retries; the only time the AWS
+    SDK operations are not wrapped is during multipart copy via the AWS SDK
+    transfer manager.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.socket.send.buffer</name>
+  <value>8192</value>
+  <description>Socket send buffer hint to amazon connector. Represented in bytes.</description>
+</property>
+
+<property>
+  <name>fs.s3a.socket.recv.buffer</name>
+  <value>8192</value>
+  <description>Socket receive buffer hint to amazon connector. Represented in bytes.</description>
+</property>
+
+<property>
+  <name>fs.s3a.paging.maximum</name>
+  <value>5000</value>
+  <description>How many keys to request from S3 when doing
+     directory listings at a time.</description>
+</property>
+
+<property>
+  <name>fs.s3a.multipart.size</name>
+  <value>64M</value>
+  <description>How big (in bytes) to split upload or copy operations up into.
+    A suffix from the set {K,M,G,T,P} may be used to scale the numeric value.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.multipart.threshold</name>
+  <value>128M</value>
+  <description>How big (in bytes) to split upload or copy operations up into.
+    This also controls the partition size in renamed files, as rename() involves
+    copying the source file(s).
+    A suffix from the set {K,M,G,T,P} may be used to scale the numeric value.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.multiobjectdelete.enable</name>
+  <value>true</value>
+  <description>When enabled, multiple single-object delete requests are replaced by
+    a single 'delete multiple objects'-request, reducing the number of requests.
+    Beware: legacy S3-compatible object stores might not support this request.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.acl.default</name>
+  <description>Set a canned ACL for newly created and copied objects. Value may be Private,
+      PublicRead, PublicReadWrite, AuthenticatedRead, LogDeliveryWrite, BucketOwnerRead,
+      or BucketOwnerFullControl.
+    If set, caller IAM role must have "s3:PutObjectAcl" permission on the bucket.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.multipart.purge</name>
+  <value>false</value>
+  <description>Deprecated. True if you want to purge existing multipart uploads that may not have been
+    completed/aborted correctly. The corresponding purge age is defined in
+    fs.s3a.multipart.purge.age.
+    If set, when the filesystem is instantiated then all outstanding uploads
+    older than the purge age will be terminated -across the entire bucket.
+    This will impact multipart uploads by other applications and users. so should
+    be used sparingly, with an age value chosen to stop failed uploads, without
+    breaking ongoing operations.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.multipart.purge.age</name>
+  <value>86400</value>
+  <description>Deprecated. Minimum age in seconds of multipart uploads to purge
+    on startup if "fs.s3a.multipart.purge" is true
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.encryption.algorithm</name>
+  <description>Specify a server-side encryption or client-side
+    encryption algorithm for s3a: file system. Unset by default. It supports the
+    following values: 'AES256' (for SSE-S3), 'SSE-KMS', 'SSE-C', and 'CSE-KMS'
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.encryption.key</name>
+  <description>Specific encryption key to use if fs.s3a.encryption.algorithm
+    has been set to 'SSE-KMS', 'SSE-C' or 'CSE-KMS'. In the case of SSE-C
+    , the value of this property should be the Base64 encoded key. If you are
+    using SSE-KMS and leave this property empty, you'll be using your default's
+    S3 KMS key, otherwise you should set this property to the specific KMS key
+    id. In case of 'CSE-KMS' this value needs to be the AWS-KMS Key ID
+    generated from AWS console.
+  </description>
+</property>
+
+<property>
+    <name>fs.s3a.encryption.context</name>
+    <description>Specific encryption context to use if fs.s3a.encryption.algorithm
+      has been set to 'SSE-KMS' or 'DSSE-KMS'. The value of this property is a set
+      of non-secret comma-separated key-value pairs of additional contextual
+      information about the data that are separated by equal operator (=).
+    </description>
+</property>
+
+<property>
+  <name>fs.s3a.signing-algorithm</name>
+  <description>Override the default signing algorithm so legacy
+    implementations can still be used</description>
+</property>
+
+<property>
+  <name>fs.s3a.block.size</name>
+  <value>32M</value>
+  <description>Block size to use when reading files using s3a: file system.
+    A suffix from the set {K,M,G,T,P} may be used to scale the numeric value.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.buffer.dir</name>
+  <value>${env.LOCAL_DIRS:-${hadoop.tmp.dir}}/s3a</value>
+  <description>Comma separated list of directories that will be used to buffer file
+    uploads to.
+    Yarn container path will be used as default value on yarn applications,
+    otherwise fall back to hadoop.tmp.dir
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.fast.upload.buffer</name>
+  <value>disk</value>
+  <description>
+    The buffering mechanism to for data being written.
+    Values: disk, array, bytebuffer.
+
+    "disk" will use the directories listed in fs.s3a.buffer.dir as
+    the location(s) to save data prior to being uploaded.
+
+    "array" uses arrays in the JVM heap
+
+    "bytebuffer" uses off-heap memory within the JVM.
+
+    Both "array" and "bytebuffer" will consume memory in a single stream up to the number
+    of blocks set by:
+
+        fs.s3a.multipart.size * fs.s3a.fast.upload.active.blocks.
+
+    If using either of these mechanisms, keep this value low
+
+    The total number of threads performing work across all threads is set by
+    fs.s3a.threads.max, with fs.s3a.max.total.tasks values setting the number of queued
+    work items.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.fast.upload.active.blocks</name>
+  <value>4</value>
+  <description>
+    Maximum Number of blocks a single output stream can have
+    active (uploading, or queued to the central FileSystem
+    instance's pool of queued operations.
+
+    This stops a single stream overloading the shared thread pool.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.readahead.range</name>
+  <value>64K</value>
+  <description>Bytes to read ahead during a seek() before closing and
+    re-opening the S3 HTTP connection. This option will be overridden if
+    any call to setReadahead() is made to an open stream.
+    A suffix from the set {K,M,G,T,P} may be used to scale the numeric value.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.user.agent.prefix</name>
+  <value></value>
+  <description>
+    Sets a custom value that will be prepended to the User-Agent header sent in
+    HTTP requests to the S3 back-end by S3AFileSystem.  The User-Agent header
+    always includes the Hadoop version number followed by a string generated by
+    the AWS SDK.  An example is "User-Agent: Hadoop 2.8.0, aws-sdk-java/1.10.6".
+    If this optional property is set, then its value is prepended to create a
+    customized User-Agent.  For example, if this configuration property was set
+    to "MyApp", then an example of the resulting User-Agent would be
+    "User-Agent: MyApp, Hadoop 2.8.0, aws-sdk-java/1.10.6".
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.impl</name>
+  <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
+  <description>The implementation class of the S3A Filesystem</description>
+</property>
+
+<property>
+  <name>fs.s3a.retry.limit</name>
+  <value>7</value>
+  <description>
+    Number of times to retry any repeatable S3 client request on failure,
+    excluding throttling requests.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.retry.interval</name>
+  <value>500ms</value>
+  <description>
+    Initial retry interval when retrying operations for any reason other
+    than S3 throttle errors.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.retry.throttle.limit</name>
+  <value>20</value>
+  <description>
+    Number of times to retry any throttled request.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.retry.throttle.interval</name>
+  <value>100ms</value>
+  <description>
+    Initial between retry attempts on throttled requests, +/- 50%. chosen at random.
+    i.e. for an intial value of 3000ms, the initial delay would be in the range 1500ms to 4500ms.
+    Backoffs are exponential; again randomness is used to avoid the thundering heard problem.
+    500ms is the default value used by the AWS S3 Retry policy.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.committer.name</name>
+  <value>file</value>
+  <description>
+    Committer to create for output to S3A, one of:
+    "file", "directory", "partitioned", "magic".
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.committer.magic.enabled</name>
+  <value>true</value>
+  <description>
+    Enable support in the S3A filesystem for the "Magic" committer.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.committer.threads</name>
+  <value>8</value>
+  <description>
+    Number of threads in committers for parallel operations on files
+    (upload, commit, abort, delete...)
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.committer.staging.tmp.path</name>
+  <value>tmp/staging</value>
+  <description>
+    Path in the cluster filesystem for temporary data.
+    This is for HDFS, not the local filesystem.
+    It is only for the summary data of each file, not the actual
+    data being committed.
+    Using an unqualified path guarantees that the full path will be
+    generated relative to the home directory of the user creating the job,
+    hence private (assuming home directory permissions are secure).
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.committer.staging.unique-filenames</name>
+  <value>true</value>
+  <description>
+    Option for final files to have a unique name through job attempt info,
+    or the value of fs.s3a.committer.staging.uuid
+    When writing data with the "append" conflict option, this guarantees
+    that new data will not overwrite any existing data.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.committer.staging.conflict-mode</name>
+  <value>append</value>
+  <description>
+    Staging committer conflict resolution policy.
+    Supported: "fail", "append", "replace".
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.committer.abort.pending.uploads</name>
+  <value>true</value>
+  <description>
+    Should the committers abort all pending uploads to the destination
+    directory?
+
+    Set to false if more than one job is writing to the same directory tree.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.list.version</name>
+  <value>2</value>
+  <description>
+    Select which version of the S3 SDK's List Objects API to use.  Currently
+    support 2 (default) and 1 (older API).
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.etag.checksum.enabled</name>
+  <value>false</value>
+  <description>
+    Should calls to getFileChecksum() return the etag value of the remote
+    object.
+    WARNING: if enabled, distcp operations between HDFS and S3 will fail unless
+    -skipcrccheck is set.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.change.detection.source</name>
+  <value>etag</value>
+  <description>
+    Select which S3 object attribute to use for change detection.
+    Currently support 'etag' for S3 object eTags and 'versionid' for
+    S3 object version IDs.  Use of version IDs requires object versioning to be
+    enabled for each S3 bucket utilized.  Object versioning is disabled on
+    buckets by default. When version ID is used, the buckets utilized should
+    have versioning enabled before any data is written.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.change.detection.mode</name>
+  <value>server</value>
+  <description>
+    Determines how change detection is applied to alert to inconsistent S3
+    objects read during or after an overwrite. Value 'server' indicates to apply
+    the attribute constraint directly on GetObject requests to S3. Value 'client'
+    means to do a client-side comparison of the attribute value returned in the
+    response.  Value 'server' would not work with third-party S3 implementations
+    that do not support these constraints on GetObject. Values 'server' and
+    'client' generate RemoteObjectChangedException when a mismatch is detected.
+    Value 'warn' works like 'client' but generates only a warning.  Value 'none'
+    will ignore change detection completely.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.change.detection.version.required</name>
+  <value>true</value>
+  <description>
+    Determines if S3 object version attribute defined by
+    fs.s3a.change.detection.source should be treated as required.  If true and the
+    referred attribute is unavailable in an S3 GetObject response,
+    NoVersionAttributeException is thrown.  Setting to 'true' is encouraged to
+    avoid potential for inconsistent reads with third-party S3 implementations or
+    against S3 buckets that have object versioning disabled.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.ssl.channel.mode</name>
+  <value>default_jsse</value>
+  <description>
+    If secure connections to S3 are enabled, configures the SSL
+    implementation used to encrypt connections to S3. Supported values are:
+    "default_jsse", "default_jsse_with_gcm", "default", and "openssl".
+    "default_jsse" uses the Java Secure Socket Extension package (JSSE).
+    However, when running on Java 8, the GCM cipher is removed from the list
+    of enabled ciphers. This is due to performance issues with GCM in Java 8.
+    "default_jsse_with_gcm" uses the JSSE with the default list of cipher
+    suites. "default_jsse_with_gcm" is equivalent to the behavior prior to
+    this feature being introduced. "default" attempts to use OpenSSL rather
+    than the JSSE for SSL encryption, if OpenSSL libraries cannot be loaded,
+    it falls back to the "default_jsse" behavior. "openssl" attempts to use
+    OpenSSL as well, but fails if OpenSSL libraries cannot be loaded.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.downgrade.syncable.exceptions</name>
+  <value>true</value>
+  <description>
+    Warn but continue when applications use Syncable.hsync when writing
+    to S3A.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.create.checksum.algorithm</name>
+  <description>
+    Indicates the algorithm used to create the checksum for the object
+    to be uploaded to S3. Unset by default. It supports the following values:
+    'CRC32', 'CRC32C', 'SHA1', 'SHA256', "CRC64_NVME", "none"
+    The CRC64_NVME option requires aws-crt on the classpath, and is still
+    tangibly slower than CRC32C, which has its own instruction on x86 and ARM.
+  </description>
+</property>
+
+<!--
+The switch to turn S3A auditing on or off.
+-->
+<property>
+  <name>fs.s3a.audit.enabled</name>
+  <value>true</value>
+  <description>
+    Should auditing of S3A requests be enabled?
+  </description>
+</property>
 
 ```
-getFileStatus(path) -> touch(path) -> getFileStatus(path)
+
+### Configuring Custom Headers for AWS Service Clients
+
+You can set custom headers for S3 and STS requests. These headers are set on client level, and will be sent for all requests made to these services.
+
+**Configuration Properties:**
+- `fs.s3a.client.s3.custom.headers`: Custom headers for S3 service requests.
+- `fs.s3a.client.sts.custom.headers`: Sets custom headers for all requests to AWS STS.
+
+**Header Format:**
+Custom headers should be specified as key-value pairs, separated by `=`. Multiple values for a single header can be separated by `;`. Multiple headers can be separated by `,`.
+
+
+```xml
+<property>
+    <name>fs.s3a.client.s3.custom.headers</name>
+    <value>Header1=Value1</value>
+</property>
+
+<property>
+    <name>fs.s3a.client.sts.custom.headers</name>
+    <value>Header1=Value1;Value2,Header2=Value1</value>
+</property>
 ```
 
-A common source of visible inconsistencies is that the S3 metadata
-database —the part of S3 which serves list requests— is updated asynchronously.
-Newly added or deleted files may not be visible in the index, even though direct
-operations on the object (`HEAD` and `GET`) succeed.
+## <a name="retry_and_recovery"></a>Retry and Recovery
+
+The S3A client makes a best-effort attempt at recovering from network failures;
+this section covers the details of what it does.
 
-In S3A, that means the `getFileStatus()` and `open()` operations are more likely
-to be consistent with the state of the object store than any directory list
-operations (`listStatus()`, `listFiles()`, `listLocatedStatus()`,
-`listStatusIterator()`).
+The S3A divides exceptions returned by the AWS SDK into different categories,
+and chooses a different retry policy based on their type and whether or
+not the failing operation is idempotent.
 
+
+### Unrecoverable Problems: Fail Fast
 
-### `FileNotFoundException` even though the file was just written.
-
-This can be a sign of consistency problems. It may also surface if there is some
-asynchronous file write operation still in progress in the client: the operation
-has returned, but the write has not yet completed. While the S3A client code
-does block during the `close()` operation, we suspect that asynchronous writes
-may be taking place somewhere in the stack —this could explain why parallel tests
-fail more often than serialized tests.
-
-### File not found in a directory listing, even though `getFileStatus()` finds it
-
-(Similarly: deleted file found in listing, though `getFileStatus()` reports
-that it is not there)
-
-This is a visible sign of updates to the metadata server lagging
-behind the state of the underlying filesystem.
-
-
-### File not visible/saved
-
-The files in an object store are not visible until the write has been completed.
-In-progress writes are simply saved to a local file/cached in RAM and only uploaded.
-at the end of a write operation. If a process terminated unexpectedly, or failed
-to call the `close()` method on an output stream, the pending data will have
-been lost.
-
-### File `flush()` and `hflush()` calls do not save data to S3A
-
-Again, this is due to the fact that the data is cached locally until the
-`close()` operation. The S3A filesystem cannot be used as a store of data
-if it is required that the data is persisted durably after every
-`flush()/hflush()` call. This includes resilient logging, HBase-style journalling
-and the like. The standard strategy here is to save to HDFS and then copy to S3.
-
-### Other issues
-
-*Performance slow*
-
-S3 is slower to read data than HDFS, even on virtual clusters running on
-Amazon EC2.
-
-* HDFS replicates data for faster query performance
-* HDFS stores the data on the local hard disks, avoiding network traffic
- if the code can be executed on that host. As EC2 hosts often have their
- network bandwidth throttled, this can make a tangible difference.
-* HDFS is significantly faster for many "metadata" operations: listing
-the contents of a directory, calling `getFileStatus()` on path,
-creating or deleting directories.
-* On HDFS, Directory renames and deletes are `O(1)` operations. On
-S3 renaming is a very expensive `O(data)` operation which may fail partway through
-in which case the final state depends on where the copy+ delete sequence was when it failed.
-All the objects are copied, then the original set of objects are deleted, so
-a failure should not lose data —it may result in duplicate datasets.
-* Because the write only begins on a `close()` operation, it may be in the final
-phase of a process where the write starts —this can take so long that some things
-can actually time out.
-* File IO performing many seek calls/positioned read calls will encounter
-performance problems due to the size of the HTTP requests made. On S3a,
-the (experimental) fadvise policy "random" can be set to alleviate this at the
-expense of sequential read performance and bandwidth.
-
-The slow performance of `rename()` surfaces during the commit phase of work,
-including
-
-* The MapReduce FileOutputCommitter.
-* DistCp's rename after copy operation.
-
-Both these operations can be significantly slower when S3 is the destination
-compared to HDFS or other "real" filesystem.
-
-*Improving S3 load-balancing behavior*
-
-Amazon S3 uses a set of front-end servers to provide access to the underlying data.
-The choice of which front-end server to use is handled via load-balancing DNS
-service: when the IP address of an S3 bucket is looked up, the choice of which
-IP address to return to the client is made based on the the current load
-of the front-end servers.
-
-Over time, the load across the front-end changes, so those servers considered
-"lightly loaded" will change. If the DNS value is cached for any length of time,
-your application may end up talking to an overloaded server. Or, in the case
-of failures, trying to talk to a server that is no longer there.
-
-And by default, for historical security reasons in the era of applets,
-the DNS TTL of a JVM is "infinity".
-
-To work with AWS better, set the DNS time-to-live of an application which
-works with S3 to something lower. See [AWS documentation](http://docs.aws.amazon.com/AWSSdkDocsJava/latest/DeveloperGuide/java-dg-jvm-ttl.html).
-
-
-## Testing the S3 filesystem clients
-
-Due to eventual consistency, tests may fail without reason. Transient
-failures, which no longer occur upon rerunning the test, should thus be ignored.
-
-To test the S3* filesystem clients, you need to provide two files
-which pass in authentication details to the test runner
-
-1. `auth-keys.xml`
-1. `core-site.xml`
-
-These are both Hadoop XML configuration files, which must be placed into
-`hadoop-tools/hadoop-aws/src/test/resources`.
-
-### `core-site.xml`
-
-This file pre-exists and sources the configurations created
-under `auth-keys.xml`.
-
-For most purposes you will not need to edit this file unless you
-need to apply a specific, non-default property change during the tests.
-
-### `auth-keys.xml`
-
-The presence of this file triggers the testing of the S3 classes.
-
-Without this file, *none of the tests in this module will be executed*
-
-The XML file must contain all the ID/key information needed to connect
-each of the filesystem clients to the object stores, and a URL for
-each filesystem for its testing.
-
-1. `test.fs.s3n.name` : the URL of the bucket for S3n tests
-1. `test.fs.s3a.name` : the URL of the bucket for S3a tests
-
-The contents of each bucket will be destroyed during the test process:
-do not use the bucket for any purpose other than testing. Furthermore, for
-s3a, all in-progress multi-part uploads to the bucket will be aborted at the
-start of a test (by forcing `fs.s3a.multipart.purge=true`) to clean up the
-temporary state of previously failed tests.
-
-Example:
-
-    <configuration>
-      
-      <property>
-        <name>test.fs.s3n.name</name>
-        <value>s3n://test-aws-s3n/</value>
-      </property>
-    
-      <property>
-        <name>test.fs.s3a.name</name>
-        <value>s3a://test-aws-s3a/</value>
-      </property>
-
-      <property>
-        <name>fs.s3n.awsAccessKeyId</name>
-        <value>DONOTPCOMMITTHISKEYTOSCM</value>
-      </property>
-
-      <property>
-        <name>fs.s3n.awsSecretAccessKey</name>
-        <value>DONOTEVERSHARETHISSECRETKEY!</value>
-      </property>
-
-      <property>
-        <name>fs.s3a.access.key</name>
-        <description>AWS access key ID. Omit for IAM role-based authentication.</description>
-        <value>DONOTCOMMITTHISKEYTOSCM</value>
-      </property>
-  
-      <property>
-        <name>fs.s3a.secret.key</name>
-        <description>AWS secret key. Omit for IAM role-based authentication.</description>
-        <value>DONOTEVERSHARETHISSECRETKEY!</value>
-      </property>
-
-      <property>
-        <name>test.sts.endpoint</name>
-        <description>Specific endpoint to use for STS requests.</description>
-        <value>sts.amazonaws.com</value>
-      </property>
-
-    </configuration>
-
-### File `contract-test-options.xml`
-
-The file `hadoop-tools/hadoop-aws/src/test/resources/contract-test-options.xml`
-must be created and configured for the test filesystems.
-
-If a specific file `fs.contract.test.fs.*` test path is not defined for
-any of the filesystems, those tests will be skipped.
-
-The standard S3 authentication details must also be provided. This can be
-through copy-and-paste of the `auth-keys.xml` credentials, or it can be
-through direct XInclude inclusion.
-
-### s3n://
-
-
-In the file `src/test/resources/contract-test-options.xml`, the filesystem
-name must be defined in the property `fs.contract.test.fs.s3n`.
-The standard configuration options to define the S3N authentication details
-must also be provided.
-
-Example:
-
-      <property>
-        <name>fs.contract.test.fs.s3n</name>
-        <value>s3n://test-aws-s3n/</value>
-      </property>
-
-### s3a://
-
-
-In the file `src/test/resources/contract-test-options.xml`, the filesystem
-name must be defined in the property `fs.contract.test.fs.s3a`.
-The standard configuration options to define the S3N authentication details
-must also be provided.
-
-Example:
-
-    <property>
-      <name>fs.contract.test.fs.s3a</name>
-      <value>s3a://test-aws-s3a/</value>
-    </property>
-
-### Complete example of `contract-test-options.xml`
-
-
-
-    <?xml version="1.0"?>
-    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
-    <!--
-      ~ Licensed to the Apache Software Foundation (ASF) under one
-      ~  or more contributor license agreements.  See the NOTICE file
-      ~  distributed with this work for additional information
-      ~  regarding copyright ownership.  The ASF licenses this file
-      ~  to you under the Apache License, Version 2.0 (the
-      ~  "License"); you may not use this file except in compliance
-      ~  with the License.  You may obtain a copy of the License at
-      ~
-      ~       http://www.apache.org/licenses/LICENSE-2.0
-      ~
-      ~  Unless required by applicable law or agreed to in writing, software
-      ~  distributed under the License is distributed on an "AS IS" BASIS,
-      ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-      ~  See the License for the specific language governing permissions and
-      ~  limitations under the License.
-      -->
-    
-    <configuration>
-    
-      <include xmlns="http://www.w3.org/2001/XInclude"
-        href="/home/testuser/.ssh/auth-keys.xml"/>
-    
-      <property>
-        <name>fs.contract.test.fs.s3a</name>
-        <value>s3a://test-aws-s3a/</value>
-      </property>
-
-      <property>
-        <name>fs.contract.test.fs.s3n</name>
-        <value>s3n://test-aws-s3n/</value>
-      </property>
-
-    </configuration>
-
-This example pulls in the `~/.ssh/auth-keys.xml` file for the credentials.
-This provides one single place to keep the keys up to date —and means
-that the file `contract-test-options.xml` does not contain any
-secret credentials itself. As the auth keys XML file is kept out of the
-source code tree, it is not going to get accidentally committed.
-
-### Running Tests against non-AWS storage infrastructures
-
-### S3A session tests
-
-The test `TestS3ATemporaryCredentials` requests a set of temporary
-credentials from the STS service, then uses them to authenticate with S3.
-
-If an S3 implementation does not support STS, then the functional test
-cases must be disabled:
-
-        <property>
-          <name>test.fs.s3a.sts.enabled</name>
-          <value>false</value>
-        </property>
-
-These tests reqest a temporary set of credentials from the STS service endpoint.
-An alternate endpoint may be defined in `test.fs.s3a.sts.endpoint`.
-
-        <property>
-          <name>test.fs.s3a.sts.endpoint</name>
-          <value>https://sts.example.org/</value>
-        </property>
-
-The default is ""; meaning "use the amazon default value".
-
-#### CSV Data source
-
-The `TestS3AInputStreamPerformance` tests require read access to a multi-MB
-text file. The default file for these tests is one published by amazon,
-[s3a://landsat-pds.s3.amazonaws.com/scene_list.gz](http://landsat-pds.s3.amazonaws.com/scene_list.gz).
-This is a gzipped CSV index of other files which amazon serves for open use.
-
-The path to this object is set in the option `fs.s3a.scale.test.csvfile`:
-
-    <property>
-      <name>fs.s3a.scale.test.csvfile</name>
-      <value>s3a://landsat-pds/scene_list.gz</value>
-    </property>
-
-1. If the option is not overridden, the default value is used. This
-is hosted in Amazon's US-east datacenter.
-1. If the property is empty, tests which require it will be skipped.
-1. If the data cannot be read for any reason then the test will fail.
-1. If the property is set to a different path, then that data must be readable
-and "sufficiently" large.
-
-To test on different S3 endpoints, or alternate infrastructures supporting
-the same APIs, the option `fs.s3a.scale.test.csvfile` must therefore be
-set to " ", or an object of at least 10MB is uploaded to the object store, and
-the `fs.s3a.scale.test.csvfile` option set to its path.
-
-      <property>
-        <name>fs.s3a.scale.test.csvfile</name>
-        <value> </value>
-      </property>
-
-
-#### Scale test operation count
-
-Some scale tests perform multiple operations (such as creating many directories).
-
-The exact number of operations to perform is configurable in the option
-`scale.test.operation.count`
-
-      <property>
-        <name>scale.test.operation.count</name>
-        <value>10</value>
-      </property>
-
-Larger values generate more load, and are recommended when testing locally,
-or in batch runs.
-
-Smaller values results in faster test runs, especially when the object
-store is a long way away.
-
-Operations which work on directories have a separate option: this controls
-the width and depth of tests creating recursive directories. Larger
-values create exponentially more directories, with consequent performance
-impact.
-
-      <property>
-        <name>scale.test.directory.count</name>
-        <value>2</value>
-      </property>
-
-DistCp tests targeting S3A support a configurable file size.  The default is
-10 MB, but the configuration value is expressed in KB so that it can be tuned
-smaller to achieve faster test runs.
-
-      <property>
-        <name>scale.test.distcp.file.size.kb</name>
-        <value>10240</value>
-      </property>
-
-### Running the Tests
-
-After completing the configuration, execute the test run through Maven.
-
-    mvn clean test
-
-It's also possible to execute multiple test suites in parallel by enabling the
-`parallel-tests` Maven profile.  The tests spend most of their time blocked on
-network I/O with the S3 service, so running in parallel tends to complete full
-test runs faster.
-
-    mvn -Pparallel-tests clean test
-
-Some tests must run with exclusive access to the S3 bucket, so even with the
-`parallel-tests` profile enabled, several test suites will run in serial in a
-separate Maven execution step after the parallel tests.
-
-By default, the `parallel-tests` profile runs 4 test suites concurrently.  This
-can be tuned by passing the `testsThreadCount` argument.
-
-    mvn -Pparallel-tests -DtestsThreadCount=8 clean test
-
-### Testing against non AWS S3 endpoints.
-
-The S3A filesystem is designed to work with storage endpoints which implement
-the S3 protocols to the extent that the amazon S3 SDK is capable of talking
-to it. We encourage testing against other filesystems and submissions of patches
-which address issues. In particular, we encourage testing of Hadoop release
-candidates, as these third-party endpoints get even less testing than the
-S3 endpoint itself.
-
-
-**Disabling the encryption tests**
-
-If the endpoint doesn't support server-side-encryption, these will fail
-
-      <property>
-        <name>test.fs.s3a.encryption.enabled</name>
-        <value>false</value>
-      </property>
-
-Encryption is only used for those specific test suites with `Encryption` in
-their classname.
+* No object/bucket store: `FileNotFoundException`
+* No access permissions: `AccessDeniedException`
+* Network errors considered unrecoverable (`UnknownHostException`,
+ `NoRouteToHostException`, `AWSRedirectException`).
+* Interruptions: `InterruptedIOException`, `InterruptedException`.
+* Rejected HTTP requests: `InvalidRequestException`
+
+These and others are all considered unrecoverable: S3A will make no attempt to recover
+from them. The AWS SDK itself may retry before the S3A connector sees the exception.
+As an example, the SDK will retry on `UnknownHostException` in case it is a transient
+DNS error.
+
+### Possibly Recoverable Problems: Retry
+
+* Connection timeout: `ConnectTimeoutException`. Timeout before
+setting up a connection to the S3 endpoint (or proxy).
+* HTTP response status code 400, "Bad Request"
+
+The status code 400, Bad Request usually means that the request
+is unrecoverable; it's the generic "No" response. Very rarely it
+does recover, which is why it is in this category, rather than that
+of unrecoverable failures.
+
+These failures will be retried with an exponential sleep interval set in
+`fs.s3a.retry.interval`, up to the limit set in `fs.s3a.retry.limit`.
+
+
+### Only retriable on idempotent operations
+
+Some network failures are considered to be retriable if they occur on
+idempotent operations; there's no way to know if they happened
+after the request was processed by S3.
+
+* `SocketTimeoutException`: general network failure.
+* `EOFException` : the connection was broken while reading data
+* "No response from Server" (443, 444) HTTP responses.
+* Any other AWS client, service or S3 exception.
+
+These failures will be retried with an exponential sleep interval set in
+`fs.s3a.retry.interval`, up to the limit set in `fs.s3a.retry.limit`.
+
+*Important*: DELETE is considered idempotent, hence: `FileSystem.delete()`
+and `FileSystem.rename()` will retry their delete requests on any
+of these failures.
+
+The issue of whether delete should be idempotent has been a source
+of historical controversy in Hadoop.
+
+1. In the absence of any other changes to the object store, a repeated
+DELETE request will eventually result in the named object being deleted;
+it's a no-op if reprocessed. As indeed, is `Filesystem.delete()`.
+1. If another client creates a file under the path, it will be deleted.
+1. Any filesystem supporting an atomic `FileSystem.create(path, overwrite=false)`
+operation to reject file creation if the path exists MUST NOT consider
+delete to be idempotent, because a `create(path, false)` operation will
+only succeed if the first `delete()` call has already succeeded.
+1. And a second, retried `delete()` call could delete the new data.
+
+Because S3 is eventually consistent *and* doesn't support an
+atomic create-no-overwrite operation, the choice is more ambiguous.
+
+S3A considers delete to be idempotent because it is convenient for many workflows,
+including the commit protocols. Just be aware that in the presence of transient failures,
+more things may be deleted than expected.
+
+### Throttled requests from S3
+
+
+When AWS S3 returns a response indicating that requests
+from the caller are being throttled, an exponential back-off with
+an initial interval and a maximum number of requests.
+
+```xml
+<property>
+  <name>fs.s3a.retry.throttle.limit</name>
+  <value>${fs.s3a.attempts.maximum}</value>
+  <description>
+    Number of times to retry any throttled request.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.retry.throttle.interval</name>
+  <value>1000ms</value>
+  <description>
+    Interval between retry attempts on throttled requests.
+  </description>
+</property>
+```
+
+Notes
+
+1. There is also throttling taking place inside the AWS SDK; this is managed
+by the value `fs.s3a.attempts.maximum`.
+1. Throttling events are tracked in the S3A filesystem metrics and statistics.
+1. Amazon KMS may throttle a customer based on the total rate of uses of
+KMS *across all user accounts and applications*.
+
+Throttling of S3 requests is all too common; it is caused by too many clients
+trying to access the same shard of S3 Storage. This generally
+happen if there are too many reads, those being the most common in Hadoop
+applications. This problem is exacerbated by Hive's partitioning
+strategy used when storing data, such as partitioning by year and then month.
+This results in paths with little or no variation at their start, which ends
+up in all the data being stored in the same shard(s).
+
+Here are some expensive operations; the more of these taking place
+against part of an S3 bucket, the more load it experiences.
+* Many clients trying to list directories or calling `getFileStatus` on
+paths (LIST and HEAD requests respectively)
+* The GET requests issued when reading data.
+* Random IO used when reading columnar data (ORC, Parquet) means that many
+more GET requests than a simple one-per-file read.
+* The number of active writes to that part of the S3 bucket.
+
+A special case is when enough data has been written into part of an S3 bucket
+that S3 decides to split the data across more than one shard: this
+is believed to be one by some copy operation which can take some time.
+While this is under way, S3 clients access data under these paths will
+be throttled more than usual.
+
+
+Mitigation strategies
+
+1. Use separate buckets for intermediate data/different applications/roles.
+1. Use significantly different paths for different datasets in the same bucket.
+1. Increase the value of `fs.s3a.retry.throttle.interval` to provide
+longer delays between attempts.
+1. Reduce the parallelism of the queries. The more tasks trying to access
+data in parallel, the more load.
+1. Reduce `fs.s3a.threads.max` to reduce the amount of parallel operations
+performed by clients.
+!. Maybe: increase `fs.s3a.readahead.range` to increase the minimum amount
+of data asked for in every GET request, as well as how much data is
+skipped in the existing stream before aborting it and creating a new stream.
+1. KMS: "consult AWS about increasing your capacity".
+
+
+
+## Handling Read-During-Overwrite
+
+Read-during-overwrite is the condition where a writer overwrites a file while
+a reader has an open input stream on the file.  Depending on configuration,
+the S3AFileSystem may detect this and throw a `RemoteFileChangedException` in
+conditions where the reader's input stream might otherwise silently switch over
+from reading bytes from the original version of the file to reading bytes from
+the new version.
+
+The configurations items controlling this behavior are:
+
+```xml
+<property>
+  <name>fs.s3a.change.detection.source</name>
+  <value>etag</value>
+  <description>
+    Select which S3 object attribute to use for change detection.
+    Currently support 'etag' for S3 object eTags and 'versionid' for
+    S3 object version IDs.  Use of version IDs requires object versioning to be
+    enabled for each S3 bucket utilized.  Object versioning is disabled on
+    buckets by default. When version ID is used, the buckets utilized should
+    have versioning enabled before any data is written.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.change.detection.mode</name>
+  <value>server</value>
+  <description>
+    Determines how change detection is applied to alert to S3 objects
+    rewritten while being read. Value 'server' indicates to apply the attribute
+    constraint directly on GetObject requests to S3. Value 'client' means to do a
+    client-side comparison of the attribute value returned in the response.  Value
+    'server' would not work with third-party S3 implementations that do not
+    support these constraints on GetObject. Values 'server' and 'client' generate
+    RemoteObjectChangedException when a mismatch is detected.  Value 'warn' works
+    like 'client' but generates only a warning.  Value 'none' will ignore change
+    detection completely.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.change.detection.version.required</name>
+  <value>true</value>
+  <description>
+    Determines if S3 object version attribute defined by
+    fs.s3.change.detection.source should be treated as required.  If true and the
+    referred attribute is unavailable in an S3 GetObject response,
+    NoVersionAttributeException is thrown.  Setting to 'true' is encouraged to
+    avoid potential for inconsistent reads with third-party S3 implementations or
+    against S3 buckets that have object versioning disabled.
+  </description>
+</property>
+```
+
+In the default configuration, S3 object eTags are used to detect changes.  When
+the filesystem retrieves a file from S3 using
+[Get Object](https://docs.aws.amazon.com/AmazonS3/latest/API/RESTObjectGET.html),
+it captures the eTag and uses that eTag in an `If-Match` condition on each
+subsequent request.  If a concurrent writer has overwritten the file, the
+'If-Match' condition will fail and a `RemoteFileChangedException` will be thrown.
+
+Even in this default configuration, a new write may not trigger this exception
+on an open reader.  For example, if the reader only reads forward in the file
+then only a single S3 'Get Object' request is made and the full contents of the
+file are streamed from a single response.  An overwrite of the file after the
+'Get Object' request would not be seen at all by a reader with an input stream
+that had already read the first byte.  Seeks backward on the other hand can
+result in new 'Get Object' requests that can trigger the
+`RemoteFileChangedException`.
+
+### Change detection with S3 Versions.
+
+It is possible to switch to using the
+[S3 object version id](https://docs.aws.amazon.com/AmazonS3/latest/dev/ObjectVersioning.html)
+instead of eTag as the change detection mechanism.  Use of this option requires
+object versioning to be enabled on any S3 buckets used by the filesystem.  The
+benefit of using version id instead of eTag is potentially reduced frequency
+of `RemoteFileChangedException`. With object versioning enabled, old versions
+of objects remain available after they have been overwritten.
+This means an open input stream will still be able to seek backwards after a
+concurrent writer has overwritten the file.
+The reader will retain their consistent view of the version of the file from
+which they read the first byte.
+Because the version ID is null for objects written prior to enablement of
+object versioning, **this option should only be used when the S3 buckets
+have object versioning enabled from the beginning.**
+
+Note: when you rename files the copied files may have a different version number.
+
+### Change Detection Modes.
+
+Configurable change detection mode is the next option.  Different modes are
+available primarily for compatibility with third-party S3 implementations which
+may not support all change detection mechanisms.
+
+* `server`: the version/etag check is performed on the server by adding
+extra headers to the `GET` request. This is the default.
+* `client` : check on the client by comparing the eTag/version ID of a
+reopened file with the previous version.
+This is useful when the implementation doesn't support the `If-Match` header.
+* `warn`: check on the client, but only warn on a mismatch, rather than fail.
+* `none` do not check. Useful if the implementation doesn't provide eTag
+or version ID support at all or you would like to retain previous behavior
+where the reader's input stream silently switches over to the new object version
+(not recommended).
+
+The final option (`fs.s3a.change.detection.version.required`) is present
+primarily to ensure the filesystem doesn't silently ignore the condition
+where it is configured to use version ID on a bucket that doesn't have
+object versioning enabled or alternatively it is configured to use eTag on
+an S3 implementation that doesn't return eTags.
+
+When `true` (default) and 'Get Object' doesn't return eTag or
+version ID (depending on configured 'source'), a `NoVersionAttributeException`
+will be thrown.  When `false` and eTag or version ID is not returned,
+the stream can be read, but without any version checking.
+
+
+## <a name="per_bucket_configuration"></a>Configuring different S3 buckets with Per-Bucket Configuration
+
+Different S3 buckets can be accessed with different S3A client configurations.
+This allows for different endpoints, data read and write strategies, as well
+as login details.
+
+1. All `fs.s3a` options other than a small set of unmodifiable values
+ (currently `fs.s3a.impl`) can be set on a per bucket basis.
+1. The bucket specific option is set by replacing the `fs.s3a.` prefix on an option
+with `fs.s3a.bucket.BUCKETNAME.`, where `BUCKETNAME` is the name of the bucket.
+1. When connecting to a bucket, all options explicitly set will override
+the base `fs.s3a.` values.
+
+As an example, a configuration could have a base configuration to use the IAM
+role information available when deployed in Amazon EC2.
+
+```xml
+<property>
+  <name>fs.s3a.aws.credentials.provider</name>
+  <value>org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider</value>
+</property>
+```
+
+This will become the default authentication mechanism for S3A buckets.
+
+A bucket `s3a://nightly/` used for nightly data can then be given
+a session key:
+
+```xml
+<property>
+  <name>fs.s3a.bucket.nightly.access.key</name>
+  <value>AKAACCESSKEY-2</value>
+</property>
+
+<property>
+  <name>fs.s3a.bucket.nightly.secret.key</name>
+  <value>SESSIONSECRETKEY</value>
+</property>
+
+<property>
+  <name>fs.s3a.bucket.nightly.session.token</name>
+  <value>Short-lived-session-token</value>
+</property>
+
+<property>
+  <name>fs.s3a.bucket.nightly.aws.credentials.provider</name>
+  <value>org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider</value>
+</property>
+```
+
+Finally, the public `s3a://noaa-isd-pds/` bucket can be accessed anonymously:
+
+```xml
+<property>
+  <name>fs.s3a.bucket.noaa-isd-pds.aws.credentials.provider</name>
+  <value>org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider</value>
+</property>
+```
+
+### per-bucket configuration and deprecated configuration options
+
+Per-bucket declaration of the deprecated encryption options
+will take priority over a global option -even when the
+global option uses the newer configuration keys.
+
+This means that when setting encryption options in XML files,
+the option, `fs.bucket.BUCKET.fs.s3a.server-side-encryption-algorithm`
+will take priority over the global value of `fs.bucket.s3a.encryption.algorithm`.
+The same holds for the encryption key option `fs.s3a.encryption.key`
+and its predecessor `fs.s3a.server-side-encryption.key`.
+
+
+For a site configuration of:
+
+```xml
+<property>
+  <name>fs.s3a.bucket.nightly.server-side-encryption-algorithm</name>
+  <value>SSE-KMS</value>
+</property>
+
+<property>
+  <name>fs.s3a.bucket.nightly.server-side-encryption.key</name>
+  <value>arn:aws:kms:eu-west-2:1528130000000:key/753778e4-2d0f-42e6-b894-6a3ae4ea4e5f</value>
+</property>
+
+<property>
+  <name>fs.s3a.encryption.algorithm</name>
+  <value>AES256</value>
+</property>
+
+<property>
+  <name>fs.s3a.encryption.key</name>
+  <value>unset</value>
+</property>
+
+<property>
+  <name>fs.s3a.encryption.context</name>
+  <value>unset</value>
+</property>
+
+
+```
+
+The bucket "nightly" will be encrypted with SSE-KMS using the KMS key
+`arn:aws:kms:eu-west-2:1528130000000:key/753778e4-2d0f-42e6-b894-6a3ae4ea4e5f`
+
+## <a name="requester_pays"></a>Requester Pays buckets
+
+S3A supports buckets with
+[Requester Pays](https://docs.aws.amazon.com/AmazonS3/latest/userguide/RequesterPaysBuckets.html)
+enabled. When a bucket is configured with requester pays, the requester must cover
+the per-request cost.
+
+For requests to be successful, the S3 client must acknowledge that they will pay
+for these requests by setting a request flag, usually a header, on each request.
+
+To enable this feature within S3A, configure the `fs.s3a.requester.pays.enabled` property.
+
+```xml
+<property>
+    <name>fs.s3a.requester.pays.enabled</name>
+    <value>true</value>
+</property>
+```
+
+## <a name="storage_classes"></a>Storage Classes
+
+Amazon S3 offers a range of [Storage Classes](https://aws.amazon.com/s3/storage-classes/)
+that you can choose from based on behavior of your applications. By using the right
+storage class, you can reduce the cost of your bucket.
+
+S3A uses Standard storage class for PUT object requests by default, which is suitable for
+general use cases. To use a specific storage class, set the value in `fs.s3a.create.storage.class` property to
+the storage class you want.
+
+```xml
+<property>
+  <name>fs.s3a.create.storage.class</name>
+  <value>intelligent_tiering</value>
+</property>
+```
+
+Please note that S3A does not support reading from archive storage classes at the moment.
+`AccessDeniedException` with `InvalidObjectState` will be thrown if you're trying to do so.
+
+When a file is "renamed" through the s3a connector it is copied then deleted.
+Storage Classes will normally be propagated.
+
+
+## <a name="outposts"></a>Configuring S3A for S3 on Outposts
+
+S3A now supports [S3 on Outposts](https://docs.aws.amazon.com/AmazonS3/latest/userguide/S3onOutposts.html).
+Accessing data through an access point is done by using its Amazon Resource Name (ARN), as opposed to just the bucket name.
+The only supported storage class on Outposts is `OUTPOSTS`, and by default objects are encrypted with [SSE-S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-outposts-data-encryption.html).
+You can set the Access Point ARN property using the following per bucket configuration property:
+
+```xml
+<property>
+  <name>fs.s3a.bucket.sample-outpost-bucket.accesspoint.arn</name>
+  <value>arn:aws:s3-outposts:region:account-id:outpost/outpost-id/accesspoint/accesspoint-name</value>
+  <description>Configure S3a traffic to use this S3 on Outposts Access Point ARN</description>
+</property>
+```
+
+This configures access to the `sample-outpost-bucket` for S3A to go through the new Access Point ARN. So, for example `s3a://sample-outpost-bucket/key` will now use your configured ARN when getting data from S3 on Outpost instead of your bucket.
+
+
+## <a name="upload"></a>How S3A writes data to S3
+
+The original S3A client implemented file writes by
+buffering all data to disk as it was written to the `OutputStream`.
+Only when the stream's `close()` method was called would the upload start.
+
+This made output slow, especially on large uploads, and could even
+fill up the disk space of small (virtual) disks.
+
+Hadoop 2.7 added the `S3AFastOutputStream` alternative, which Hadoop 2.8 expanded.
+It is now considered stable and has replaced the original `S3AOutputStream`,
+which is no longer shipped in hadoop.
+
+The "fast" output stream
+
+1.  Uploads large files as blocks with the size set by
+    `fs.s3a.multipart.size`. That is: the threshold at which multipart uploads
+    begin and the size of each upload are identical. This behavior can be enabled
+    or disabled by using the flag `fs.s3a.multipart.uploads.enabled` which by
+    default is set to true.
+1.  Buffers blocks to disk (default) or in on-heap or off-heap memory.
+1.  Uploads blocks in parallel in background threads.
+1.  Begins uploading blocks as soon as the buffered data exceeds this partition
+    size.
+1.  Uses any checksum set in `fs.s3a.create.checksum.algorithm` to calculate an upload
+    checksum on data written; this is included in the file/part upload and verified
+    on the store. This can be a source of third-party store compatibility issues.
+1.  When buffering data to disk, uses the directory/directories listed in
+    `fs.s3a.buffer.dir`. The size of data which can be buffered is limited
+    to the available disk space.
+1.  Generates output statistics as metrics on the filesystem, including
+    statistics of active and pending block uploads.
+1.  Has the time to `close()` set by the amount of remaining data to upload, rather
+    than the total size of the file.
+
+Because it starts uploading while data is still being written, it offers
+significant benefits when very large amounts of data are generated.
+The in memory buffering mechanisms may also offer speedup when running adjacent to
+S3 endpoints, as disks are not used for intermediate data storage.
+
+
+```xml
+<property>
+  <name>fs.s3a.fast.upload.buffer</name>
+  <value>disk</value>
+  <description>
+    The buffering mechanism to use.
+    Values: disk, array, bytebuffer.
+
+    "disk" will use the directories listed in fs.s3a.buffer.dir as
+    the location(s) to save data prior to being uploaded.
+
+    "array" uses arrays in the JVM heap
+
+    "bytebuffer" uses off-heap memory within the JVM.
+
+    Both "array" and "bytebuffer" will consume memory in a single stream up to the number
+    of blocks set by:
+
+        fs.s3a.multipart.size * fs.s3a.fast.upload.active.blocks.
+
+    If using either of these mechanisms, keep this value low
+
+    The total number of threads performing work across all threads is set by
+    fs.s3a.threads.max, with fs.s3a.max.total.tasks values setting the number of queued
+    work items.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.multipart.size</name>
+  <value>100M</value>
+  <description>How big (in bytes) to split upload or copy operations up into.
+    A suffix from the set {K,M,G,T,P} may be used to scale the numeric value.
+  </description>
+</property>
+
+<property>
+  <name>fs.s3a.fast.upload.active.blocks</name>
+  <value>8</value>
+  <description>
+    Maximum Number of blocks a single output stream can have
+    active (uploading, or queued to the central FileSystem
+    instance's pool of queued operations.
+
+    This stops a single stream overloading the shared thread pool.
+  </description>
+</property>
+```
+
+**Notes**
+
+* If the amount of data written to a stream is below that set in `fs.s3a.multipart.size`,
+the upload is performed in the `OutputStream.close()` operation —as with
+the original output stream.
+
+* The published Hadoop metrics monitor include live queue length and
+upload operation counts, so identifying when there is a backlog of work/
+a mismatch between data generation rates and network bandwidth. Per-stream
+statistics can also be logged by calling `toString()` on the current stream.
+
+* Files being written are still invisible until the write
+completes in the `close()` call, which will block until the upload is completed.
+
+
+### <a name="upload_disk"></a>Buffering upload data on disk `fs.s3a.fast.upload.buffer=disk`
+
+When `fs.s3a.fast.upload.buffer` is set to `disk`, all data is buffered
+to local hard disks prior to upload. This minimizes the amount of memory
+consumed, and so eliminates heap size as the limiting factor in queued uploads
+—exactly as the original "direct to disk" buffering.
+
+
+```xml
+<property>
+  <name>fs.s3a.fast.upload.buffer</name>
+  <value>disk</value>
+</property>
+
+<property>
+  <name>fs.s3a.buffer.dir</name>
+  <value>${env.LOCAL_DIRS:-${hadoop.tmp.dir}}/s3a</value>
+  <description>Comma separated list of directories that will be used to buffer file
+    uploads to.
+    Yarn container path will be used as default value on yarn applications,
+    otherwise fall back to hadoop.tmp.dir
+  </description>
+</property>
+```
+
+This is the default buffer mechanism. The amount of data which can
+be buffered is limited by the amount of available disk space.
+
+### <a name="upload_bytebuffer"></a>Buffering upload data in ByteBuffers: `fs.s3a.fast.upload.buffer=bytebuffer`
+
+When `fs.s3a.fast.upload.buffer` is set to `bytebuffer`, all data is buffered
+in "Direct" ByteBuffers prior to upload. This *may* be faster than buffering to disk,
+and, if disk space is small (for example, tiny EC2 VMs), there may not
+be much disk space to buffer with.
+
+The ByteBuffers are created in the memory of the JVM, but not in the Java Heap itself.
+The amount of data which can be buffered is
+limited by the Java runtime, the operating system, and, for YARN applications,
+the amount of memory requested for each container.
+
+The slower the upload bandwidth to S3, the greater the risk of running out
+of memory —and so the more care is needed in
+[tuning the upload settings](#upload_thread_tuning).
+
+
+```xml
+<property>
+  <name>fs.s3a.fast.upload.buffer</name>
+  <value>bytebuffer</value>
+</property>
+```
+
+### <a name="upload_array"></a>Buffering upload data in byte arrays: `fs.s3a.fast.upload.buffer=array`
+
+When `fs.s3a.fast.upload.buffer` is set to `array`, all data is buffered
+in byte arrays in the JVM's heap prior to upload.
+This *may* be faster than buffering to disk.
+
+The amount of data which can be buffered is limited by the available
+size of the JVM heap. The slower the write bandwidth to S3, the greater
+the risk of heap overflows. This risk can be mitigated by
+[tuning the upload settings](#upload_thread_tuning).
+
+```xml
+<property>
+  <name>fs.s3a.fast.upload.buffer</name>
+  <value>array</value>
+</property>
+```
+
+### <a name="upload_thread_tuning"></a>Upload Thread Tuning
+
+Both the [Array](#upload_array) and [Byte buffer](#upload_bytebuffer)
+buffer mechanisms can consume very large amounts of memory, on-heap or
+off-heap respectively. The [disk buffer](#upload_disk) mechanism
+does not use much memory up, but will consume hard disk capacity.
+
+If there are many output streams being written to in a single process, the
+amount of memory or disk used is the multiple of all stream's active memory/disk use.
+
+Careful tuning may be needed to reduce the risk of running out memory, especially
+if the data is buffered in memory.
+
+There are a number parameters which can be tuned:
+
+1. The total number of threads available in the filesystem for data
+uploads *or any other queued filesystem operation*. This is set in
+`fs.s3a.threads.max`
+
+1. The number of operations which can be queued for execution:, *awaiting
+a thread*: `fs.s3a.max.total.tasks`
+
+1. The number of blocks which a single output stream can have active,
+that is: being uploaded by a thread, or queued in the filesystem thread queue:
+`fs.s3a.fast.upload.active.blocks`
+
+1. How long an idle thread can stay in the thread pool before it is retired: `fs.s3a.threads.keepalivetime`
+
+
+When the maximum allowed number of active blocks of a single stream is reached,
+no more blocks can be uploaded from that stream until one or more of those active
+blocks' uploads completes. That is: a `write()` call which would trigger an upload
+of a now full datablock, will instead block until there is capacity in the queue.
+
+How does that come together?
+
+* As the pool of threads set in `fs.s3a.threads.max` is shared (and intended
+to be used across all threads), a larger number here can allow for more
+parallel operations. However, as uploads require network bandwidth, adding more
+threads does not guarantee speedup.
+
+* The extra queue of tasks for the thread pool (`fs.s3a.max.total.tasks`)
+covers all ongoing background S3A operations (future plans include: parallelized
+rename operations, asynchronous directory operations).
+
+* When using memory buffering, a small value of `fs.s3a.fast.upload.active.blocks`
+limits the amount of memory which can be consumed per stream.
+
+* When using disk buffering a larger value of `fs.s3a.fast.upload.active.blocks`
+does not consume much memory. But it may result in a large number of blocks to
+compete with other filesystem operations.
+
+
+We recommend a low value of `fs.s3a.fast.upload.active.blocks`; enough
+to start background upload without overloading other parts of the system,
+then experiment to see if higher values deliver more throughput —especially
+from VMs running on EC2.
+
+```xml
+
+<property>
+  <name>fs.s3a.fast.upload.active.blocks</name>
+  <value>4</value>
+  <description>
+    Maximum Number of blocks a single output stream can have
+    active (uploading, or queued to the central FileSystem
+    instance's pool of queued operations.
+
+    This stops a single stream overloading the shared thread pool.
+  </description>
+</property>
+
+```
+
+### <a name="multipart_purge"></a>Cleaning up after partial Upload Failures
+
+There are four mechanisms for cleaning up after leftover multipart
+uploads:
+- AWS Lifecycle rules. This is the simplest and SHOULD be used unless there
+  are are good reasons, such as the store not supporting lifecycle rules.
+- Hadoop s3guard CLI commands for listing and deleting uploads by their
+age. Documented in the [S3Guard](./s3guard.html) section.
+- Setting `fs.s3a.directory.operations.purge.uploads` to `true` for automatic
+  scan and delete during directory rename and delete
+- The configuration parameter `fs.s3a.multipart.purge`, covered below.
+
+If a large stream write operation is interrupted, there may be
+intermediate partitions uploaded to S3 —data which will be billed for.
+If an S3A committer job is halted partway through, again, there may be
+many incomplete multipart uploads in the output directory.
+
+These charges can be reduced by enabling `fs.s3a.multipart.purge`
+(deprecated), and setting a purge time in seconds, such as 24 hours.
+When an S3A FileSystem instance is instantiated with the purge time greater
+than zero, it will, on startup, delete all outstanding partition requests
+older than this time. However, this makes filesystem instantiate slow, especially
+against very large buckets, as a full scan is made.
+
+For this reason, the option is deprecated and will be removed in a future
+release.
+
+```xml
+<property>
+  <name>fs.s3a.multipart.purge</name>
+  <value>true</value>
+  <description>True if you want to purge existing multipart uploads that may not have been
+     completed/aborted correctly</description>
+</property>
+
+<property>
+  <name>fs.s3a.multipart.purge.age</name>
+  <value>24h</value>
+  <description>Minimum age in seconds of multipart uploads to purge</description>
+</property>
+```
+
+If an S3A client is instantiated with `fs.s3a.multipart.purge=true`,
+it will delete all out of date uploads *in the entire bucket*. That is: it will affect all
+multipart uploads to that bucket, from all applications.
+
+Leaving `fs.s3a.multipart.purge` to its default, `false`,
+means that the client will not make any attempt to reset or change the partition
+rate.
+
+The best practise for using this option is to disable multipart purges in
+normal use of S3A, enabling only in manual/scheduled housekeeping operations.
+
+## <a name="metrics"></a>Metrics
+
+S3A metrics can be monitored through Hadoop's metrics2 framework. S3A creates
+its own metrics system called s3a-file-system, and each instance of the client
+will create its own metrics source, named with a JVM-unique numerical ID.
+
+As a simple example, the following can be added to `hadoop-metrics2.properties`
+to write all S3A metrics to a log file every 10 seconds:
+
+    s3a-file-system.sink.my-metrics-config.class=org.apache.hadoop.metrics2.sink.FileSink
+    s3a-file-system.sink.my-metrics-config.filename=/var/log/hadoop-yarn/s3a-metrics.out
+    *.period=10
+
+Lines in that file will be structured like the following:
+
+    1511208770680 s3aFileSystem.s3aFileSystem: Context=s3aFileSystem, s3aFileSystemId=892b02bb-7b30-4ffe-80ca-3a9935e1d96e, bucket=bucket,
+    Hostname=hostname-1.hadoop.apache.com, files_created=1, files_copied=2, files_copied_bytes=10000, files_deleted=5, fake_directories_deleted=3,
+    directories_created=3, directories_deleted=0, ignored_errors=0, op_copy_from_local_file=0, op_exists=0, op_get_file_status=15, op_glob_status=0,
+    op_is_directory=0, op_is_file=0, op_list_files=0, op_list_located_status=0, op_list_status=3, op_mkdirs=1, op_rename=2, object_copy_requests=0,
+    object_delete_requests=6, object_list_requests=23, object_continue_list_requests=0, object_metadata_requests=46, object_multipart_aborted=0,
+    object_put_bytes=0, object_put_requests=4, object_put_requests_completed=4, stream_write_failures=0, stream_write_block_uploads=0,
+    stream_write_block_uploads_committed=0, stream_write_block_uploads_aborted=0, stream_write_total_time=0, stream_write_total_data=0,
+    s3guard_metadatastore_put_path_request=10, s3guard_metadatastore_initialization=0, object_put_requests_active=0, object_put_bytes_pending=0,
+    stream_write_block_uploads_active=0, stream_write_block_uploads_pending=0, stream_write_block_uploads_data_pending=0,
+    S3guard_metadatastore_put_path_latencyNumOps=0, S3guard_metadatastore_put_path_latency50thPercentileLatency=0,
+    S3guard_metadatastore_put_path_latency75thPercentileLatency=0, S3guard_metadatastore_put_path_latency90thPercentileLatency=0,
+    S3guard_metadatastore_put_path_latency95thPercentileLatency=0, S3guard_metadatastore_put_path_latency99thPercentileLatency=0
+
+Depending on other configuration, metrics from other systems, contexts, etc. may
+also get recorded, for example the following:
+
+    1511208770680 metricssystem.MetricsSystem: Context=metricssystem, Hostname=s3a-metrics-4.gce.cloudera.com, NumActiveSources=1, NumAllSources=1,
+    NumActiveSinks=1, NumAllSinks=0, Sink_fileNumOps=2, Sink_fileAvgTime=1.0, Sink_fileDropped=0, Sink_fileQsize=0, SnapshotNumOps=5,
+    SnapshotAvgTime=0.0, PublishNumOps=2, PublishAvgTime=0.0, DroppedPubAll=0
+
+Note that low-level metrics from the AWS SDK itself are not currently included
+in these metrics.
+
+
+## <a name="checksums"></a>Checksums
+
+The S3 Client can use checksums in its requests to an S3 store in a number of ways:
+
+1. To provide a checksum of the request headers.
+2. To provide a `Content-MD5` hash of the request headers
+3. To provide a checksum of data being PUT/POSTed to the store.
+4. To validate data downloaded from the store.
+
+The various options available can impact performance and compatibility.
+To understand the risks and issues here know that:
+* Request checksum generation (item 1) and validation (4) can be done "when required" or "always".
+  The "always" option is stricter, but can result in third-party compatibility issues.
+* Some third-party stores require the `Content-MD5` header and will fail without it (item 2)
+* Data upload checksums (item 3) can be computationally expensive and incompatible with third-party stores
+* The most efficient data upload checksum is CRC32C; there are explicit opcodes for this in x86 and ARM CPUs, with the appropriate implementation circuitry.
+* Data download validation checksums are also computationally expensive.
+
+| Option                             | Purpose                                        | Values  | Default  |
+|------------------------------------|------------------------------------------------|---------|----------|
+| `fs.s3a.request.md5.header`        | Enable MD5 header                              | boolean | `true`   |
+| `fs.s3a.checksum.generation`       | Generate checksums on all requests             | boolean | `false`  |
+| `fs.s3a.checksum.validation`       | Validate checksums on download                 | boolean | `false`  |
+| `fs.s3a.create.checksum.algorithm` | Checksum Algorithm when creating/copying files | `NONE`, `CRC32`, `CRC32C`, `CRC32_C`, `CRC64NVME` , `CRC64_NVME`, `SHA256`, `SHA1`   | `""` |
+
+
+Turning on checksum generation and validation may seem like obvious actions, but consider
+this: you are communicating with an S3 store over an HTTPS channels, which includes
+cryptographically strong HMAC checksums of every block transmitted.
+These are far more robust than the CRC* algorithms, and the computational cost is already
+being paid for: so why add more?
+
+With TLS ensuring the network traffic isn't altered from the moment it is encrypted to when
+it is decrypted, all extra checksum generation/validation does is ensure that there's no
+accidental corruption between the data being generated and uploaded, or between being downloaded and read.
+
+This could potentially deal with memory/buffering/bus issues on the servers.
+However this is what ECC RAM is for.
+If you do suspect requests being corrupted during writing or reading, the options may
+be worth considering.
+As it is, they are off by default to avoid compatibility problems.
+
+Note: if you have a real example of where these checksum options have identified memory corruption,
+please let us know.
+
+### Content-MD5 Header on requests: `fs.s3a.request.md5.header`
+
+Send a `Content-MD5 header` with every request?
+
+This header is required when interacting with some third-party stores.
+It is supported by AWS S3, though has has some unexpected behavior with AWS S3 Express storage
+[issue 6459](https://github.com/aws/aws-sdk-java-v2/issues/6459).
+As that appears to have been fixed in the 2.35.4 SDK release, this option is enabled by default.
+
+### Request checksum generation: `fs.s3a.checksum.generation`
+
+Should checksums be generated for all requests made to the store?
+
+* Incompatible with some third-party stores.
+* If `true` then multipart upload (i.e. large file upload) may fail if `fs.s3a.create.checksum.algorithm`
+  is not set to a valid algorithm (i.e. something other than `NONE`).
+
+Set `fs.s3a.checksum.generation` to `false` (the default value) to avoid these problems.
+
+### Checksum validation `fs.s3a.checksum.validation`
+
+Should the checksums of downloaded data be validated?
+
+This hurts performance and should be only used if considered important.
+
+### Creation checksum `fs.s3a.create.checksum.algorithm`
+
+This is the algorithm to use when checksumming data during file creation and copy.
+
+Options: `NONE`, `CRC32`, `CRC32C`, `CRC32_C`, `CRC64NVME` , `CRC64_NVME`, `SHA256`, `SHA1`
+
+The option `NONE` is new to Hadoop 3.4.3; previously an empty string was required for the same behavior.
+
+The `CRC64NVME`/`CRC64_NVME` option is also new to Hadoop 3.4.3 and requires the `aws-crt` module to be on the classpath, otherwise an error is printed:
+
+```
+java.lang.RuntimeException: Could not load software.amazon.awssdk.crt.checksums.CRC64NVME.
+Add dependency on 'software.amazon.awssdk.crt:aws-crt' module to enable CRC64NVME feature.
+```
+
+Checksum/algorithm incompatibilities may surface as a failure in "Completing multipart upload"`.
+
+First as a failure reported as a "missing part".
+```
+org.apache.hadoop.fs.s3a.AWSBadRequestException: Completing multipart upload id l8itQB.
+5u7TcWqznqbGfTjHv06mxb4IlBNcZiDWrBAS0t1EMJGkr9J1QD2UAwDM5rLUZqypJfWCoPJtySxA3QK9QqKTBdKr3LXYjYJ_r9lRcGdzBRbnIJeI8tBr8yqtS on
+test/testCommitEmptyFile/empty-commit.txt:
+software.amazon.awssdk.services.s3.model.S3Exception: One or more of the specified parts could not be found.
+The part may not have been uploaded, or the specified entity tag may not match the part's entity tag.
+(Service: S3, Status Code: 400, Request ID: AQ0J4B66H626Y3FH,
+Extended Request ID: g1zo25aQCZfqFh3vOzrzOBp9RjJEWmKImRcfWhvaeFHQ2hZo1xTm3GVMD03zN+d+cFB6oNeelNc=)
+(SDK Attempt Count: 1):InvalidPart: One or more of the specified parts could not be found.
+The part may not have been uploaded, or the specified entity tag may not match the part's entity tag.
+(Service: S3, Status Code: 400, Request ID: AQ0J4B66H626Y3FH, Extended Request ID:
+g1zo25aQCZfqFh3vOzrzOBp9RjJEWmKImRcfWhvaeFHQ2hZo1xTm3GVMD03zN+d+cFB6oNeelNc=) (SDK Attempt Count: 1)
+```
+
+Alternatively, as the failure of a multipart upload when a checksum algorithm is set and the part ordering is not in sequence.
+
+```
+org.apache.hadoop.fs.s3a.AWSStatus500Exception:
+  Completing multipart upload id A8rf256dBVbDtIVLr40KaMGKw9DY.rhgNP5zmn1ap97YjPaIO2Ac3XXL_T.2HCtIrGUpx5bdOTgvVeZzVHuoWI4pKv_MeMMVqBHJGP7u_q4PR8AxWvSq0Lsv724HT1fQ
+   on test/testMultipartUploadReverseOrderNonContiguousPartNumbers:
+software.amazon.awssdk.services.s3.model.S3Exception: We encountered an internal error.
+Please try again.
+(Service: S3, Status Code: 500, Request ID: WTBY2FX76Q5F5YWB,
+Extended Request ID: eWQWk8V8rmVmKImWVCI2rHyFS3XQSPgIkjfAyzzZCgVgyeRqox8mO8qO4ODMB6IUY0+rYqqsnOX2zXiQcRzFlb9p3nSkEEc+T0CYurLaH28=)
+(SDK Attempt Count: 3)
+```
+
+This is only possible through the FileSystem multipart API; normal data writes including
+those through the magic committer will not encounter it,
+
+## <a name="other_topics"></a> Other Topics
+
+### <a name="distcp"></a> Copying Data with distcp
+
+Hadoop's `distcp` tool is often used to copy data between a Hadoop
+cluster and Amazon S3.
+See [Copying Data Between a Cluster and Amazon S3](https://hortonworks.github.io/hdp-aws/s3-copy-data/index.html)
+for details on S3 copying specifically.
+
+The `distcp update` command tries to do incremental updates of data.
+It is straightforward to verify when files do not match when they are of
+different length, but not when they are the same size.
+
+Distcp addresses this by comparing file checksums on the source and destination
+filesystems, which it tries to do *even if the filesystems have incompatible
+checksum algorithms*.
+
+The S3A connector can provide the HTTP etag header to the caller as the
+checksum of the uploaded file. Doing so will break distcp operations
+between hdfs and s3a.
+
+For this reason, the etag-as-checksum feature is disabled by default.
+
+```xml
+<property>
+  <name>fs.s3a.etag.checksum.enabled</name>
+  <value>false</value>
+  <description>
+    Should calls to getFileChecksum() return the etag value of the remote
+    object.
+    WARNING: if enabled, distcp operations between HDFS and S3 will fail unless
+    -skipcrccheck is set.
+  </description>
+</property>
+```
+
+If enabled, `distcp` between two S3 buckets can use the checksum to compare
+objects. Their checksums should be identical if they were either each uploaded
+as a single file PUT, or, if in a multipart PUT, in blocks of the same size,
+as configured by the value `fs.s3a.multipart.size`.
+
+To disable checksum verification in `distcp`, use the `-skipcrccheck` option:
+
+```bash
+hadoop distcp -update -skipcrccheck -numListstatusThreads 40 /user/alice/datasets s3a://alice-backup/datasets
+```
+
+### <a name="customsigners"></a> Advanced - Custom Signers
+
+AWS uees request signing to authenticate requests. In general, there should
+be no need to override the signers, and the defaults work out of the box.
+If, however, this is required - this section talks about how to configure
+custom signers. There’s 2 broad config categories to be set - one for
+registering a custom signer and another to specify usage.
+
+#### Registering Custom Signers
+```xml
+<property>
+  <name>fs.s3a.custom.signers</name>
+  <value>comma separated list of signers</value>
+  <!-- Example
+  <value>AWS4SignerType,CS1:CS1ClassName,CS2:CS2ClassName:CS2InitClass</value>
+  -->
+</property>
+```
+Acceptable value for each custom signer
+
+`SignerName`- this is used in case one of the default signers is being used.
+(E.g `AWS4SignerType`, `QueryStringSignerType`, `AWSS3V4SignerType`).
+If no custom signers are being used - this value does not need to be set.
+
+`SignerName:SignerClassName` - register a new signer with the specified name,
+and the class for this signer.
+The Signer Class must implement `software.amazon.awssdk.core.signer.Signer`.
+
+`SignerName:SignerClassName:SignerInitializerClassName` - similar time above
+except also allows for a custom SignerInitializer
+(`org.apache.hadoop.fs.s3a.AwsSignerInitializer`) class to be specified.
+
+#### Usage of the Signers
+Signers can be set at a per-service level (S3, etc) or a common
+signer for all services.
+
+```xml
+<property>
+  <name>fs.s3a.s3.signing-algorithm</name>
+  <value>${S3SignerName}</value>
+  <description>Specify the signer for S3</description>
+</property>
+
+<property>
+  <name>fs.s3a.signing-algorithm</name>
+  <value>${SignerName}</value>
+</property>
+```
+
+For a specific service, the service specific signer is looked up first.
+If that is not specified, the common signer is looked up. If this is
+not specified as well, SDK settings are used.

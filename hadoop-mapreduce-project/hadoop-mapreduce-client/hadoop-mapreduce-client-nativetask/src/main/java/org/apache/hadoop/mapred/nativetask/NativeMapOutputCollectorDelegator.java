@@ -18,11 +18,9 @@
 package org.apache.hadoop.mapred.nativetask;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
-import com.google.common.base.Charsets;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.io.RawComparator;
 import org.apache.hadoop.mapred.InvalidJobConfException;
@@ -34,8 +32,9 @@ import org.apache.hadoop.mapred.nativetask.serde.INativeSerializer;
 import org.apache.hadoop.mapred.nativetask.serde.NativeSerialization;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
-import org.apache.hadoop.mapreduce.TaskCounter;
 import org.apache.hadoop.util.QuickSort;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * native map output collector wrapped in Java interface
@@ -43,7 +42,8 @@ import org.apache.hadoop.util.QuickSort;
 @InterfaceAudience.Private
 public class NativeMapOutputCollectorDelegator<K, V> implements MapOutputCollector<K, V> {
 
-  private static Log LOG = LogFactory.getLog(NativeMapOutputCollectorDelegator.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(NativeMapOutputCollectorDelegator.class);
   private JobConf job;
   private NativeCollectorOnlyHandler<K, V> handler;
 
@@ -131,7 +131,7 @@ public class NativeMapOutputCollectorDelegator<K, V> implements MapOutputCollect
     if (ret) {
       if (job.getBoolean(MRJobConfig.MAP_OUTPUT_COMPRESS, false)) {
         String codec = job.get(MRJobConfig.MAP_OUTPUT_COMPRESS_CODEC);
-        if (!NativeRuntime.supportsCompressionCodec(codec.getBytes(Charsets.UTF_8))) {
+        if (!NativeRuntime.supportsCompressionCodec(codec.getBytes(StandardCharsets.UTF_8))) {
           String message = "Native output collector doesn't support compression codec " + codec;
           LOG.error(message);
           throw new InvalidJobConfException(message);

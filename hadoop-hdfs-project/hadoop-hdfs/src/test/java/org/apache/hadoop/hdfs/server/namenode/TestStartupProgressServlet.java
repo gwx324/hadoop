@@ -18,12 +18,14 @@
 package org.apache.hadoop.hdfs.server.namenode;
 
 import static org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgressTestHelper.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.*;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
@@ -32,11 +34,11 @@ import javax.servlet.ServletContext;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
-import org.junit.Before;
-import org.junit.Test;
-import org.mortbay.util.ajax.JSON;
+import org.apache.hadoop.util.JsonUtils;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestStartupProgressServlet {
 
@@ -46,7 +48,7 @@ public class TestStartupProgressServlet {
   private StartupProgress startupProgress;
   private StartupProgressServlet servlet;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     startupProgress = new StartupProgress();
     ServletContext context = mock(ServletContext.class);
@@ -101,7 +103,7 @@ public class TestStartupProgressServlet {
           .build()))
       .build();
 
-    assertEquals(JSON.toString(expected), filterJson(respBody));
+    assertEquals(JsonUtils.toString(expected), filterJson(respBody));
   }
 
   @Test
@@ -159,7 +161,7 @@ public class TestStartupProgressServlet {
           .build()))
       .build();
 
-    assertEquals(JSON.toString(expected), filterJson(respBody));
+    assertEquals(JsonUtils.toString(expected), filterJson(respBody));
   }
 
   @Test
@@ -233,7 +235,7 @@ public class TestStartupProgressServlet {
           .build()))
       .build();
 
-    assertEquals(JSON.toString(expected), filterJson(respBody));
+    assertEquals(JsonUtils.toString(expected), filterJson(respBody));
   }
 
   /**
@@ -245,7 +247,7 @@ public class TestStartupProgressServlet {
    */
   private String doGetAndReturnResponseBody() throws IOException {
     servlet.doGet(req, resp);
-    return new String(respOut.toByteArray(), "UTF-8");
+    return new String(respOut.toByteArray(), StandardCharsets.UTF_8);
   }
 
   /**

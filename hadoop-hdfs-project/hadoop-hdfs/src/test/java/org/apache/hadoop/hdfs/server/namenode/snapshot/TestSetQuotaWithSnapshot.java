@@ -17,10 +17,10 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.snapshot;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 
@@ -38,12 +38,10 @@ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.INode;
 import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiff;
-import org.apache.hadoop.hdfs.util.Diff.ListType;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestSetQuotaWithSnapshot {
   protected static final long seed = 0;
@@ -55,11 +53,8 @@ public class TestSetQuotaWithSnapshot {
   protected FSNamesystem fsn;
   protected FSDirectory fsdir;
   protected DistributedFileSystem hdfs;
-  
-  @Rule
-  public ExpectedException exception = ExpectedException.none();
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new Configuration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCKSIZE);
@@ -72,7 +67,7 @@ public class TestSetQuotaWithSnapshot {
     hdfs = cluster.getFileSystem();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
@@ -80,7 +75,8 @@ public class TestSetQuotaWithSnapshot {
     }
   }
   
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSetQuota() throws Exception {
     final Path dir = new Path("/TestSnapshot");
     hdfs.mkdirs(dir);
@@ -149,11 +145,13 @@ public class TestSetQuotaWithSnapshot {
     hdfs.setQuota(dir, HdfsConstants.QUOTA_RESET, HdfsConstants.QUOTA_RESET);
     INode subNode = fsdir.getINode4Write(subDir.toString());
     assertTrue(subNode.asDirectory().isWithSnapshot());
-    List<DirectoryDiff> diffList = subNode.asDirectory().getDiffs().asList();
+    DiffList<DirectoryDiff> diffList =
+        subNode.asDirectory().getDiffs().asList();
     assertEquals(1, diffList.size());
     Snapshot s2 = dirNode.getSnapshot(DFSUtil.string2Bytes("s2"));
-    assertEquals(s2.getId(), diffList.get(0).getSnapshotId());
-    List<INode> createdList = diffList.get(0).getChildrenDiff().getList(ListType.CREATED);
+    final DirectoryDiff diff = diffList.get(0);
+    assertEquals(s2.getId(), diff.getSnapshotId());
+    List<INode> createdList = diff.getChildrenDiff().getCreatedUnmodifiable();
     assertEquals(1, createdList.size());
     assertSame(fsdir.getINode4Write(file.toString()), createdList.get(0));
   }

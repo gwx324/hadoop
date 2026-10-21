@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.net.unix;
 
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.util.ArrayList;
 import java.util.Random;
@@ -26,26 +26,29 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.junit.After;
-import org.junit.Assume;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import com.google.common.util.concurrent.Uninterruptibles;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Uninterruptibles;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public class TestDomainSocketWatcher {
-  static final Log LOG = LogFactory.getLog(TestDomainSocketWatcher.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(TestDomainSocketWatcher.class);
 
   private Throwable trappedException = null;
 
-  @Before
+  @BeforeEach
   public void before() {
-    Assume.assumeTrue(DomainSocket.getLoadingFailureReason() == null);
+    assumeTrue(DomainSocket.getLoadingFailureReason() == null);
   }
 
-  @After
+  @AfterEach
   public void after() {
     if (trappedException != null) {
       throw new IllegalStateException(
@@ -57,7 +60,8 @@ public class TestDomainSocketWatcher {
   /**
    * Test that we can create a DomainSocketWatcher and then shut it down.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testCreateShutdown() throws Exception {
     DomainSocketWatcher watcher = newDomainSocketWatcher(10000000);
     watcher.close();
@@ -66,7 +70,8 @@ public class TestDomainSocketWatcher {
   /**
    * Test that we can get notifications out a DomainSocketWatcher.
    */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testDeliverNotifications() throws Exception {
     DomainSocketWatcher watcher = newDomainSocketWatcher(10000000);
     DomainSocket pair[] = DomainSocket.socketpair();
@@ -86,7 +91,8 @@ public class TestDomainSocketWatcher {
   /**
    * Test that a java interruption can stop the watcher thread
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testInterruption() throws Exception {
     final DomainSocketWatcher watcher = newDomainSocketWatcher(10);
     watcher.watcherThread.interrupt();
@@ -97,7 +103,8 @@ public class TestDomainSocketWatcher {
   /**
    * Test that domain sockets are closed when the watcher is closed.
    */
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testCloseSocketOnWatcherClose() throws Exception {
     final DomainSocketWatcher watcher = newDomainSocketWatcher(10000000);
     DomainSocket pair[] = DomainSocket.socketpair();
@@ -112,7 +119,8 @@ public class TestDomainSocketWatcher {
     assertFalse(pair[1].isOpen());
   }
   
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testStress() throws Exception {
     final int SOCKET_NUM = 250;
     final ReentrantLock lock = new ReentrantLock();
@@ -141,7 +149,7 @@ public class TestDomainSocketWatcher {
             }
           }
         } catch (Throwable e) {
-          LOG.error(e);
+          LOG.error(e.toString());
           throw new RuntimeException(e);
         }
       }
@@ -169,7 +177,7 @@ public class TestDomainSocketWatcher {
             }
           }
         } catch (Throwable e) {
-          LOG.error(e);
+          LOG.error(e.toString());
           throw new RuntimeException(e);
         }
       }
@@ -182,7 +190,8 @@ public class TestDomainSocketWatcher {
     watcher.close();
   }
 
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testStressInterruption() throws Exception {
     final int SOCKET_NUM = 250;
     final ReentrantLock lock = new ReentrantLock();
@@ -212,7 +221,7 @@ public class TestDomainSocketWatcher {
             TimeUnit.MILLISECONDS.sleep(1);
           }
         } catch (Throwable e) {
-          LOG.error(e);
+          LOG.error(e.toString());
           throw new RuntimeException(e);
         }
       }
@@ -241,7 +250,7 @@ public class TestDomainSocketWatcher {
             }
           }
         } catch (Throwable e) {
-          LOG.error(e);
+          LOG.error(e.toString());
           throw new RuntimeException(e);
         }
       }

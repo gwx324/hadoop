@@ -19,22 +19,30 @@
 package org.apache.hadoop.yarn.server.resourcemanager.rmapp;
 
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
+import org.apache.hadoop.yarn.server.resourcemanager.RMServerUtils;
+
+import java.util.Map;
 
 public class RMAppMetrics {
   final Resource resourcePreempted;
   final int numNonAMContainersPreempted;
   final int numAMContainersPreempted;
-  final long memorySeconds;
-  final long vcoreSeconds;
+  private final Map<String, Long> resourceSecondsMap;
+  private final Map<String, Long> preemptedResourceSecondsMap;
+  private int totalAllocatedContainers;
 
   public RMAppMetrics(Resource resourcePreempted,
       int numNonAMContainersPreempted, int numAMContainersPreempted,
-      long memorySeconds, long vcoreSeconds) {
+      Map<String, Long> resourceSecondsMap,
+      Map<String, Long> preemptedResourceSecondsMap,
+      int totalAllocatedContainers) {
     this.resourcePreempted = resourcePreempted;
     this.numNonAMContainersPreempted = numNonAMContainersPreempted;
     this.numAMContainersPreempted = numAMContainersPreempted;
-    this.memorySeconds = memorySeconds;
-    this.vcoreSeconds = vcoreSeconds;
+    this.resourceSecondsMap = resourceSecondsMap;
+    this.preemptedResourceSecondsMap = preemptedResourceSecondsMap;
+    this.totalAllocatedContainers = totalAllocatedContainers;
   }
 
   public Resource getResourcePreempted() {
@@ -50,10 +58,35 @@ public class RMAppMetrics {
   }
 
   public long getMemorySeconds() {
-    return memorySeconds;
+    return RMServerUtils.getOrDefault(resourceSecondsMap,
+        ResourceInformation.MEMORY_MB.getName(), 0L);
   }
 
   public long getVcoreSeconds() {
-    return vcoreSeconds;
+    return RMServerUtils
+        .getOrDefault(resourceSecondsMap, ResourceInformation.VCORES.getName(),
+            0L);
+  }
+
+  public long getPreemptedMemorySeconds() {
+    return RMServerUtils.getOrDefault(preemptedResourceSecondsMap,
+        ResourceInformation.MEMORY_MB.getName(), 0L);
+  }
+
+  public long getPreemptedVcoreSeconds() {
+    return RMServerUtils.getOrDefault(preemptedResourceSecondsMap,
+        ResourceInformation.VCORES.getName(), 0L);
+  }
+
+  public Map<String, Long> getResourceSecondsMap() {
+    return resourceSecondsMap;
+  }
+
+  public Map<String, Long> getPreemptedResourceSecondsMap() {
+    return preemptedResourceSecondsMap;
+  }
+
+  public int getTotalAllocatedContainers() {
+    return totalAllocatedContainers;
   }
 }

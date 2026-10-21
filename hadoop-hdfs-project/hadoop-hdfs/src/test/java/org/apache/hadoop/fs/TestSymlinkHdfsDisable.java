@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.fs;
 
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 
@@ -27,41 +27,44 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestSymlinkHdfsDisable {
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSymlinkHdfsDisable() throws Exception {
     Configuration conf = new HdfsConfiguration();
     // disable symlink resolution
     conf.setBoolean(
         CommonConfigurationKeys.FS_CLIENT_RESOLVE_REMOTE_SYMLINKS_KEY, false);
     // spin up minicluster, get dfs and filecontext
-    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
-    DistributedFileSystem dfs = cluster.getFileSystem();
-    FileContext fc = FileContext.getFileContext(cluster.getURI(0), conf);
-    // Create test files/links
-    FileContextTestHelper helper = new FileContextTestHelper(
-        "/tmp/TestSymlinkHdfsDisable");
-    Path root = helper.getTestRootPath(fc);
-    Path target = new Path(root, "target");
-    Path link = new Path(root, "link");
-    DFSTestUtil.createFile(dfs, target, 4096, (short)1, 0xDEADDEAD);
-    fc.createSymlink(target, link, false);
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build()) {
+      DistributedFileSystem dfs = cluster.getFileSystem();
+      FileContext fc = FileContext.getFileContext(cluster.getURI(0), conf);
+      // Create test files/links
+      FileContextTestHelper helper = new FileContextTestHelper(
+          "/tmp/TestSymlinkHdfsDisable");
+      Path root = helper.getTestRootPath(fc);
+      Path target = new Path(root, "target");
+      Path link = new Path(root, "link");
+      DFSTestUtil.createFile(dfs, target, 4096, (short)1, 0xDEADDEAD);
+      fc.createSymlink(target, link, false);
 
-    // Try to resolve links with FileSystem and FileContext
-    try {
-      fc.open(link);
-      fail("Expected error when attempting to resolve link");
-    } catch (IOException e) {
-      GenericTestUtils.assertExceptionContains("resolution is disabled", e);
-    }
-    try {
-      dfs.open(link);
-      fail("Expected error when attempting to resolve link");
-    } catch (IOException e) {
-      GenericTestUtils.assertExceptionContains("resolution is disabled", e);
+      // Try to resolve links with FileSystem and FileContext
+      try {
+        fc.open(link);
+        fail("Expected error when attempting to resolve link");
+      } catch (IOException e) {
+        GenericTestUtils.assertExceptionContains("resolution is disabled", e);
+      }
+      try {
+        dfs.open(link);
+        fail("Expected error when attempting to resolve link");
+      } catch (IOException e) {
+        GenericTestUtils.assertExceptionContains("resolution is disabled", e);
+      }
     }
   }
 }

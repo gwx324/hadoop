@@ -18,22 +18,22 @@
 
 package org.apache.hadoop.yarn.server.nodemanager;
 
-import static org.mockito.Matchers.argThat;
-import static org.mockito.Matchers.isNull;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
@@ -58,19 +58,21 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.security.NMTokenIdentifier;
-import org.apache.hadoop.yarn.server.nodemanager.DeletionService.FileDeletionTask;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.TestContainerManager;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerState;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.deletion.task.FileDeletionMatcher;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ContainerLocalizer;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ResourceLocalizationService;
-import org.apache.hadoop.yarn.util.ConverterUtils;
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.util.Records;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.ArgumentMatcher;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestNodeManagerReboot {
 
@@ -84,14 +86,15 @@ public class TestNodeManagerReboot {
   private FileContext localFS;
   private MyNodeManager nm;
   private DeletionService delService;
-  static final Log LOG = LogFactory.getLog(TestNodeManagerReboot.class);
+  static final Logger LOG =
+       LoggerFactory.getLogger(TestNodeManagerReboot.class);
 
-  @Before
+  @BeforeEach
   public void setup() throws UnsupportedFileSystemException {
     localFS = FileContext.getLocalFSFileContext();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException, InterruptedException {
     localFS.delete(new Path(basedir.getPath()), true);
     if (nm != null) {
@@ -99,7 +102,8 @@ public class TestNodeManagerReboot {
     }
   }
 
-  @Test(timeout = 2000000)
+  @Test
+  @Timeout(value = 2000)
   public void testClearLocalDirWhenNodeReboot() throws IOException,
       YarnException, InterruptedException {
     nm = new MyNodeManager();
@@ -177,37 +181,33 @@ public class TestNodeManagerReboot {
       numTries++;
     }
 
-    Assert.assertEquals(ContainerState.DONE, container.getContainerState());
+    assertEquals(ContainerState.DONE, container.getContainerState());
 
-    Assert
-      .assertTrue(
+    assertTrue(numOfLocalDirs(nmLocalDir.getAbsolutePath(),
+        ContainerLocalizer.USERCACHE) > 0,
         "The container should create a subDir named currentUser: " + user
-            + "under localDir/usercache",
-        numOfLocalDirs(nmLocalDir.getAbsolutePath(),
-          ContainerLocalizer.USERCACHE) > 0);
+        + "under localDir/usercache");
 
-    Assert.assertTrue(
-      "There should be files or Dirs under nm_private when "
-          + "container is launched",
-      numOfLocalDirs(nmLocalDir.getAbsolutePath(),
-        ResourceLocalizationService.NM_PRIVATE_DIR) > 0);
+    assertTrue(numOfLocalDirs(nmLocalDir.getAbsolutePath(),
+        ResourceLocalizationService.NM_PRIVATE_DIR) > 0,
+        "There should be files or Dirs under nm_private when "
+        + "container is launched");
 
     // restart the NodeManager
     restartNM(MAX_TRIES);
     checkNumOfLocalDirs();
-    
-    verify(delService, times(1)).delete(
-      (String) isNull(),
-      argThat(new PathInclude(ResourceLocalizationService.NM_PRIVATE_DIR
-          + "_DEL_")));
-    verify(delService, times(1)).delete((String) isNull(),
-      argThat(new PathInclude(ContainerLocalizer.FILECACHE + "_DEL_")));
-    verify(delService, times(1)).scheduleFileDeletionTask(
-      argThat(new FileDeletionInclude(user, null,
-        new String[] { destinationFile })));
-    verify(delService, times(1)).scheduleFileDeletionTask(
-      argThat(new FileDeletionInclude(null, ContainerLocalizer.USERCACHE
-          + "_DEL_", new String[] {})));
+
+    verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+        delService, null,
+        new Path(ResourceLocalizationService.NM_PRIVATE_DIR + "_DEL_"), null)));
+    verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+        delService, null, new Path(ContainerLocalizer.FILECACHE + "_DEL_"),
+        null)));
+    verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+        delService, user, null, Arrays.asList(new Path(destinationFile)))));
+    verify(delService, times(1)).delete(argThat(new FileDeletionMatcher(
+        delService, null, new Path(ContainerLocalizer.USERCACHE + "_DEL_"),
+        new ArrayList<Path>())));
     
     // restart the NodeManager again
     // this time usercache directory should be empty
@@ -238,20 +238,18 @@ public class TestNodeManagerReboot {
   }
   
   private void checkNumOfLocalDirs() throws IOException {
-    Assert
-      .assertTrue(
-        "After NM reboots, all local files should be deleted",
+    assertTrue(
         numOfLocalDirs(nmLocalDir.getAbsolutePath(),
-          ContainerLocalizer.USERCACHE) == 0
-            && numOfLocalDirs(nmLocalDir.getAbsolutePath(),
-              ContainerLocalizer.FILECACHE) == 0
-            && numOfLocalDirs(nmLocalDir.getAbsolutePath(),
-              ResourceLocalizationService.NM_PRIVATE_DIR) == 0);
-    
-    Assert
-    .assertTrue(
-      "After NM reboots, usercache_DEL_* directory should be deleted",
-      numOfUsercacheDELDirs(nmLocalDir.getAbsolutePath()) == 0);
+        ContainerLocalizer.USERCACHE) == 0
+        && numOfLocalDirs(nmLocalDir.getAbsolutePath(),
+        ContainerLocalizer.FILECACHE) == 0
+        && numOfLocalDirs(nmLocalDir.getAbsolutePath(),
+        ResourceLocalizationService.NM_PRIVATE_DIR) == 0,
+        "After NM reboots, all local files should be deleted");
+
+
+    assertTrue(numOfUsercacheDELDirs(nmLocalDir.getAbsolutePath()) == 0,
+        "After NM reboots, usercache_DEL_* directory should be deleted");
   }
   
   private int numOfLocalDirs(String localDir, String localSubDir) {
@@ -327,74 +325,6 @@ public class TestNodeManagerReboot {
       conf.set(YarnConfiguration.NM_LOCAL_DIRS, nmLocalDir.getAbsolutePath());
       conf.setLong(YarnConfiguration.NM_LOG_RETAIN_SECONDS, 1);
       return conf;
-    }
-  }
-
-  class PathInclude extends ArgumentMatcher<Path> {
-
-    final String part;
-
-    PathInclude(String part) {
-      this.part = part;
-    }
-
-    @Override
-    public boolean matches(Object o) {
-      return ((Path) o).getName().indexOf(part) != -1;
-    }
-  }
-  
-  class FileDeletionInclude extends ArgumentMatcher<FileDeletionTask> {
-    final String user;
-    final String subDirIncludes;
-    final String[] baseDirIncludes;
-    
-    public FileDeletionInclude(String user, String subDirIncludes,
-        String [] baseDirIncludes) {
-      this.user = user;
-      this.subDirIncludes = subDirIncludes;
-      this.baseDirIncludes = baseDirIncludes;
-    }
-    
-    @Override
-    public boolean matches(Object o) {
-      FileDeletionTask fd = (FileDeletionTask)o;
-      if (fd.getUser() == null && user != null) {
-        return false;
-      } else if (fd.getUser() != null && user == null) {
-        return false;
-      } else if (fd.getUser() != null && user != null) {
-        return fd.getUser().equals(user);
-      }
-      if (!comparePaths(fd.getSubDir(), subDirIncludes)) {
-        return false;
-      }
-      if (baseDirIncludes == null && fd.getBaseDirs() != null) {
-        return false;
-      } else if (baseDirIncludes != null && fd.getBaseDirs() == null ) {
-        return false;
-      } else if (baseDirIncludes != null && fd.getBaseDirs() != null) {
-        if (baseDirIncludes.length != fd.getBaseDirs().size()) {
-          return false;
-        }
-        for (int i =0 ; i < baseDirIncludes.length; i++) {
-          if (!comparePaths(fd.getBaseDirs().get(i), baseDirIncludes[i])) {
-            return false;
-          }
-        }
-      }
-      return true;
-    }
-    
-    public boolean comparePaths(Path p1, String p2) {
-      if (p1 == null && p2 != null){
-        return false;
-      } else if (p1 != null && p2 == null) {
-        return false;
-      } else if (p1 != null && p2 != null ){
-        return p1.toUri().getPath().contains(p2.toString());
-      }
-      return true;
     }
   }
 }

@@ -21,10 +21,14 @@ package org.apache.hadoop.yarn.server.api.protocolrecords;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerState;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
+import org.apache.hadoop.yarn.api.records.ExecutionType;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
 import org.apache.hadoop.yarn.util.Records;
+
+import java.util.Collections;
+import java.util.Set;
 
 /**
  * NMContainerStatus includes the current information of a container. This
@@ -35,21 +39,23 @@ public abstract class NMContainerStatus {
   
   // Used by tests only
   public static NMContainerStatus newInstance(ContainerId containerId,
-      ContainerState containerState, Resource allocatedResource,
+      int version, ContainerState containerState, Resource allocatedResource,
       String diagnostics, int containerExitStatus, Priority priority,
       long creationTime) {
-    return newInstance(containerId, containerState, allocatedResource,
+    return newInstance(containerId, version, containerState, allocatedResource,
         diagnostics, containerExitStatus, priority, creationTime,
-        CommonNodeLabelsManager.NO_LABEL);
+        CommonNodeLabelsManager.NO_LABEL, ExecutionType.GUARANTEED, -1);
   }
 
   public static NMContainerStatus newInstance(ContainerId containerId,
-      ContainerState containerState, Resource allocatedResource,
+      int version, ContainerState containerState, Resource allocatedResource,
       String diagnostics, int containerExitStatus, Priority priority,
-      long creationTime, String nodeLabelExpression) {
+      long creationTime, String nodeLabelExpression,
+      ExecutionType executionType, long allocationRequestId) {
     NMContainerStatus status =
         Records.newRecord(NMContainerStatus.class);
     status.setContainerId(containerId);
+    status.setVersion(version);
     status.setContainerState(containerState);
     status.setAllocatedResource(allocatedResource);
     status.setDiagnostics(diagnostics);
@@ -57,6 +63,8 @@ public abstract class NMContainerStatus {
     status.setPriority(priority);
     status.setCreationTime(creationTime);
     status.setNodeLabelExpression(nodeLabelExpression);
+    status.setExecutionType(executionType);
+    status.setAllocationRequestId(allocationRequestId);
     return status;
   }
 
@@ -112,17 +120,64 @@ public abstract class NMContainerStatus {
   public abstract void setPriority(Priority priority);
 
   /**
-   * Get the time when the container is created
+   * Get the time when the container is created.
+   *
+   * @return CreationTime.
    */
   public abstract long getCreationTime();
 
   public abstract void setCreationTime(long creationTime);
   
   /**
-   * Get the node-label-expression in the original ResourceRequest
+   * Get the node-label-expression in the original ResourceRequest.
+   *
+   * @return NodeLabelExpression.
    */
   public abstract String getNodeLabelExpression();
 
   public abstract void setNodeLabelExpression(
       String nodeLabelExpression);
+
+  /**
+   * @return the <em>ID</em> corresponding to the original allocation request.
+   */
+  public abstract long getAllocationRequestId();
+
+  /**
+   * Set the <em>ID</em> corresponding to the original allocation request.
+   *
+   * @param allocationRequestId the <em>ID</em> corresponding to the original
+   *                            allocation request.
+   */
+  public abstract void setAllocationRequestId(long allocationRequestId);
+
+  public int getVersion() {
+    return 0;
+  }
+
+  public void setVersion(int version) {
+
+  }
+
+  /**
+   * Get the <code>ExecutionType</code> of the container.
+   * @return <code>ExecutionType</code> of the container
+   */
+  public ExecutionType getExecutionType() {
+    return ExecutionType.GUARANTEED;
+  }
+
+  public void setExecutionType(ExecutionType executionType) { }
+
+  /**
+   * Get and set the Allocation tags associated with the container.
+   * @return Allocation tags.
+   */
+  public Set<String> getAllocationTags() {
+    return Collections.emptySet();
+  }
+
+  public void setAllocationTags(Set<String> allocationTags) {
+
+  }
 }

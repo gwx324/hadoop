@@ -17,18 +17,17 @@
  */
 package org.apache.hadoop.fs;
 
-import java.io.ByteArrayOutputStream;
-import java.io.PrintStream;
-
-import junit.framework.AssertionFailedError;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.io.IOUtils;
-import org.apache.hadoop.tracing.SetSpanReceiver;
+import org.apache.hadoop.fs.shell.Command;
+import org.apache.hadoop.fs.shell.CommandFactory;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.ToolRunner;
-import org.apache.htrace.core.AlwaysSampler;
-import org.apache.htrace.core.Tracer;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class TestFsShell {
 
@@ -44,7 +43,7 @@ public class TestFsShell {
     }
 
     if (!(th instanceof RuntimeException)) {
-      throw new AssertionFailedError("Expected Runtime exception, got: " + th)
+      throw new AssertionError("Expected Runtime exception, got: " + th)
           .initCause(th);
     }
   }
@@ -53,10 +52,6 @@ public class TestFsShell {
   public void testTracing() throws Throwable {
     Configuration conf = new Configuration();
     String prefix = "fs.shell.htrace.";
-    conf.set(prefix + Tracer.SPAN_RECEIVER_CLASSES_KEY,
-        SetSpanReceiver.class.getName());
-    conf.set(prefix + Tracer.SAMPLER_CLASSES_KEY,
-        AlwaysSampler.class.getName());
     conf.setQuietMode(false);
     FsShell shell = new FsShell(conf);
     int res;
@@ -65,38 +60,45 @@ public class TestFsShell {
     } finally {
       shell.close();
     }
-    SetSpanReceiver.assertSpanNamesFound(new String[]{"help"});
-    Assert.assertEquals("-help ls cat",
-        SetSpanReceiver.getMap()
-            .get("help").get(0).getKVAnnotations().get("args"));
   }
 
   @Test
   public void testDFSWithInvalidCommmand() throws Throwable {
-    Configuration conf = new Configuration();
-    FsShell shell = new FsShell(conf);
-    String[] args = new String[1];
-    args[0] = "dfs -mkdirs";
-    final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-    final PrintStream out = new PrintStream(bytes);
-    final PrintStream oldErr = System.err;
-    try {
-      System.setErr(out);
-      ToolRunner.run(shell, args);
-      String errorValue=new String(bytes.toString());
-      Assert
-      .assertTrue(
-          "FSShell dfs command did not print the error " +
-          "message when invalid command is passed",
-          errorValue.contains("-mkdirs: Unknown command"));
-      Assert
-          .assertTrue(
-              "FSShell dfs command did not print help " +
-              "message when invalid command is passed",
-          errorValue.contains("Usage: hadoop fs [generic options]"));
-    } finally {
-      IOUtils.closeStream(out);
-      System.setErr(oldErr);
+    FsShell shell = new FsShell(new Configuration());
+    try (GenericTestUtils.SystemErrCapturer capture =
+             new GenericTestUtils.SystemErrCapturer()) {
+      ToolRunner.run(shell, new String[]{"dfs -mkdirs"});
+      assertThat(capture.getOutput())
+          .as("FSShell dfs command did not print the error " +
+              "message when invalid command is passed")
+          .contains("-mkdirs: Unknown command");
+      assertThat(capture.getOutput())
+          .as("FSShell dfs command did not print help " +
+              "message when invalid command is passed")
+          .contains("Usage: hadoop fs [generic options]");
+    }
+  }
+
+  @Test
+  public void testExceptionNullMessage() throws Exception {
+    final String cmdName = "-cmdExNullMsg";
+    final Command cmd = mock(Command.class);
+    when(cmd.run(any())).thenThrow(
+        new IllegalArgumentException());
+    when(cmd.getUsage()).thenReturn(cmdName);
+
+    final CommandFactory cmdFactory = mock(CommandFactory.class);
+    final String[] names = {cmdName};
+    when(cmdFactory.getNames()).thenReturn(names);
+    when(cmdFactory.getInstance(cmdName)).thenReturn(cmd);
+
+    FsShell shell = new FsShell(new Configuration());
+    shell.commandFactory = cmdFactory;
+    try (GenericTestUtils.SystemErrCapturer capture =
+             new GenericTestUtils.SystemErrCapturer()) {
+      ToolRunner.run(shell, new String[]{cmdName});
+      assertThat(capture.getOutput())
+          .contains(cmdName + ": Null exception message");
     }
   }
 }

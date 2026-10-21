@@ -97,7 +97,7 @@ public class RandomTextWriter extends Configured implements Tool {
   /**
    * User counters
    */
-  static enum Counters { RECORDS_WRITTEN, BYTES_WRITTEN }
+  enum Counters { RECORDS_WRITTEN, BYTES_WRITTEN }
 
   static class RandomTextMapper extends Mapper<Text, Text, Text, Text> {
     
@@ -154,7 +154,7 @@ public class RandomTextWriter extends Configured implements Tool {
     }
     
     private Text generateSentence(int noWords) {
-      StringBuffer sentence = new StringBuffer();
+      StringBuilder sentence = new StringBuilder();
       String space = " ";
       for (int i=0; i < noWords; ++i) {
         sentence.append(words[random.nextInt(words.length)]);

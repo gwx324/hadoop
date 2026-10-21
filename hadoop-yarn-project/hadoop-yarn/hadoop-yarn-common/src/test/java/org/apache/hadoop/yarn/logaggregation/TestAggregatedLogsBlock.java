@@ -28,8 +28,10 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
 import javax.servlet.http.HttpServletRequest;
+
+import com.google.inject.Inject;
+import org.junit.jupiter.api.Test;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -40,19 +42,26 @@ import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
+import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationAttemptIdPBImpl;
 import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationIdPBImpl;
 import org.apache.hadoop.yarn.api.records.impl.pb.ContainerIdPBImpl;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.logaggregation.filecontroller.LogAggregationFileController;
+import org.apache.hadoop.yarn.logaggregation.filecontroller.LogAggregationFileControllerContext;
+import org.apache.hadoop.yarn.logaggregation.filecontroller.LogAggregationFileControllerFactory;
+import org.apache.hadoop.yarn.logaggregation.filecontroller.tfile.TFileAggregatedLogsBlock;
+import org.apache.hadoop.yarn.webapp.View.ViewContext;
 import org.apache.hadoop.yarn.webapp.YarnWebParams;
 import org.apache.hadoop.yarn.webapp.log.AggregatedLogsBlockForTest;
 import org.apache.hadoop.yarn.webapp.view.BlockForTest;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlockForTest;
-import org.junit.Test;
 
-import static org.mockito.Mockito.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Test AggregatedLogsBlock. AggregatedLogsBlock should check user, aggregate a
@@ -64,7 +73,7 @@ public class TestAggregatedLogsBlock {
    * Bad user. User 'owner' is trying to read logs without access
    */
   @Test
-  public void testAccessDenied() throws Exception {
+  void testAccessDenied() throws Exception {
 
     FileUtil.fullyDelete(new File("target/logs"));
     Configuration configuration = getConfiguration();
@@ -73,12 +82,14 @@ public class TestAggregatedLogsBlock {
 
     writeLog(configuration, "owner");
 
-    AggregatedLogsBlockForTest aggregatedBlock = getAggregatedLogsBlockForTest(
-        configuration, "owner", "container_0_0001_01_000001");
+
     ByteArrayOutputStream data = new ByteArrayOutputStream();
     PrintWriter printWriter = new PrintWriter(data);
     HtmlBlock html = new HtmlBlockForTest();
     HtmlBlock.Block block = new BlockForTest(html, printWriter, 10, false);
+    TFileAggregatedLogsBlockForTest aggregatedBlock
+        = getTFileAggregatedLogsBlockForTest(configuration, "owner",
+        "container_0_0001_01_000001", "localhost:1234");
     aggregatedBlock.render(block);
 
     block.getWriter().flush();
@@ -89,7 +100,7 @@ public class TestAggregatedLogsBlock {
   }
 
   @Test
-  public void testBlockContainsPortNumForUnavailableAppLog() {
+  void testBlockContainsPortNumForUnavailableAppLog() {
     FileUtil.fullyDelete(new File("target/logs"));
     Configuration configuration = getConfiguration();
 
@@ -114,7 +125,7 @@ public class TestAggregatedLogsBlock {
    * @throws Exception
    */
   @Test
-  public void testBadLogs() throws Exception {
+  void testBadLogs() throws Exception {
 
     FileUtil.fullyDelete(new File("target/logs"));
     Configuration configuration = getConfiguration();
@@ -134,7 +145,11 @@ public class TestAggregatedLogsBlock {
     block.getWriter().flush();
     String out = data.toString();
     assertTrue(out
-        .contains("Logs not available for entity. Aggregation may not be complete, Check back later or try the nodemanager at localhost:1234"));
+        .contains("Logs not available for entity. Aggregation may not be "
+            + "complete, Check back later or try to find the container logs "
+            + "in the local directory of nodemanager localhost:1234"));
+    assertTrue(out
+        .contains("Or see application log at http://localhost:8042"));
 
   }
 
@@ -145,7 +160,7 @@ public class TestAggregatedLogsBlock {
    * @throws Exception
    */
   @Test
-  public void testAggregatedLogsBlock() throws Exception {
+  void testAggregatedLogsBlock() throws Exception {
 
     FileUtil.fullyDelete(new File("target/logs"));
     Configuration configuration = getConfiguration();
@@ -154,12 +169,13 @@ public class TestAggregatedLogsBlock {
 
     writeLog(configuration, "admin");
 
-    AggregatedLogsBlockForTest aggregatedBlock = getAggregatedLogsBlockForTest(
-        configuration, "admin", "container_0_0001_01_000001");
     ByteArrayOutputStream data = new ByteArrayOutputStream();
     PrintWriter printWriter = new PrintWriter(data);
     HtmlBlock html = new HtmlBlockForTest();
     HtmlBlock.Block block = new BlockForTest(html, printWriter, 10, false);
+    TFileAggregatedLogsBlockForTest aggregatedBlock
+        = getTFileAggregatedLogsBlockForTest(configuration, "admin",
+        "container_0_0001_01_000001", "localhost:1234");
     aggregatedBlock.render(block);
 
     block.getWriter().flush();
@@ -176,7 +192,7 @@ public class TestAggregatedLogsBlock {
    * @throws Exception
    */
   @Test
-  public void testAggregatedLogsBlockHar() throws Exception {
+  void testAggregatedLogsBlockHar() throws Exception {
     FileUtil.fullyDelete(new File("target/logs"));
     Configuration configuration = getConfiguration();
 
@@ -187,13 +203,13 @@ public class TestAggregatedLogsBlock {
         "/application_1440536969523_0001.har";
     FileUtils.copyDirectory(new File(harUrl.getPath()), new File(path));
 
-    AggregatedLogsBlockForTest aggregatedBlock = getAggregatedLogsBlockForTest(
-        configuration, "admin",
-        "container_1440536969523_0001_01_000001", "host1:1111");
     ByteArrayOutputStream data = new ByteArrayOutputStream();
     PrintWriter printWriter = new PrintWriter(data);
     HtmlBlock html = new HtmlBlockForTest();
     HtmlBlock.Block block = new BlockForTest(html, printWriter, 10, false);
+    TFileAggregatedLogsBlockForTest aggregatedBlock
+        = getTFileAggregatedLogsBlockForTest(configuration, "admin",
+        "container_1440536969523_0001_01_000001", "host1:1111");
     aggregatedBlock.render(block);
 
     block.getWriter().flush();
@@ -202,7 +218,7 @@ public class TestAggregatedLogsBlock {
     assertTrue(out.contains("Hello stdout"));
     assertTrue(out.contains("Hello syslog"));
 
-    aggregatedBlock = getAggregatedLogsBlockForTest(
+    aggregatedBlock = getTFileAggregatedLogsBlockForTest(
         configuration, "admin",
         "container_1440536969523_0001_01_000002", "host2:2222");
     data = new ByteArrayOutputStream();
@@ -222,7 +238,7 @@ public class TestAggregatedLogsBlock {
    * @throws Exception
    */
   @Test
-  public void testNoLogs() throws Exception {
+  void testNoLogs() throws Exception {
 
     FileUtil.fullyDelete(new File("target/logs"));
     Configuration configuration = getConfiguration();
@@ -233,12 +249,13 @@ public class TestAggregatedLogsBlock {
     }
     writeLog(configuration, "admin");
 
-    AggregatedLogsBlockForTest aggregatedBlock = getAggregatedLogsBlockForTest(
-        configuration, "admin", "container_0_0001_01_000001");
     ByteArrayOutputStream data = new ByteArrayOutputStream();
     PrintWriter printWriter = new PrintWriter(data);
     HtmlBlock html = new HtmlBlockForTest();
     HtmlBlock.Block block = new BlockForTest(html, printWriter, 10, false);
+    TFileAggregatedLogsBlockForTest aggregatedBlock
+        = getTFileAggregatedLogsBlockForTest(configuration, "admin",
+        "container_0_0001_01_000001", "localhost:1234");
     aggregatedBlock.render(block);
 
     block.getWriter().flush();
@@ -246,10 +263,9 @@ public class TestAggregatedLogsBlock {
     assertTrue(out.contains("No logs available for container container_0_0001_01_000001"));
 
   }
-  
-  
+
   private Configuration getConfiguration() {
-    Configuration configuration = new Configuration();
+    Configuration configuration = new YarnConfiguration();
     configuration.setBoolean(YarnConfiguration.LOG_AGGREGATION_ENABLED, true);
     configuration.set(YarnConfiguration.NM_REMOTE_APP_LOG_DIR, "target/logs");
     configuration.setBoolean(YarnConfiguration.YARN_ACL_ENABLE, true);
@@ -262,6 +278,28 @@ public class TestAggregatedLogsBlock {
     return getAggregatedLogsBlockForTest(configuration, user, containerId,
         "localhost:1234");
   }
+
+  private TFileAggregatedLogsBlockForTest getTFileAggregatedLogsBlockForTest(
+      Configuration configuration, String user, String containerId,
+      String nodeName) {
+    HttpServletRequest request = mock(HttpServletRequest.class);
+    when(request.getRemoteUser()).thenReturn(user);
+    ViewContext mockContext = mock(ViewContext.class);
+    TFileAggregatedLogsBlockForTest aggregatedBlock
+        = new TFileAggregatedLogsBlockForTest(mockContext,
+            configuration);
+    aggregatedBlock.setRequest(request);
+    aggregatedBlock.moreParams().put(YarnWebParams.CONTAINER_ID,
+        containerId);
+    aggregatedBlock.moreParams().put(YarnWebParams.NM_NODENAME,
+        nodeName);
+    aggregatedBlock.moreParams().put(YarnWebParams.APP_OWNER, user);
+    aggregatedBlock.moreParams().put("start", "");
+    aggregatedBlock.moreParams().put("end", "");
+    aggregatedBlock.moreParams().put(YarnWebParams.ENTITY_STRING, "entity");
+    return aggregatedBlock;
+  }
+
 
   private AggregatedLogsBlockForTest getAggregatedLogsBlockForTest(
       Configuration configuration, String user, String containerId,
@@ -295,17 +333,26 @@ public class TestAggregatedLogsBlock {
     List<String> rootLogDirs = Arrays.asList("target/logs/logs");
     UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
 
-    AggregatedLogFormat.LogWriter writer = new AggregatedLogFormat.LogWriter(
-        configuration, new Path(path), ugi);
-    writer.writeApplicationOwner(ugi.getUserName());
-
-    Map<ApplicationAccessType, String> appAcls = new HashMap<ApplicationAccessType, String>();
-    appAcls.put(ApplicationAccessType.VIEW_APP, ugi.getUserName());
-    writer.writeApplicationACLs(appAcls);
-
-    writer.append(new AggregatedLogFormat.LogKey("container_0_0001_01_000001"),
-        new AggregatedLogFormat.LogValue(rootLogDirs, containerId,UserGroupInformation.getCurrentUser().getShortUserName()));
-    writer.close();
+    LogAggregationFileControllerFactory factory
+        = new LogAggregationFileControllerFactory(configuration);
+    LogAggregationFileController fileController = factory
+        .getFileControllerForWrite();
+    try {
+      Map<ApplicationAccessType, String> appAcls = new HashMap<>();
+      appAcls.put(ApplicationAccessType.VIEW_APP, ugi.getUserName());
+      NodeId nodeId = NodeId.newInstance("localhost", 1234);
+      LogAggregationFileControllerContext context
+          = new LogAggregationFileControllerContext(
+              new Path(path), new Path(path), false, 3600,
+              appId, appAcls, nodeId, ugi);
+      fileController.initializeWriter(context);
+      fileController.write(
+          new AggregatedLogFormat.LogKey("container_0_0001_01_000001"),
+          new AggregatedLogFormat.LogValue(rootLogDirs, containerId,
+              UserGroupInformation.getCurrentUser().getShortUserName()));
+    } finally {
+      fileController.closeWriter();
+    }
   }
 
   private void writeLogs(String dirName) throws Exception {
@@ -327,4 +374,32 @@ public class TestAggregatedLogsBlock {
     writer.close();
   }
 
+  private static class TFileAggregatedLogsBlockForTest
+      extends TFileAggregatedLogsBlock {
+
+    private Map<String, String> params = new HashMap<String, String>();
+    private HttpServletRequest request;
+
+    @Inject
+    TFileAggregatedLogsBlockForTest(ViewContext ctx, Configuration conf) {
+      super(ctx, conf, new Path("target/logs"), "logs");
+    }
+
+    public void render(Block html) {
+      super.render(html);
+    }
+
+    @Override
+    public Map<String, String> moreParams() {
+      return params;
+    }
+
+    public HttpServletRequest request() {
+      return request;
+    }
+
+    public  void setRequest(HttpServletRequest request) {
+      this.request = request;
+    }
+  }
 }

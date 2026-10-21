@@ -21,6 +21,9 @@ import javax.xml.bind.annotation.XmlAccessType;
 import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlRootElement;
 
+import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.util.resource.Resources;
+
 /**
  * This class represents queue capacities for a given partition
  */
@@ -29,6 +32,7 @@ import javax.xml.bind.annotation.XmlRootElement;
 public class PartitionQueueCapacitiesInfo {
   private String partitionName;
 
+  private QueueCapacityVectorInfo queueCapacityVectorInfo;
   private float capacity;
   private float usedCapacity;
   private float maxCapacity = 100;
@@ -36,14 +40,25 @@ public class PartitionQueueCapacitiesInfo {
   private float absoluteUsedCapacity;
   private float absoluteMaxCapacity  = 100;
   private float maxAMLimitPercentage;
+  private float weight;
+  private float normalizedWeight;
+  private ResourceInfo configuredMinResource;
+  private ResourceInfo configuredMaxResource;
+  private ResourceInfo effectiveMinResource;
+  private ResourceInfo effectiveMaxResource;
 
   public PartitionQueueCapacitiesInfo() {
   }
 
-  public PartitionQueueCapacitiesInfo(String partitionName, float capacity,
-      float usedCapacity, float maxCapacity, float absCapacity,
-      float absUsedCapacity, float absMaxCapacity, float maxAMLimitPercentage) {
+  public PartitionQueueCapacitiesInfo(String partitionName,
+      QueueCapacityVectorInfo queueCapacityVectorInfo,
+      float capacity, float usedCapacity, float maxCapacity, float absCapacity,
+      float absUsedCapacity, float absMaxCapacity, float maxAMLimitPercentage,
+      float weight, float normalizedWeight,
+      Resource confMinRes, Resource confMaxRes, Resource effMinRes,
+      Resource effMaxRes) {
     super();
+    this.queueCapacityVectorInfo = queueCapacityVectorInfo;
     this.partitionName = partitionName;
     this.capacity = capacity;
     this.usedCapacity = usedCapacity;
@@ -52,6 +67,20 @@ public class PartitionQueueCapacitiesInfo {
     this.absoluteUsedCapacity = absUsedCapacity;
     this.absoluteMaxCapacity = absMaxCapacity;
     this.maxAMLimitPercentage = maxAMLimitPercentage;
+    this.weight = weight;
+    this.normalizedWeight = normalizedWeight;
+    this.configuredMinResource = new ResourceInfo(confMinRes);
+    this.configuredMaxResource = new ResourceInfo(confMaxRes);
+    this.effectiveMinResource = new ResourceInfo(effMinRes);
+    this.effectiveMaxResource = new ResourceInfo(effMaxRes);
+  }
+
+  public QueueCapacityVectorInfo getQueueCapacityVectorInfo() {
+    return queueCapacityVectorInfo;
+  }
+
+  public void setQueueCapacityVectorInfo(QueueCapacityVectorInfo queueCapacityVectorInfo) {
+    this.queueCapacityVectorInfo = queueCapacityVectorInfo;
   }
 
   public float getCapacity() {
@@ -114,7 +143,43 @@ public class PartitionQueueCapacitiesInfo {
     return maxAMLimitPercentage;
   }
 
+  public float getWeight() {
+    return weight;
+  }
+
+  public void setWeight(float weight) {
+    this.weight = weight;
+  }
+
+  public float getNormalizedWeight() {
+    return normalizedWeight;
+  }
+
+  public void setNormalizedWeight(float normalizedWeight) {
+    this.normalizedWeight = normalizedWeight;
+  }
+
   public void setMaxAMLimitPercentage(float maxAMLimitPercentage) {
     this.maxAMLimitPercentage = maxAMLimitPercentage;
+  }
+
+  public ResourceInfo getConfiguredMinResource() {
+    return configuredMinResource;
+  }
+
+  public ResourceInfo getConfiguredMaxResource() {
+    if (configuredMaxResource == null
+        || configuredMaxResource.getResource().equals(Resources.none())) {
+      return null;
+    }
+    return configuredMaxResource;
+  }
+
+  public ResourceInfo getEffectiveMinResource() {
+    return effectiveMinResource;
+  }
+
+  public ResourceInfo getEffectiveMaxResource() {
+    return effectiveMaxResource;
   }
 }

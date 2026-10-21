@@ -25,7 +25,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.InetAddress;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.Map;
@@ -36,8 +36,6 @@ import org.apache.commons.cli.GnuParser;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.security.Credentials;
@@ -60,6 +58,8 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.apache.hadoop.yarn.util.Records;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The UnmanagedLauncher is a simple client that launches and unmanaged AM. An
@@ -75,7 +75,8 @@ import org.apache.hadoop.yarn.util.Records;
  * report app completion.
  */
 public class UnmanagedAMLauncher {
-  private static final Log LOG = LogFactory.getLog(UnmanagedAMLauncher.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(UnmanagedAMLauncher.class);
 
   private Configuration conf;
 
@@ -110,7 +111,7 @@ public class UnmanagedAMLauncher {
       }
       client.run();
     } catch (Throwable t) {
-      LOG.fatal("Error running Client", t);
+      LOG.error("Error running Client", t);
       System.exit(1);
     }
   }
@@ -159,7 +160,7 @@ public class UnmanagedAMLauncher {
     appName = cliParser.getOptionValue("appname", "UnmanagedAM");
     amPriority = Integer.parseInt(cliParser.getOptionValue("priority", "0"));
     amQueue = cliParser.getOptionValue("queue", "default");
-    classpath = cliParser.getOptionValue("classpath", null);
+    classpath = cliParser.getOptionValue("classpath", () ->null);
 
     amCmd = cliParser.getOptionValue("cmd");
     if (amCmd == null) {
@@ -192,11 +193,11 @@ public class UnmanagedAMLauncher {
       throw new RuntimeException(ex);
     }
     tokenFile.deleteOnExit();
-    DataOutputStream os = new DataOutputStream(new FileOutputStream(tokenFile, 
-        true));
-    credentials.writeTokenStorageToStream(os);
-    os.close();
-    
+    try (DataOutputStream os = new DataOutputStream(
+        new FileOutputStream(tokenFile, true))) {
+      credentials.writeTokenStorageToStream(os);
+    }
+
     Map<String, String> env = System.getenv();
     ArrayList<String> envAMList = new ArrayList<String>();
     boolean setClasspath = false;
@@ -234,10 +235,10 @@ public class UnmanagedAMLauncher {
 
     final BufferedReader errReader = 
         new BufferedReader(new InputStreamReader(
-            amProc.getErrorStream(), Charset.forName("UTF-8")));
+            amProc.getErrorStream(), StandardCharsets.UTF_8));
     final BufferedReader inReader = 
         new BufferedReader(new InputStreamReader(
-            amProc.getInputStream(), Charset.forName("UTF-8")));
+            amProc.getInputStream(), StandardCharsets.UTF_8));
     
     // read error and input streams as this would free up the buffers
     // free the error stream buffer

@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs.server.datanode.web.webhdfs;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HAUtilClient;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
@@ -25,14 +26,19 @@ import org.apache.hadoop.hdfs.web.resources.DelegationParam;
 import org.apache.hadoop.hdfs.web.resources.NamenodeAddressParam;
 import org.apache.hadoop.hdfs.web.resources.OffsetParam;
 import org.apache.hadoop.security.token.Token;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import io.netty.handler.codec.http.QueryStringDecoder;
 
 import java.io.IOException;
+import java.util.EnumSet;
 
-import static org.mockito.Mockito.mock;
 
 public class TestParameterParser {
   private static final String LOGICAL_NAME = "minidfs";
@@ -48,7 +54,16 @@ public class TestParameterParser {
       + DelegationParam.NAME + "=" + token.encodeToUrlString());
     ParameterParser testParser = new ParameterParser(decoder, conf);
     final Token<DelegationTokenIdentifier> tok2 = testParser.delegationToken();
-    Assert.assertTrue(HAUtilClient.isTokenForLogicalUri(tok2));
+    assertTrue(HAUtilClient.isTokenForLogicalUri(tok2));
+  }
+
+  @Test
+  public void testNullToken() throws IOException {
+    Configuration conf = new Configuration();
+    QueryStringDecoder decoder = new QueryStringDecoder(
+            WebHdfsHandler.WEBHDFS_PREFIX + "/test");
+    ParameterParser testParser = new ParameterParser(decoder, conf);
+    assertNull(testParser.delegationToken());
   }
 
   @Test
@@ -60,7 +75,80 @@ public class TestParameterParser {
     QueryStringDecoder decoder = new QueryStringDecoder(
       WebHdfsHandler.WEBHDFS_PREFIX + ESCAPED_PATH);
     ParameterParser testParser = new ParameterParser(decoder, conf);
-    Assert.assertEquals(EXPECTED_PATH, testParser.path());
+    assertEquals(EXPECTED_PATH, testParser.path());
+  }
+
+  @Test
+  public void testCreateFlag() {
+    final String path = "/test1?createflag=append,sync_block";
+    Configuration conf = new Configuration();
+    QueryStringDecoder decoder = new QueryStringDecoder(
+        WebHdfsHandler.WEBHDFS_PREFIX + path);
+    ParameterParser testParser = new ParameterParser(decoder, conf);
+    EnumSet<CreateFlag> actual = testParser.createFlag();
+    EnumSet<CreateFlag> expected = EnumSet.of(CreateFlag.APPEND,
+        CreateFlag.SYNC_BLOCK);
+    assertEquals(expected.toString(), actual.toString());
+
+    final String path1 = "/test1?createflag=append";
+    decoder = new QueryStringDecoder(
+        WebHdfsHandler.WEBHDFS_PREFIX + path1);
+    testParser = new ParameterParser(decoder, conf);
+
+    actual = testParser.createFlag();
+    expected = EnumSet.of(CreateFlag.APPEND);
+    assertEquals(expected, actual);
+
+    final String path2 = "/test1";
+    decoder = new QueryStringDecoder(
+        WebHdfsHandler.WEBHDFS_PREFIX + path2);
+    testParser = new ParameterParser(decoder, conf);
+    actual = testParser.createFlag();
+    assertEquals(0, actual.size());
+
+    final String path3 = "/test1?createflag=create,overwrite";
+    decoder = new QueryStringDecoder(
+        WebHdfsHandler.WEBHDFS_PREFIX + path3);
+    testParser = new ParameterParser(decoder, conf);
+    actual = testParser.createFlag();
+    expected = EnumSet.of(CreateFlag.CREATE, CreateFlag
+        .OVERWRITE);
+    assertEquals(expected.toString(), actual.toString());
+
+    final String path4 = "/test1?createflag=";
+    decoder = new QueryStringDecoder(
+        WebHdfsHandler.WEBHDFS_PREFIX + path4);
+    testParser = new ParameterParser(decoder, conf);
+    actual = testParser.createFlag();
+    assertEquals(0, actual.size());
+
+    //Incorrect value passed to createflag
+    try {
+      final String path5 = "/test1?createflag=overwrite,";
+      decoder = new QueryStringDecoder(
+          WebHdfsHandler.WEBHDFS_PREFIX + path5);
+      testParser = new ParameterParser(decoder, conf);
+      actual = testParser.createFlag();
+      fail("It should throw Illegal Argument Exception");
+    } catch (Exception e) {
+      GenericTestUtils
+          .assertExceptionContains("No enum constant", e);
+    }
+
+    //Incorrect value passed to createflag
+    try {
+      final String path6 = "/test1?createflag=,";
+      decoder = new QueryStringDecoder(
+          WebHdfsHandler.WEBHDFS_PREFIX + path6);
+      testParser = new ParameterParser(decoder, conf);
+      actual = testParser.createFlag();
+      fail("It should throw Illegal Argument Exception");
+    } catch (Exception e) {
+      GenericTestUtils
+          .assertExceptionContains("No enum constant", e);
+    }
+
+
   }
 
   @Test
@@ -68,14 +156,14 @@ public class TestParameterParser {
     final long X = 42;
 
     long offset = new OffsetParam(Long.toString(X)).getOffset();
-    Assert.assertEquals("OffsetParam: ", X, offset);
+    assertEquals(X, offset, "OffsetParam: ");
 
     offset = new OffsetParam((String) null).getOffset();
-    Assert.assertEquals("OffsetParam with null should have defaulted to 0", 0, offset);
+    assertEquals(0, offset, "OffsetParam with null should have defaulted to 0");
 
     try {
       offset = new OffsetParam("abc").getValue();
-      Assert.fail("OffsetParam with nondigit value should have thrown IllegalArgumentException");
+      fail("OffsetParam with nondigit value should have thrown IllegalArgumentException");
     } catch (IllegalArgumentException iae) {
       // Ignore
     }

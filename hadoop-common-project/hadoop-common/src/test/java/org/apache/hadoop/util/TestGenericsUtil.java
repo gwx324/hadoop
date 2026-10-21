@@ -21,12 +21,17 @@ package org.apache.hadoop.util;
 import java.util.ArrayList;
 import java.util.List;
 
-import junit.framework.TestCase;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import org.apache.hadoop.conf.Configuration;
 
-public class TestGenericsUtil extends TestCase {
+public class TestGenericsUtil {
 
+  @Test
   public void testToArray() {
 
     //test a list of size 10
@@ -39,12 +44,12 @@ public class TestGenericsUtil extends TestCase {
     Integer[] arr = GenericsUtil.toArray(list);
 
     for (int i = 0; i < arr.length; i++) {
-      assertEquals(
-              "Array has identical elements as input list",
-              list.get(i), arr[i]);
+      assertEquals(list.get(i), arr[i],
+          "Array has identical elements as input list");
     }
   }
 
+  @Test
   public void testWithEmptyList() {
     try {
       List<String> list = new ArrayList<String>();
@@ -57,13 +62,14 @@ public class TestGenericsUtil extends TestCase {
     }
   }
 
+  @Test
   public void testWithEmptyList2() {
     List<String> list = new ArrayList<String>();
     //this method should not throw IndexOutOfBoundsException
     String[] arr = GenericsUtil.<String>toArray(String.class, list);
 
-    assertEquals("Assert list creation w/ no elements results in length 0",
-            0, arr.length);
+    assertEquals(0, arr.length,
+        "Assert list creation w/ no elements results in length 0");
   }
 
   /** This class uses generics */
@@ -81,6 +87,7 @@ public class TestGenericsUtil extends TestCase {
     }
   }
 
+  @Test
   public void testWithGenericClass() {
 
     GenericClass<String> testSubject = new GenericClass<String>();
@@ -102,6 +109,7 @@ public class TestGenericsUtil extends TestCase {
 
   }
 
+  @Test
   public void testGenericOptionsParser() throws Exception {
      GenericOptionsParser parser = new GenericOptionsParser(
         new Configuration(), new String[] {"-jt"});
@@ -111,24 +119,31 @@ public class TestGenericsUtil extends TestCase {
     parser =
       new GenericOptionsParser(new Configuration(),
                                new String[] {"-Dx=y=z"});
-    assertEquals(
-            "Options parser gets entire ='s expresion",
-            "y=z", parser.getConfiguration().get("x"));
+    assertEquals("y=z", parser.getConfiguration().get("x"),
+        "Options parser gets entire ='s expresion");
   }
 
+  @Test
   public void testGetClass() {
 
     //test with Integer
     Integer x = new Integer(42);
     Class<Integer> c = GenericsUtil.getClass(x);
-    assertEquals("Correct generic type is acquired from object",
-            Integer.class, c);
+    assertEquals(Integer.class, c,
+        "Correct generic type is acquired from object");
 
     //test with GenericClass<Integer>
     GenericClass<Integer> testSubject = new GenericClass<Integer>();
     Class<GenericClass<Integer>> c2 = GenericsUtil.getClass(testSubject);
-    assertEquals("Inner generics are acquired from object.",
-            GenericClass.class, c2);
+    assertEquals(GenericClass.class, c2,
+        "Inner generics are acquired from object.");
   }
 
+  @Test
+  public void testIsLog4jLogger() throws Exception {
+    assertFalse(GenericsUtil.isLog4jLogger((Class<?>) null),
+        "False if clazz is null");
+    assertTrue(GenericsUtil.isLog4jLogger(TestGenericsUtil.class),
+        "The implementation is Log4j");
+  }
 }

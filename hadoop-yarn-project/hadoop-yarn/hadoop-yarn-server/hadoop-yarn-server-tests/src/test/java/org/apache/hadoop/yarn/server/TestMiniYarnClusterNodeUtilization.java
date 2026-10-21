@@ -18,9 +18,9 @@
 
 package org.apache.hadoop.yarn.server;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -32,9 +32,6 @@ import org.apache.hadoop.yarn.api.records.ResourceUtilization;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.MiniYARNCluster.CustomNodeManager;
-import org.apache.hadoop.yarn.server.api.ResourceTracker;
-import org.apache.hadoop.yarn.server.api.ServerRMProxy;
-import org.apache.hadoop.yarn.server.api.protocolrecords.NodeHeartbeatRequest;
 import org.apache.hadoop.yarn.server.api.records.NodeHealthStatus;
 import org.apache.hadoop.yarn.server.api.records.NodeStatus;
 import org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdater;
@@ -42,8 +39,10 @@ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNode;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestMiniYarnClusterNodeUtilization {
   // Mini YARN cluster setup
@@ -75,7 +74,7 @@ public class TestMiniYarnClusterNodeUtilization {
 
   private NodeStatus nodeStatus;
 
-  @Before
+  @BeforeEach
   public void setup() {
     conf = new YarnConfiguration();
     conf.set(YarnConfiguration.RM_WEBAPP_ADDRESS, "localhost:0");
@@ -84,14 +83,21 @@ public class TestMiniYarnClusterNodeUtilization {
     cluster = new MiniYARNCluster(name, NUM_RM, NUM_NM, 1, 1);
     cluster.init(conf);
     cluster.start();
-    assertFalse("RM never turned active", -1 == cluster.getActiveRMIndex());
+    assertFalse(-1 == cluster.getActiveRMIndex(), "RM never turned active");
 
     nm = (CustomNodeManager)cluster.getNodeManager(0);
-    int responseId = 1;
-    nodeStatus = createNodeStatus(nm.getNMContext().getNodeId(), responseId,
+    nodeStatus = createNodeStatus(nm.getNMContext().getNodeId(), 0,
         CONTAINER_PMEM_1, CONTAINER_VMEM_1, CONTAINER_CPU_1,
         NODE_PMEM_1, NODE_VMEM_1, NODE_CPU_1);
     nm.setNodeStatus(nodeStatus);
+  }
+
+  @AfterEach
+  public void tearDown() {
+    if (cluster != null) {
+      cluster.stop();
+      cluster = null;
+    }
   }
 
   /**
@@ -99,29 +105,21 @@ public class TestMiniYarnClusterNodeUtilization {
    * both the RMNode and SchedulerNode have been updated with the new
    * utilization.
    */
-  @Test(timeout=60000)
-  public void testUpdateNodeUtilization()
+  @Test
+  @Timeout(60000)
+  void testUpdateNodeUtilization()
       throws InterruptedException, IOException, YarnException {
-    assertTrue("NMs fail to connect to the RM",
-        cluster.waitForNodeManagersToConnect(10000));
-
-    // Simulate heartbeat using NodeStatus fixture
-    NodeHeartbeatRequest request =
-        NodeHeartbeatRequest.newInstance(nodeStatus, null, null, null);
-    ResourceTracker tracker =
-        ServerRMProxy.createRMProxy(conf, ResourceTracker.class);
-    tracker.nodeHeartbeat(request);
+    assertTrue(cluster.waitForNodeManagersToConnect(10000),
+        "NMs fail to connect to the RM");
 
     // Give the heartbeat time to propagate to the RM
     verifySimulatedUtilization();
 
     // Alter utilization
-    int responseId = 10;
-    nodeStatus = createNodeStatus(nm.getNMContext().getNodeId(), responseId,
+    nodeStatus = createNodeStatus(nm.getNMContext().getNodeId(), 0,
         CONTAINER_PMEM_2, CONTAINER_VMEM_2, CONTAINER_CPU_2,
         NODE_PMEM_2, NODE_VMEM_2, NODE_CPU_2);
     nm.setNodeStatus(nodeStatus);
-    tracker.nodeHeartbeat(request);
 
     // Give the heartbeat time to propagate to the RM
     verifySimulatedUtilization();
@@ -132,11 +130,12 @@ public class TestMiniYarnClusterNodeUtilization {
    * Verify both the RMNode and SchedulerNode have been updated with the new
    * utilization.
    */
-  @Test(timeout=60000)
-  public void testMockNodeStatusHeartbeat()
+  @Test
+  @Timeout(60000)
+  void testMockNodeStatusHeartbeat()
       throws InterruptedException, YarnException {
-    assertTrue("NMs fail to connect to the RM",
-        cluster.waitForNodeManagersToConnect(10000));
+    assertTrue(cluster.waitForNodeManagersToConnect(10000),
+        "NMs fail to connect to the RM");
 
     NodeStatusUpdater updater = nm.getNodeStatusUpdater();
     updater.sendOutofBandHeartBeat();
@@ -145,8 +144,7 @@ public class TestMiniYarnClusterNodeUtilization {
     verifySimulatedUtilization();
 
     // Alter utilization
-    int responseId = 20;
-    nodeStatus = createNodeStatus(nm.getNMContext().getNodeId(), responseId,
+    nodeStatus = createNodeStatus(nm.getNMContext().getNodeId(), 0,
         CONTAINER_PMEM_2, CONTAINER_VMEM_2, CONTAINER_CPU_2,
         NODE_PMEM_2, NODE_VMEM_2, NODE_CPU_2);
     nm.setNodeStatus(nodeStatus);
@@ -198,8 +196,6 @@ public class TestMiniYarnClusterNodeUtilization {
   /**
    * Verify both the RMNode and SchedulerNode have been updated with the test
    * fixture utilization data.
-   * @param containersUtilization Utilization of the container.
-   * @param nodeUtilization Utilization of the node.
    */
   private void verifySimulatedUtilization() throws InterruptedException {
     ResourceManager rm = cluster.getResourceManager(0);
@@ -212,12 +208,12 @@ public class TestMiniYarnClusterNodeUtilization {
 
     // Give the heartbeat time to propagate to the RM (max 10 seconds)
     // We check if the nodeUtilization is up to date
-    for (int i=0; i<100; i++) {
+    for (int i = 0; i < 100; i++) {
       for (RMNode ni : rmContext.getRMNodes().values()) {
         if (ni.getNodeUtilization() != null) {
-            if (ni.getNodeUtilization().equals(nodeUtilization)) {
-              break;
-            }
+          if (ni.getNodeUtilization().equals(nodeUtilization)) {
+            break;
+          }
         }
       }
       Thread.sleep(100);
@@ -226,22 +222,18 @@ public class TestMiniYarnClusterNodeUtilization {
     // Verify the data is readable from the RM and scheduler nodes
     for (RMNode ni : rmContext.getRMNodes().values()) {
       ResourceUtilization cu = ni.getAggregatedContainersUtilization();
-      assertEquals("Containers Utillization not propagated to RMNode",
-          containersUtilization, cu);
+      assertEquals(containersUtilization, cu, "Containers Utillization not propagated to RMNode");
 
       ResourceUtilization nu = ni.getNodeUtilization();
-      assertEquals("Node Utillization not propagated to RMNode",
-          nodeUtilization, nu);
+      assertEquals(nodeUtilization, nu, "Node Utillization not propagated to RMNode");
 
-      SchedulerNode scheduler =
-          rmContext.getScheduler().getSchedulerNode(ni.getNodeID());
+      SchedulerNode scheduler = rmContext.getScheduler().getSchedulerNode(ni.getNodeID());
       cu = scheduler.getAggregatedContainersUtilization();
-      assertEquals("Containers Utillization not propagated to SchedulerNode",
-          containersUtilization, cu);
+      assertEquals(containersUtilization, cu,
+          "Containers Utillization not propagated to SchedulerNode");
 
       nu = scheduler.getNodeUtilization();
-      assertEquals("Node Utillization not propagated to SchedulerNode",
-          nodeUtilization, nu);
+      assertEquals(nodeUtilization, nu, "Node Utillization not propagated to SchedulerNode");
     }
   }
 }

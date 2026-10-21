@@ -23,10 +23,21 @@ import java.io.IOException;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Stable;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
-import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceRequest;
-import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.CommitResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ContainerUpdateResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.IncreaseContainersResourceResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ReInitializeContainerRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ReInitializeContainerResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ResourceLocalizationRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ResourceLocalizationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.RestartContainerResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.RollbackResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.StartContainerRequest;
@@ -38,7 +49,6 @@ import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
-import org.apache.hadoop.yarn.exceptions.NMNotYetReadyException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 
 /**
@@ -92,11 +102,8 @@ public interface ContainerManagementProtocol {
    * @return response including conatinerIds of all successfully launched
    *         containers, a containerId-to-exception map for failed requests and
    *         a allServicesMetaData map.
-   * @throws YarnException
-   * @throws IOException
-   * @throws NMNotYetReadyException
-   *           This exception is thrown when NM starts from scratch but has not
-   *           yet connected with RM.
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Stable
@@ -131,8 +138,8 @@ public interface ContainerManagementProtocol {
    * @return response which includes a list of containerIds of successfully
    *         stopped containers, a containerId-to-exception map for failed
    *         requests.
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Stable
@@ -167,8 +174,8 @@ public interface ContainerManagementProtocol {
    *         successfully queried containers and a containerId-to-exception map
    *         for failed requests.
    * 
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Stable
@@ -188,15 +195,116 @@ public interface ContainerManagementProtocol {
    *         whose resource has been successfully increased and a
    *         containerId-to-exception map for failed requests.
    *
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Unstable
+  @Deprecated
   IncreaseContainersResourceResponse increaseContainersResource(
       IncreaseContainersResourceRequest request) throws YarnException,
       IOException;
 
+  /**
+   * <p>
+   * The API used by the <code>ApplicationMaster</code> to request for
+   * resource update of running containers on the <code>NodeManager</code>.
+   * </p>
+   *
+   * @param request
+   *         request to update resource of a list of containers
+   * @return response which includes a list of containerIds of containers
+   *         whose resource has been successfully updated and a
+   *         containerId-to-exception map for failed requests.
+   *
+   * @throws YarnException Exception specific to YARN
+   * @throws IOException IOException thrown from NodeManager
+   */
+  @Public
+  @Unstable
+  ContainerUpdateResponse updateContainer(ContainerUpdateRequest request)
+      throws YarnException, IOException;
+
   SignalContainerResponse signalToContainer(SignalContainerRequest request)
       throws YarnException, IOException;
+
+  /**
+   * Localize resources required by the container.
+   * Currently, this API only works for running containers.
+   *
+   * @param request Specify the resources to be localized.
+   * @return Response that the localize request is accepted.
+   * @throws YarnException Exception specific to YARN
+   * @throws IOException IOException thrown from the RPC layer.
+   */
+  @Public
+  @Unstable
+  ResourceLocalizationResponse localize(ResourceLocalizationRequest request)
+    throws YarnException, IOException;
+
+  /**
+   * ReInitialize the Container with a new Launch Context.
+   * @param request Specify the new ContainerLaunchContext.
+   * @return Response that the ReInitialize request is accepted.
+   * @throws YarnException Exception specific to YARN.
+   * @throws IOException IOException thrown from the RPC layer.
+   */
+  @Public
+  @Unstable
+  ReInitializeContainerResponse reInitializeContainer(
+      ReInitializeContainerRequest request) throws YarnException, IOException;
+
+  /**
+   * Restart the container.
+   * @param containerId Container Id.
+   * @return Response that the restart request is accepted.
+   * @throws YarnException Exception specific to YARN.
+   * @throws IOException IOException thrown from the RPC layer.
+   */
+  @Public
+  @Unstable
+  RestartContainerResponse restartContainer(ContainerId containerId)
+      throws YarnException, IOException;
+
+  /**
+   * Rollback the Last ReInitialization if possible.
+   * @param containerId Container Id.
+   * @return Response that the rollback request is accepted.
+   * @throws YarnException Exception specific to YARN.
+   * @throws IOException IOException thrown from the RPC layer.
+   */
+  @Public
+  @Unstable
+  RollbackResponse rollbackLastReInitialization(ContainerId containerId)
+      throws YarnException, IOException;
+
+  /**
+   * Commit the Last ReInitialization if possible. Once the reinitialization
+   * has been committed, It cannot be rolled back.
+   * @param containerId Container Id.
+   * @return Response that the commit request is accepted.
+   * @throws YarnException Exception specific to YARN.
+   * @throws IOException IOException thrown from the RPC layer.
+   */
+  @Public
+  @Unstable
+  CommitResponse commitLastReInitialization(ContainerId containerId)
+      throws YarnException, IOException;
+
+  /**
+   * API to request for the localization statuses of requested containers from
+   * the Node Manager.
+   * @param request {@link GetLocalizationStatusesRequest} which includes the
+   *                container ids of all the containers whose localization
+   *                statuses are needed.
+   * @return {@link GetLocalizationStatusesResponse} which contains the
+   *         localization statuses of all the requested containers.
+   * @throws YarnException Exception specific to YARN.
+   * @throws IOException IOException thrown from the RPC layer.
+   */
+  @Public
+  @Unstable
+  GetLocalizationStatusesResponse getLocalizationStatuses(
+      GetLocalizationStatusesRequest request) throws YarnException,
+      IOException;
 }

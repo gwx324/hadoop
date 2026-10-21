@@ -17,21 +17,22 @@
  */
 package org.apache.hadoop.io.erasurecode.rawcoder;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
 import org.apache.hadoop.io.erasurecode.ErasureCodeNative;
-import org.junit.Assume;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test native raw Reed-solomon encoding and decoding.
  */
 public class TestNativeRSRawCoder extends TestRSRawCoderBase {
 
-  @Before
+  @BeforeEach
   public void setup() {
-    Assume.assumeTrue(ErasureCodeNative.isNativeCodeLoaded());
-    this.encoderClass = NativeRSRawEncoder.class;
-    this.decoderClass = NativeRSRawDecoder.class;
+    assumeTrue(ErasureCodeNative.isNativeCodeLoaded());
+    this.encoderFactoryClass = NativeRSRawErasureCoderFactory.class;
+    this.decoderFactoryClass = NativeRSRawErasureCoderFactory.class;
     setAllowDump(true);
   }
 
@@ -117,5 +118,11 @@ public class TestNativeRSRawCoder extends TestRSRawCoderBase {
   public void testCoding_10x4_erasing_d0_p0() {
     prepare(null, 10, 4, new int[] {0}, new int[] {0});
     testCodingDoMixAndTwice();
+  }
+
+  @Test
+  public void testAfterRelease63() throws Exception {
+    prepare(6, 3, null, null);
+    testAfterRelease();
   }
 }

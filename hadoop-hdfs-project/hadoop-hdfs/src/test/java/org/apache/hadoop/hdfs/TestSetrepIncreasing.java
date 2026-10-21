@@ -17,10 +17,12 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
@@ -28,8 +30,10 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FsShell;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestSetrepIncreasing {
   static void setrep(int fromREP, int toREP, boolean simulatedStorage) throws IOException {
@@ -42,7 +46,7 @@ public class TestSetrepIncreasing {
     conf.set(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(10).build();
     FileSystem fs = cluster.getFileSystem();
-    assertTrue("Not a HDFS: "+fs.getUri(), fs instanceof DistributedFileSystem);
+    assertTrue(fs instanceof DistributedFileSystem, "Not a HDFS: " + fs.getUri());
 
     try {
       Path root = TestDFSShell.mkdir(fs, 
@@ -57,7 +61,7 @@ public class TestSetrepIncreasing {
         try {
           assertEquals(0, shell.run(args));
         } catch (Exception e) {
-          assertTrue("-setrep " + e, false);
+          assertTrue(false, "-setrep " + e);
         }
       }
 
@@ -75,11 +79,14 @@ public class TestSetrepIncreasing {
     }
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testSetrepIncreasing() throws IOException {
     setrep(3, 7, false);
   }
-  @Test(timeout=120000)
+
+  @Test
+  @Timeout(value = 120)
   public void testSetrepIncreasingSimulatedStorage() throws IOException {
     setrep(3, 7, true);
   }
@@ -102,4 +109,45 @@ public class TestSetrepIncreasing {
       cluster.shutdown();
     }
  }
+
+  @Test
+  public void testSetRepOnECFile() throws Exception {
+    ClientProtocol client;
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1)
+        .build();
+    cluster.waitActive();
+    client = NameNodeProxies.createProxy(conf,
+        cluster.getFileSystem(0).getUri(), ClientProtocol.class).getProxy();
+    client.enableErasureCodingPolicy(
+        StripedFileTestUtil.getDefaultECPolicy().getName());
+    client.setErasureCodingPolicy("/",
+        StripedFileTestUtil.getDefaultECPolicy().getName());
+
+    FileSystem dfs = cluster.getFileSystem();
+    try {
+      Path d = new Path("/tmp");
+      dfs.mkdirs(d);
+      Path f = new Path(d, "foo");
+      dfs.createNewFile(f);
+      FileStatus file = dfs.getFileStatus(f);
+      assertTrue(file.isErasureCoded());
+
+      ByteArrayOutputStream out = new ByteArrayOutputStream();
+      System.setOut(new PrintStream(out));
+      String[] args = {"-setrep", "2", "" + f};
+      FsShell shell = new FsShell();
+      shell.setConf(conf);
+      assertEquals(0, shell.run(args));
+      assertTrue(
+          out.toString().contains("Did not set replication for: /tmp/foo"));
+
+      // verify the replication factor of the EC file
+      file = dfs.getFileStatus(f);
+      assertEquals(1, file.getReplication());
+    } finally {
+      dfs.close();
+      cluster.shutdown();
+    }
+  }
 }

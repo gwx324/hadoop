@@ -17,28 +17,34 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-  import static org.junit.Assert.assertEquals;
-  import static org.junit.Assert.assertTrue;
-  import static org.junit.Assert.fail;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.ContentSummary;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
+import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.protocol.DSQuotaExceededException;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.protocol.QuotaByStorageTypeExceededException;
+import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotTestHelper;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-  import org.apache.commons.logging.Log;
-  import org.apache.commons.logging.LogFactory;
-  import org.apache.hadoop.conf.Configuration;
-  import org.apache.hadoop.fs.ContentSummary;
-  import org.apache.hadoop.fs.Path;
-  import org.apache.hadoop.fs.StorageType;
-  import org.apache.hadoop.hdfs.DFSConfigKeys;
-  import org.apache.hadoop.hdfs.DFSTestUtil;
-  import org.apache.hadoop.hdfs.DistributedFileSystem;
-  import org.apache.hadoop.hdfs.MiniDFSCluster;
-  import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-  import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotTestHelper;
-  import org.apache.hadoop.test.GenericTestUtils;
-  import org.junit.After;
-  import org.junit.Before;
-  import org.junit.Test;
+import java.io.IOException;
 
-  import java.io.IOException;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestQuotaByStorageType {
 
@@ -52,9 +58,10 @@ public class TestQuotaByStorageType {
   private DistributedFileSystem dfs;
   private FSNamesystem fsn;
 
-  protected static final Log LOG = LogFactory.getLog(TestQuotaByStorageType.class);
+  protected static final Logger LOG =
+      LoggerFactory.getLogger(TestQuotaByStorageType.class);
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     Configuration conf = new Configuration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCKSIZE);
@@ -70,7 +77,7 @@ public class TestQuotaByStorageType {
     refreshClusterState();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
@@ -85,7 +92,8 @@ public class TestQuotaByStorageType {
     fsn = cluster.getNamesystem();
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeWithFileCreateOneSSD() throws Exception {
     testQuotaByStorageTypeWithFileCreateCase(
         HdfsConstants.ONESSD_STORAGE_POLICY_NAME,
@@ -93,7 +101,8 @@ public class TestQuotaByStorageType {
         (short)1);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeWithFileCreateAllSSD() throws Exception {
     testQuotaByStorageTypeWithFileCreateCase(
         HdfsConstants.ALLSSD_STORAGE_POLICY_NAME,
@@ -128,7 +137,8 @@ public class TestQuotaByStorageType {
     assertEquals(file1Len * replication, storageTypeConsumed);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeWithFileCreateAppend() throws Exception {
     final Path foo = new Path(dir, "foo");
     Path createdFile1 = new Path(foo, "created_file1.data");
@@ -168,7 +178,8 @@ public class TestQuotaByStorageType {
     assertEquals(cs.getTypeConsumed(StorageType.DISK), file1Len * 2);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeWithFileCreateDelete() throws Exception {
     final Path foo = new Path(dir, "foo");
     Path createdFile1 = new Path(foo, "created_file1.data");
@@ -200,8 +211,8 @@ public class TestQuotaByStorageType {
 
     QuotaCounts counts = fnode.computeQuotaUsage(
         fsn.getBlockManager().getStoragePolicySuite(), true);
-    assertEquals(fnode.dumpTreeRecursively().toString(), 0,
-        counts.getTypeSpaces().get(StorageType.SSD));
+    assertEquals(0, counts.getTypeSpaces().get(StorageType.SSD),
+        fnode.dumpTreeRecursively().toString());
 
     ContentSummary cs = dfs.getContentSummary(foo);
     assertEquals(cs.getSpaceConsumed(), 0);
@@ -209,7 +220,8 @@ public class TestQuotaByStorageType {
     assertEquals(cs.getTypeConsumed(StorageType.DISK), 0);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeWithFileCreateRename() throws Exception {
     final Path foo = new Path(dir, "foo");
     dfs.mkdirs(foo);
@@ -259,7 +271,8 @@ public class TestQuotaByStorageType {
    * Test if the quota can be correctly updated for create file even
    * QuotaByStorageTypeExceededException is thrown
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeExceptionWithFileCreate() throws Exception {
     final Path foo = new Path(dir, "foo");
     Path createdFile1 = new Path(foo, "created_file1.data");
@@ -305,7 +318,8 @@ public class TestQuotaByStorageType {
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeParentOffChildOff() throws Exception {
     final Path parent = new Path(dir, "parent");
     final Path child = new Path(parent, "child");
@@ -331,7 +345,8 @@ public class TestQuotaByStorageType {
 
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeParentOffChildOn() throws Exception {
     final Path parent = new Path(dir, "parent");
     final Path child = new Path(parent, "child");
@@ -356,7 +371,8 @@ public class TestQuotaByStorageType {
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeParentOnChildOff() throws Exception {
     short replication = 1;
     final Path parent = new Path(dir, "parent");
@@ -397,7 +413,8 @@ public class TestQuotaByStorageType {
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeParentOnChildOn() throws Exception {
     final Path parent = new Path(dir, "parent");
     final Path child = new Path(parent, "child");
@@ -426,7 +443,8 @@ public class TestQuotaByStorageType {
    * Both traditional space quota and the storage type quota for SSD are set and
    * not exceeded.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeWithTraditionalQuota() throws Exception {
     final Path foo = new Path(dir, "foo");
     dfs.mkdirs(foo);
@@ -459,10 +477,8 @@ public class TestQuotaByStorageType {
     // Validate the computeQuotaUsage()
     QuotaCounts counts = fnode.computeQuotaUsage(
         fsn.getBlockManager().getStoragePolicySuite(), true);
-    assertEquals(fnode.dumpTreeRecursively().toString(), 1,
-        counts.getNameSpace());
-    assertEquals(fnode.dumpTreeRecursively().toString(), 0,
-        counts.getStorageSpace());
+    assertEquals(1, counts.getNameSpace(), fnode.dumpTreeRecursively().toString());
+    assertEquals(0, counts.getStorageSpace(), fnode.dumpTreeRecursively().toString());
   }
 
   /**
@@ -470,7 +486,8 @@ public class TestQuotaByStorageType {
    * exceeded. expect DSQuotaExceededException is thrown as we check traditional
    * space quota first and then storage type quota.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeAndTraditionalQuotaException1()
       throws Exception {
     testQuotaByStorageTypeOrTraditionalQuotaExceededCase(
@@ -481,7 +498,8 @@ public class TestQuotaByStorageType {
    * Both traditional space quota and the storage type quota for SSD are set and
    * SSD quota is exceeded but traditional space quota is not exceeded.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeAndTraditionalQuotaException2()
       throws Exception {
     testQuotaByStorageTypeOrTraditionalQuotaExceededCase(
@@ -492,7 +510,8 @@ public class TestQuotaByStorageType {
    * Both traditional space quota and the storage type quota for SSD are set and
    * traditional space quota is exceeded but SSD quota is not exceeded.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeAndTraditionalQuotaException3()
       throws Exception {
     testQuotaByStorageTypeOrTraditionalQuotaExceededCase(
@@ -530,12 +549,12 @@ public class TestQuotaByStorageType {
       LOG.info("Got expected exception ", t);
       long currentSSDConsumed = testDirNode.asDirectory().getDirectoryWithQuotaFeature()
           .getSpaceConsumed().getTypeSpaces().get(StorageType.SSD);
-      assertEquals(Math.min(ssdQuota, storageSpaceQuota/replication),
-          currentSSDConsumed);
+      assertEquals(Math.min(ssdQuota, storageSpaceQuota / replication), currentSSDConsumed);
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeWithSnapshot() throws Exception {
     final Path sub1 = new Path(dir, "Sub1");
     dfs.mkdirs(sub1);
@@ -571,8 +590,8 @@ public class TestQuotaByStorageType {
 
     QuotaCounts counts1 = sub1Node.computeQuotaUsage(
         fsn.getBlockManager().getStoragePolicySuite(), true);
-    assertEquals(sub1Node.dumpTreeRecursively().toString(), file1Len,
-        counts1.getTypeSpaces().get(StorageType.SSD));
+    assertEquals(file1Len, counts1.getTypeSpaces().get(StorageType.SSD),
+        sub1Node.dumpTreeRecursively().toString());
 
     ContentSummary cs1 = dfs.getContentSummary(sub1);
     assertEquals(cs1.getSpaceConsumed(), file1Len * REPLICATION);
@@ -589,8 +608,8 @@ public class TestQuotaByStorageType {
 
     QuotaCounts counts2 = sub1Node.computeQuotaUsage(
         fsn.getBlockManager().getStoragePolicySuite(), true);
-    assertEquals(sub1Node.dumpTreeRecursively().toString(), 0,
-        counts2.getTypeSpaces().get(StorageType.SSD));
+    assertEquals(0, counts2.getTypeSpaces().get(StorageType.SSD),
+        sub1Node.dumpTreeRecursively().toString());
 
     ContentSummary cs2 = dfs.getContentSummary(sub1);
     assertEquals(cs2.getSpaceConsumed(), 0);
@@ -598,7 +617,8 @@ public class TestQuotaByStorageType {
     assertEquals(cs2.getTypeConsumed(StorageType.DISK), 0);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotaByStorageTypeWithFileCreateTruncate() throws Exception {
     final Path foo = new Path(dir, "foo");
     Path createdFile1 = new Path(foo, "created_file1.data");
@@ -716,9 +736,9 @@ public class TestQuotaByStorageType {
     assertEquals(file1Len, ssdConsumed);
 
     // Restart the namenode with checkpoint to make sure fsImage is correct
-    dfs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_ENTER);
+    dfs.setSafeMode(SafeModeAction.ENTER);
     dfs.saveNamespace();
-    dfs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_LEAVE);
+    dfs.setSafeMode(SafeModeAction.LEAVE);
     cluster.restartNameNode(true);
     refreshClusterState();
 
@@ -740,7 +760,8 @@ public class TestQuotaByStorageType {
     assertEquals(file1Len, ssdConsumedAfterNNRestart);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testContentSummaryWithoutQuotaByStorageType() throws Exception {
     final Path foo = new Path(dir, "foo");
     Path createdFile1 = new Path(foo, "created_file1.data");
@@ -765,7 +786,8 @@ public class TestQuotaByStorageType {
     assertEquals(cs.getTypeConsumed(StorageType.DISK), file1Len * 2);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testContentSummaryWithoutStoragePolicy() throws Exception {
     final Path foo = new Path(dir, "foo");
     Path createdFile1 = new Path(foo, "created_file1.data");
@@ -788,5 +810,155 @@ public class TestQuotaByStorageType {
       assertEquals(cs.getTypeConsumed(t), 0);
       assertEquals(cs.getTypeQuota(t), -1);
     }
+  }
+
+
+
+  /**
+   * Tests space quota for storage policy = WARM.
+   */
+  @Test
+  public void testStorageSpaceQuotaWithWarmPolicy() throws IOException {
+    final Path testDir = new Path(dir,
+        GenericTestUtils.getMethodName());
+    assertTrue(dfs.mkdirs(testDir));
+
+    /* set policy to HOT */
+    dfs.setStoragePolicy(testDir, HdfsConstants.HOT_STORAGE_POLICY_NAME);
+
+    /* init space quota */
+    final long storageSpaceQuota = BLOCKSIZE * 6;
+    final long storageTypeSpaceQuota = BLOCKSIZE * 1;
+
+    /* set space quota */
+    dfs.setQuota(testDir, HdfsConstants.QUOTA_DONT_SET, storageSpaceQuota);
+
+    /* init vars */
+    Path createdFile;
+    final long fileLen = BLOCKSIZE;
+
+    /**
+     * create one file with 3 replicas, REPLICATION * BLOCKSIZE go to DISK due
+     * to HOT policy
+     */
+    createdFile = new Path(testDir, "file1.data");
+    DFSTestUtil.createFile(dfs, createdFile, BLOCKSIZE / 16, fileLen, BLOCKSIZE,
+        REPLICATION, seed);
+    assertTrue(dfs.exists(createdFile));
+    assertTrue(dfs.isFile(createdFile));
+
+    /* set space quota for DISK */
+    dfs.setQuotaByStorageType(testDir, StorageType.DISK, storageTypeSpaceQuota);
+
+    /* set policy to WARM */
+    dfs.setStoragePolicy(testDir, HdfsConstants.WARM_STORAGE_POLICY_NAME);
+
+    /* create another file with 3 replicas */
+    try {
+      createdFile = new Path(testDir, "file2.data");
+      /**
+       * This will fail since quota on DISK is 1 block but space consumed on
+       * DISK is already 3 blocks due to the first file creation.
+       */
+      DFSTestUtil.createFile(dfs, createdFile, BLOCKSIZE / 16, fileLen,
+          BLOCKSIZE, REPLICATION, seed);
+      fail("should fail on QuotaByStorageTypeExceededException");
+    } catch (QuotaByStorageTypeExceededException e) {
+      LOG.info("Got expected exception ", e);
+      assertThat(e.toString())
+          .contains("Quota by storage type",
+              "DISK on path",
+              testDir.toString());
+    }
+  }
+
+  /**
+   * Tests if changing replication factor results in copying file as quota
+   * doesn't exceed.
+   */
+  @Test
+  @Timeout(value = 30)
+  public void testStorageSpaceQuotaWithRepFactor() throws IOException {
+    final Path testDir = new Path(dir,
+        GenericTestUtils.getMethodName());
+    assertTrue(dfs.mkdirs(testDir));
+
+    final long storageSpaceQuota = BLOCKSIZE * 2;
+
+    /* set policy to HOT */
+    dfs.setStoragePolicy(testDir, HdfsConstants.HOT_STORAGE_POLICY_NAME);
+
+    /* set space quota */
+    dfs.setQuota(testDir, HdfsConstants.QUOTA_DONT_SET, storageSpaceQuota);
+
+    /* init vars */
+    Path createdFile = null;
+    final long fileLen = BLOCKSIZE;
+
+    try {
+      /* create one file with 3 replicas */
+      createdFile = new Path(testDir, "file1.data");
+      DFSTestUtil.createFile(dfs, createdFile, BLOCKSIZE / 16, fileLen,
+          BLOCKSIZE, REPLICATION, seed);
+      fail("should fail on DSQuotaExceededException");
+    } catch (DSQuotaExceededException e) {
+      LOG.info("Got expected exception ", e);
+      assertThat(e.toString())
+          .contains("DiskSpace quota", testDir.toString());
+    }
+
+    /* try creating file again with 2 replicas */
+    createdFile = new Path(testDir, "file2.data");
+    DFSTestUtil.createFile(dfs, createdFile, BLOCKSIZE / 16, fileLen, BLOCKSIZE,
+        (short) 2, seed);
+    assertTrue(dfs.exists(createdFile));
+    assertTrue(dfs.isFile(createdFile));
+  }
+
+  /**
+   * Tests if clearing quota per heterogeneous storage doesn't result in
+   * clearing quota for another storage.
+   *
+   * @throws IOException
+   */
+  @Test
+  @Timeout(value = 30)
+  public void testStorageSpaceQuotaPerQuotaClear() throws IOException {
+    final Path testDir = new Path(dir,
+        GenericTestUtils.getMethodName());
+    assertTrue(dfs.mkdirs(testDir));
+
+    final long diskSpaceQuota = BLOCKSIZE * 1;
+    final long ssdSpaceQuota = BLOCKSIZE * 2;
+
+    /* set space quota */
+    dfs.setQuotaByStorageType(testDir, StorageType.DISK, diskSpaceQuota);
+    dfs.setQuotaByStorageType(testDir, StorageType.SSD, ssdSpaceQuota);
+
+    final INode testDirNode = fsdir.getINode4Write(testDir.toString());
+    assertTrue(testDirNode.isDirectory());
+    assertTrue(testDirNode.isQuotaSet());
+
+    /* verify space quota by storage type */
+    assertEquals(diskSpaceQuota,
+        testDirNode.asDirectory().getDirectoryWithQuotaFeature().getQuota()
+            .getTypeSpace(StorageType.DISK));
+    assertEquals(ssdSpaceQuota,
+        testDirNode.asDirectory().getDirectoryWithQuotaFeature().getQuota()
+            .getTypeSpace(StorageType.SSD));
+
+    /* clear DISK space quota */
+    dfs.setQuotaByStorageType(
+        testDir,
+        StorageType.DISK,
+        HdfsConstants.QUOTA_RESET);
+
+    /* verify space quota by storage type after clearing DISK's */
+    assertEquals(-1,
+        testDirNode.asDirectory().getDirectoryWithQuotaFeature().getQuota()
+            .getTypeSpace(StorageType.DISK));
+    assertEquals(ssdSpaceQuota,
+        testDirNode.asDirectory().getDirectoryWithQuotaFeature().getQuota()
+            .getTypeSpace(StorageType.SSD));
   }
 }

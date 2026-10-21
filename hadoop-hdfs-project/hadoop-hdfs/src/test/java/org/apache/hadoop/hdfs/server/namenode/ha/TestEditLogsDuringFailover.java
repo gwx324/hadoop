@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -27,8 +27,8 @@ import java.net.URI;
 import java.util.Collections;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.HAUtil;
@@ -38,21 +38,23 @@ import org.apache.hadoop.hdfs.server.namenode.EditLogFileOutputStream;
 import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage;
-import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Test;
+import org.apache.hadoop.util.Lists;
 
-import com.google.common.base.Joiner;
-import com.google.common.collect.Lists;
+import static org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter.getFileInfo;
+
+import org.junit.jupiter.api.Test;
+
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
 
 /**
  * Test cases for the handling of edit logs during failover
  * and startup of the standby node.
  */
 public class TestEditLogsDuringFailover {
-  private static final Log LOG =
-    LogFactory.getLog(TestEditLogsDuringFailover.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestEditLogsDuringFailover.class);
   private static final int NUM_DIRS_IN_LOG = 5;
 
   static {
@@ -110,7 +112,8 @@ public class TestEditLogsDuringFailover {
       // the current log segment, and on the next roll, it would have to
       // either replay starting in the middle of the segment (not allowed)
       // or double-replay the edits (incorrect).
-      assertNull(NameNodeAdapter.getFileInfo(cluster.getNameNode(1), "/test", true));
+      assertNull(getFileInfo(cluster.getNameNode(1), "/test",
+          true, false, false));
       
       cluster.getNameNode(0).getRpcServer().mkdirs("/test2",
           FsPermission.createImmutable((short)0755), true);
@@ -122,8 +125,10 @@ public class TestEditLogsDuringFailover {
 
       // NN1 should have both the edits that came before its restart, and the edits that
       // came after its restart.
-      assertNotNull(NameNodeAdapter.getFileInfo(cluster.getNameNode(1), "/test", true));
-      assertNotNull(NameNodeAdapter.getFileInfo(cluster.getNameNode(1), "/test2", true));
+      assertNotNull(getFileInfo(cluster.getNameNode(1), "/test",
+          true, false, false));
+      assertNotNull(getFileInfo(cluster.getNameNode(1), "/test2",
+          true, false, false));
     } finally {
       cluster.shutdown();
     }
@@ -155,7 +160,7 @@ public class TestEditLogsDuringFailover {
           outs.write(new byte[] { 0x18, 0x00, 0x00, 0x00 } );
           LOG.error("editLogFile = " + editLogFile);
         } finally {
-          IOUtils.cleanup(LOG, outs);
+          IOUtils.cleanupWithLogger(LOG, outs);
         }
      }
 
@@ -165,7 +170,8 @@ public class TestEditLogsDuringFailover {
       // In the transition to active, it should have read the log -- and
       // hence see one of the dirs we made in the fake log.
       String testPath = "/dir" + NUM_DIRS_IN_LOG;
-      assertNotNull(cluster.getNameNode(0).getRpcServer().getFileInfo(testPath));
+      assertNotNull(cluster.getNameNode(0).getRpcServer()
+          .getFileInfo(testPath));
       
       // It also should have finalized that log in the shared directory and started
       // writing to a new one at the next txid.

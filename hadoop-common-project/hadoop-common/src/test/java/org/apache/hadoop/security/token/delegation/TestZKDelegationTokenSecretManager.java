@@ -18,16 +18,30 @@
 
 package org.apache.hadoop.security.token.delegation;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
-
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import org.apache.curator.RetryPolicy;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.framework.api.ACLProvider;
+import org.apache.curator.framework.api.CreateBuilder;
+import org.apache.curator.framework.api.ProtectACLCreateModeStatPathAndBytesable;
 import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.apache.curator.test.TestingServer;
 import org.apache.hadoop.conf.Configuration;
@@ -37,37 +51,47 @@ import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenIdentifier;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenManager;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.data.ACL;
 import org.apache.zookeeper.data.Id;
+import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.server.auth.DigestAuthenticationProvider;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import static org.junit.Assert.fail;
-
-import org.junit.Test;
-
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@Timeout(300)
 public class TestZKDelegationTokenSecretManager {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestZKDelegationTokenSecretManager.class);
 
-  private static final int TEST_RETRIES = 2;
+  protected static final int TEST_RETRIES = 2;
 
-  private static final int RETRY_COUNT = 5;
+  protected static final int RETRY_COUNT = 5;
 
-  private static final int RETRY_WAIT = 1000;
+  protected static final int RETRY_WAIT = 1000;
 
-  private static final long DAY_IN_SECS = 86400;
+  protected static final long DAY_IN_SECS = 86400;
 
-  private TestingServer zkServer;
+  protected TestingServer zkServer;
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     zkServer = new TestingServer();
     zkServer.start();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (zkServer != null) {
       zkServer.close();
@@ -90,11 +114,25 @@ public class TestZKDelegationTokenSecretManager {
 
   @SuppressWarnings("unchecked")
   @Test
+  @Order(1)
   public void testMultiNodeOperations() throws Exception {
+      testMultiNodeOperationsImpl(false);
+  }
+
+  @Test
+  @Order(2)
+  public void testMultiNodeOperationsWithZeroRetry() throws Exception {
+      testMultiNodeOperationsImpl(true);
+  }
+
+  public void testMultiNodeOperationsImpl(boolean setZeroRetry) throws Exception {
     for (int i = 0; i < TEST_RETRIES; i++) {
       DelegationTokenManager tm1, tm2 = null;
       String connectString = zkServer.getConnectString();
       Configuration conf = getSecretConf(connectString);
+      if (setZeroRetry) {
+          conf.setInt(ZKDelegationTokenSecretManager.ZK_DTSM_ZK_NUM_RETRIES, 0);
+      }
       tm1 = new DelegationTokenManager(conf, new Text("bla"));
       tm1.init();
       tm2 = new DelegationTokenManager(conf, new Text("bla"));
@@ -103,7 +141,7 @@ public class TestZKDelegationTokenSecretManager {
       Token<DelegationTokenIdentifier> token =
           (Token<DelegationTokenIdentifier>) tm1.createToken(
               UserGroupInformation.getCurrentUser(), "foo");
-      Assert.assertNotNull(token);
+      assertNotNull(token);
       tm2.verifyToken(token);
       tm2.renewToken(token, "foo");
       tm1.verifyToken(token);
@@ -117,7 +155,7 @@ public class TestZKDelegationTokenSecretManager {
 
       token = (Token<DelegationTokenIdentifier>) tm2.createToken(
           UserGroupInformation.getCurrentUser(), "bar");
-      Assert.assertNotNull(token);
+      assertNotNull(token);
       tm1.verifyToken(token);
       tm1.renewToken(token, "bar");
       tm2.verifyToken(token);
@@ -135,6 +173,7 @@ public class TestZKDelegationTokenSecretManager {
 
   @SuppressWarnings("unchecked")
   @Test
+  @Order(5)
   public void testNodeUpAferAWhile() throws Exception {
     for (int i = 0; i < TEST_RETRIES; i++) {
       String connectString = zkServer.getConnectString();
@@ -144,15 +183,15 @@ public class TestZKDelegationTokenSecretManager {
       Token<DelegationTokenIdentifier> token1 =
           (Token<DelegationTokenIdentifier>) tm1.createToken(
               UserGroupInformation.getCurrentUser(), "foo");
-      Assert.assertNotNull(token1);
+      assertNotNull(token1);
       Token<DelegationTokenIdentifier> token2 =
           (Token<DelegationTokenIdentifier>) tm1.createToken(
               UserGroupInformation.getCurrentUser(), "bar");
-      Assert.assertNotNull(token2);
+      assertNotNull(token2);
       Token<DelegationTokenIdentifier> token3 =
           (Token<DelegationTokenIdentifier>) tm1.createToken(
               UserGroupInformation.getCurrentUser(), "boo");
-      Assert.assertNotNull(token3);
+      assertNotNull(token3);
 
       tm1.verifyToken(token1);
       tm1.verifyToken(token2);
@@ -179,7 +218,7 @@ public class TestZKDelegationTokenSecretManager {
       Token<DelegationTokenIdentifier> token4 =
           (Token<DelegationTokenIdentifier>) tm2.createToken(
               UserGroupInformation.getCurrentUser(), "xyz");
-      Assert.assertNotNull(token4);
+      assertNotNull(token4);
       tm2.verifyToken(token4);
       tm1.verifyToken(token4);
 
@@ -208,6 +247,56 @@ public class TestZKDelegationTokenSecretManager {
 
   @SuppressWarnings("unchecked")
   @Test
+  @Order(6)
+  public void testMultiNodeCompeteForSeqNum() throws Exception {
+    DelegationTokenManager tm1, tm2 = null;
+    String connectString = zkServer.getConnectString();
+    Configuration conf = getSecretConf(connectString);
+    conf.setInt(
+        ZKDelegationTokenSecretManager.ZK_DTSM_TOKEN_SEQNUM_BATCH_SIZE, 1000);
+    tm1 = new DelegationTokenManager(conf, new Text("bla"));
+    tm1.init();
+
+    Token<DelegationTokenIdentifier> token1 =
+        (Token<DelegationTokenIdentifier>) tm1.createToken(
+            UserGroupInformation.getCurrentUser(), "foo");
+    assertNotNull(token1);
+    AbstractDelegationTokenIdentifier id1 =
+        tm1.getDelegationTokenSecretManager().decodeTokenIdentifier(token1);
+    assertEquals(1, id1.getSequenceNumber(), "Token seq should be the same");
+    Token<DelegationTokenIdentifier> token2 =
+        (Token<DelegationTokenIdentifier>) tm1.createToken(
+            UserGroupInformation.getCurrentUser(), "foo");
+    assertNotNull(token2);
+    AbstractDelegationTokenIdentifier id2 =
+        tm1.getDelegationTokenSecretManager().decodeTokenIdentifier(token2);
+    assertEquals(2, id2.getSequenceNumber(), "Token seq should be the same");
+
+    tm2 = new DelegationTokenManager(conf, new Text("bla"));
+    tm2.init();
+
+    Token<DelegationTokenIdentifier> token3 =
+        (Token<DelegationTokenIdentifier>) tm2.createToken(
+            UserGroupInformation.getCurrentUser(), "foo");
+    assertNotNull(token3);
+    AbstractDelegationTokenIdentifier id3 =
+        tm2.getDelegationTokenSecretManager().decodeTokenIdentifier(token3);
+    assertEquals(1001, id3.getSequenceNumber(), "Token seq should be the same");
+    Token<DelegationTokenIdentifier> token4 =
+        (Token<DelegationTokenIdentifier>) tm2.createToken(
+            UserGroupInformation.getCurrentUser(), "foo");
+    assertNotNull(token4);
+    AbstractDelegationTokenIdentifier id4 =
+        tm2.getDelegationTokenSecretManager().decodeTokenIdentifier(token4);
+    assertEquals(1002, id4.getSequenceNumber(), "Token seq should be the same");
+
+    verifyDestroy(tm1, conf);
+    verifyDestroy(tm2, conf);
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  @Order(3)
   public void testRenewTokenSingleManager() throws Exception {
     for (int i = 0; i < TEST_RETRIES; i++) {
       DelegationTokenManager tm1 = null;
@@ -219,7 +308,7 @@ public class TestZKDelegationTokenSecretManager {
       Token<DelegationTokenIdentifier> token =
           (Token<DelegationTokenIdentifier>)
           tm1.createToken(UserGroupInformation.getCurrentUser(), "foo");
-      Assert.assertNotNull(token);
+      assertNotNull(token);
       tm1.renewToken(token, "foo");
       tm1.verifyToken(token);
       verifyDestroy(tm1, conf);
@@ -228,6 +317,7 @@ public class TestZKDelegationTokenSecretManager {
 
   @SuppressWarnings("unchecked")
   @Test
+  @Order(9)
   public void testCancelTokenSingleManager() throws Exception {
     for (int i = 0; i < TEST_RETRIES; i++) {
       DelegationTokenManager tm1 = null;
@@ -239,7 +329,7 @@ public class TestZKDelegationTokenSecretManager {
       Token<DelegationTokenIdentifier> token =
           (Token<DelegationTokenIdentifier>)
           tm1.createToken(UserGroupInformation.getCurrentUser(), "foo");
-      Assert.assertNotNull(token);
+      assertNotNull(token);
       tm1.cancelToken(token, "foo");
       try {
         verifyTokenFail(tm1, token);
@@ -254,23 +344,18 @@ public class TestZKDelegationTokenSecretManager {
   @SuppressWarnings("rawtypes")
   protected void verifyDestroy(DelegationTokenManager tm, Configuration conf)
       throws Exception {
-    AbstractDelegationTokenSecretManager sm =
-        tm.getDelegationTokenSecretManager();
-    ZKDelegationTokenSecretManager zksm = (ZKDelegationTokenSecretManager) sm;
-    ExecutorService es = zksm.getListenerThreadPool();
     tm.destroy();
-    Assert.assertTrue(es.isShutdown());
     // wait for the pool to terminate
     long timeout =
         conf.getLong(
             ZKDelegationTokenSecretManager.ZK_DTSM_ZK_SHUTDOWN_TIMEOUT,
             ZKDelegationTokenSecretManager.ZK_DTSM_ZK_SHUTDOWN_TIMEOUT_DEFAULT);
     Thread.sleep(timeout * 3);
-    Assert.assertTrue(es.isTerminated());
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
   @Test
+  @Order(7)
   public void testStopThreads() throws Exception {
     DelegationTokenManager tm1 = null;
     String connectString = zkServer.getConnectString();
@@ -292,18 +377,7 @@ public class TestZKDelegationTokenSecretManager {
     Token<DelegationTokenIdentifier> token =
       (Token<DelegationTokenIdentifier>)
     tm1.createToken(UserGroupInformation.getCurrentUser(), "foo");
-    Assert.assertNotNull(token);
-
-    AbstractDelegationTokenSecretManager sm = tm1.getDelegationTokenSecretManager();
-    ZKDelegationTokenSecretManager zksm = (ZKDelegationTokenSecretManager)sm;
-    ExecutorService es = zksm.getListenerThreadPool();
-    es.submit(new Callable<Void>() {
-      public Void call() throws Exception {
-        Thread.sleep(shutdownTimeoutMillis * 2); // force this to be shutdownNow
-        return null;
-      }
-    });
-
+    assertNotNull(token);
     tm1.destroy();
   }
 
@@ -333,7 +407,7 @@ public class TestZKDelegationTokenSecretManager {
         .connectString(connectString)
         .retryPolicy(retryPolicy)
         .aclProvider(digestAclProvider)
-        .authorization("digest", userPass.getBytes("UTF-8"))
+        .authorization("digest", userPass.getBytes(StandardCharsets.UTF_8))
         .build();
     curatorFramework.start();
     ZKDelegationTokenSecretManager.setCurator(curatorFramework);
@@ -352,8 +426,8 @@ public class TestZKDelegationTokenSecretManager {
   private void verifyACL(CuratorFramework curatorFramework,
       String path, ACL expectedACL) throws Exception {
     List<ACL> acls = curatorFramework.getACL().forPath(path);
-    Assert.assertEquals(1, acls.size());
-    Assert.assertEquals(expectedACL, acls.get(0));
+    assertEquals(1, acls.size());
+    assertEquals(expectedACL, acls.get(0));
   }
 
   // Since it is possible that there can be a delay for the cancel token message
@@ -362,7 +436,7 @@ public class TestZKDelegationTokenSecretManager {
   // cancelled but.. that would mean having to make an RPC call for every
   // verification request.
   // Thus, the eventual consistency tradef-off should be acceptable here...
-  private void verifyTokenFail(DelegationTokenManager tm,
+  protected void verifyTokenFail(DelegationTokenManager tm,
       Token<DelegationTokenIdentifier> token) throws IOException,
       InterruptedException {
     verifyTokenFailWithRetry(tm, token, RETRY_COUNT);
@@ -382,4 +456,204 @@ public class TestZKDelegationTokenSecretManager {
     }
   }
 
+  @SuppressWarnings({ "unchecked" })
+  @Test
+  @Order(8)
+  public void testNodesLoadedAfterRestart() throws Exception {
+    final String connectString = zkServer.getConnectString();
+    final Configuration conf = getSecretConf(connectString);
+    final int removeScan = 1;
+    // Set the remove scan interval to remove expired tokens
+    conf.setLong(DelegationTokenManager.REMOVAL_SCAN_INTERVAL, removeScan);
+    // Set the update interval to trigger background thread to run. The thread
+    // is hard-coded to sleep at least 5 seconds.
+    conf.setLong(DelegationTokenManager.UPDATE_INTERVAL, 5);
+    // Set token expire time to 5 seconds.
+    conf.setLong(DelegationTokenManager.RENEW_INTERVAL, 5);
+
+    DelegationTokenManager tm =
+        new DelegationTokenManager(conf, new Text("bla"));
+    final Token<DelegationTokenIdentifier> token;
+    final Token<DelegationTokenIdentifier> cancelled;
+    try {
+      tm.init();
+      token = (Token<DelegationTokenIdentifier>) tm
+          .createToken(UserGroupInformation.getCurrentUser(), "good");
+      assertNotNull(token);
+      cancelled = (Token<DelegationTokenIdentifier>) tm
+          .createToken(UserGroupInformation.getCurrentUser(), "cancelled");
+      assertNotNull(cancelled);
+      tm.verifyToken(token);
+      tm.verifyToken(cancelled);
+
+      // Cancel one token, verify it's gone
+      tm.cancelToken(cancelled, "cancelled");
+      final AbstractDelegationTokenSecretManager sm =
+          tm.getDelegationTokenSecretManager();
+      final ZKDelegationTokenSecretManager zksm =
+          (ZKDelegationTokenSecretManager) sm;
+      final AbstractDelegationTokenIdentifier idCancelled =
+          sm.decodeTokenIdentifier(cancelled);
+      LOG.info("Waiting for the cancelled token to be removed");
+
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override
+        public Boolean get() {
+          AbstractDelegationTokenSecretManager.DelegationTokenInformation dtinfo =
+              zksm.getTokenInfo(idCancelled);
+          return dtinfo == null;
+        }
+      }, 100, 5000);
+    } finally {
+      tm.destroy();
+    }
+
+    // Fake a restart which launches a new tm
+    DelegationTokenManager restartedManager =
+        new DelegationTokenManager(conf, new Text("bla"));
+    try {
+      restartedManager.init();
+      final AbstractDelegationTokenSecretManager smNew =
+          restartedManager.getDelegationTokenSecretManager();
+      final ZKDelegationTokenSecretManager zksmNew =
+          (ZKDelegationTokenSecretManager) smNew;
+
+      // The cancelled token should be gone, and not loaded.
+      AbstractDelegationTokenIdentifier id =
+          smNew.decodeTokenIdentifier(cancelled);
+      AbstractDelegationTokenSecretManager.DelegationTokenInformation dtinfo =
+          zksmNew.getTokenInfo(id);
+      assertNull(dtinfo, "canceled dt should be gone!");
+
+      // The good token should be loaded on startup, and removed after expiry.
+      id = smNew.decodeTokenIdentifier(token);
+      dtinfo = zksmNew.getTokenInfoFromMemory(id);
+      assertNotNull(dtinfo, "good dt should be in memory!");
+
+      // Wait for the good token to expire.
+      Thread.sleep(5000);
+      final ZKDelegationTokenSecretManager zksm1 = zksmNew;
+      final AbstractDelegationTokenIdentifier id1 = id;
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override
+        public Boolean get() {
+          LOG.info("Waiting for the expired token to be removed...");
+          return zksm1.getTokenInfo(id1) == null;
+        }
+      }, 1000, 5000);
+    } finally {
+      restartedManager.destroy();
+    }
+  }
+
+  @Test
+  public void testCreatingParentContainersIfNeeded() throws Exception {
+
+    String connectString = zkServer.getConnectString();
+    RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3);
+    Configuration conf = getSecretConf(connectString);
+    CuratorFramework curatorFramework =
+        CuratorFrameworkFactory.builder()
+        .connectString(connectString)
+        .retryPolicy(retryPolicy)
+        .build();
+    curatorFramework.start();
+    ZKDelegationTokenSecretManager.setCurator(curatorFramework);
+    DelegationTokenManager tm1 = new DelegationTokenManager(conf, new Text("foo"));
+
+    // When the init method is called,
+    // the ZKDelegationTokenSecretManager#startThread method will be called,
+    // and the creatingParentContainersIfNeeded will be called to create the nameSpace.
+    tm1.init();
+
+    String workingPath = "/" + conf.get(ZKDelegationTokenSecretManager.ZK_DTSM_ZNODE_WORKING_PATH,
+        ZKDelegationTokenSecretManager.ZK_DTSM_ZNODE_WORKING_PATH_DEAFULT) + "/ZKDTSMRoot";
+
+    // Check if the created NameSpace exists.
+    Stat stat = curatorFramework.checkExists().forPath(workingPath);
+    assertNotNull(stat);
+
+    tm1.destroy();
+    curatorFramework.close();
+  }
+
+  @Test
+  @Order(4)
+  public void testCreateNameSpaceRepeatedly() throws Exception {
+
+    String connectString = zkServer.getConnectString();
+    RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3);
+    Configuration conf = getSecretConf(connectString);
+    CuratorFramework curatorFramework =
+        CuratorFrameworkFactory.builder().
+        connectString(connectString).
+        retryPolicy(retryPolicy).
+        build();
+    curatorFramework.start();
+
+    String workingPath = "/" + conf.get(ZKDelegationTokenSecretManager.ZK_DTSM_ZNODE_WORKING_PATH,
+        ZKDelegationTokenSecretManager.ZK_DTSM_ZNODE_WORKING_PATH_DEAFULT) + "/ZKDTSMRoot-Test";
+    CreateBuilder createBuilder = curatorFramework.create();
+    ProtectACLCreateModeStatPathAndBytesable<String> createModeStat =
+        createBuilder.creatingParentContainersIfNeeded();
+    createModeStat.forPath(workingPath);
+
+    // Check if the created NameSpace exists.
+    Stat stat = curatorFramework.checkExists().forPath(workingPath);
+    assertNotNull(stat);
+
+    // Repeated creation will throw NodeExists exception
+    LambdaTestUtils.intercept(KeeperException.class,
+        "KeeperErrorCode = NodeExists for "+workingPath,
+        () -> createModeStat.forPath(workingPath));
+  }
+
+  @Test
+  public void testMultipleInit() throws Exception {
+
+    String connectString = zkServer.getConnectString();
+    RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3);
+    Configuration conf = getSecretConf(connectString);
+    CuratorFramework curatorFramework =
+        CuratorFrameworkFactory.builder()
+            .connectString(connectString)
+            .retryPolicy(retryPolicy)
+            .build();
+    curatorFramework.start();
+    ZKDelegationTokenSecretManager.setCurator(curatorFramework);
+
+    DelegationTokenManager tm1 = new DelegationTokenManager(conf, new Text("foo"));
+    DelegationTokenManager tm2 = new DelegationTokenManager(conf, new Text("bar"));
+    // When the init method is called,
+    // the ZKDelegationTokenSecretManager#startThread method will be called,
+    // and the creatingParentContainersIfNeeded will be called to create the nameSpace.
+    ExecutorService executorService = Executors.newFixedThreadPool(2);
+
+    Callable<Boolean> tm1Callable = () -> {
+      tm1.init();
+      return true;
+    };
+    Callable<Boolean> tm2Callable = () -> {
+      tm2.init();
+      return true;
+    };
+    List<Future<Boolean>> futures = executorService.invokeAll(
+        Arrays.asList(tm1Callable, tm2Callable));
+    for(Future<Boolean> future : futures) {
+      assertTrue(future.get());
+    }
+    executorService.shutdownNow();
+    assertTrue(executorService.awaitTermination(1, TimeUnit.SECONDS));
+    tm1.destroy();
+    tm2.destroy();
+
+    String workingPath = "/" + conf.get(ZKDelegationTokenSecretManager.ZK_DTSM_ZNODE_WORKING_PATH,
+        ZKDelegationTokenSecretManager.ZK_DTSM_ZNODE_WORKING_PATH_DEAFULT) + "/ZKDTSMRoot";
+
+    // Check if the created NameSpace exists.
+    Stat stat = curatorFramework.checkExists().forPath(workingPath);
+    assertNotNull(stat);
+
+    curatorFramework.close();
+  }
 }

@@ -22,15 +22,13 @@ import java.util.Comparator;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.io.serializer.DeserializerComparator;
 
 /**
  * <p>
  * A {@link Comparator} that operates directly on byte representations of
  * objects.
  * </p>
- * @param <T>
- * @see DeserializerComparator
+ * @param <T> generic type.
  */
 @InterfaceAudience.Public
 @InterfaceStability.Stable

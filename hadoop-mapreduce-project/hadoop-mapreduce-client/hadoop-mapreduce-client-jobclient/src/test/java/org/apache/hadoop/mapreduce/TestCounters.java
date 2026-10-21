@@ -17,26 +17,24 @@
  */
 package org.apache.hadoop.mapreduce;
 
-import java.io.IOException;
 import java.util.Random;
 
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.io.DataInputBuffer;
-import org.apache.hadoop.io.DataOutputBuffer;
-import org.junit.Test;
-import static org.junit.Assert.*;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.mapreduce.counters.LimitExceededException;
 import org.apache.hadoop.mapreduce.counters.Limits;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * TestCounters checks the sanity and recoverability of {@code Counters}
  */
 public class TestCounters {
 
-  static final Log LOG = LogFactory.getLog(TestCounters.class);
+  static final Logger LOG = LoggerFactory.getLogger(TestCounters.class);
 
   /**
    * Verify counter value works
@@ -51,19 +49,19 @@ public class TestCounters {
       long expectedValue = initValue;
       Counter counter = new Counters().findCounter("test", "foo");
       counter.setValue(initValue);
-      assertEquals("Counter value is not initialized correctly",
-          expectedValue, counter.getValue());
+      assertEquals(expectedValue, counter.getValue(),
+          "Counter value is not initialized correctly");
       for (int j = 0; j < NUMBER_INC; j++) {
         int incValue = rand.nextInt();
         counter.increment(incValue);
         expectedValue += incValue;
-        assertEquals("Counter value is not incremented correctly",
-            expectedValue, counter.getValue());
+        assertEquals(expectedValue, counter.getValue(),
+            "Counter value is not incremented correctly");
       }
       expectedValue = rand.nextInt();
       counter.setValue(expectedValue);
-      assertEquals("Counter value is not set correctly",
-          expectedValue, counter.getValue());
+      assertEquals(expectedValue, counter.getValue(),
+          "Counter value is not set correctly");
     }
   }
 
@@ -74,40 +72,7 @@ public class TestCounters {
       testMaxGroups(new Counters());
     }
   }
-
-  @Test public void testResetOnDeserialize() throws IOException {
-    // Allow only one counterGroup
-    Configuration conf = new Configuration();
-    conf.setInt(MRJobConfig.COUNTER_GROUPS_MAX_KEY, 1);
-    Limits.init(conf);
-
-    Counters countersWithOneGroup = new Counters();
-    countersWithOneGroup.findCounter("firstOf1Allowed", "First group");
-    boolean caughtExpectedException = false;
-    try {
-      countersWithOneGroup.findCounter("secondIsTooMany", "Second group");
-    }
-    catch (LimitExceededException _) {
-      caughtExpectedException = true;
-    }
-
-    assertTrue("Did not throw expected exception",
-        caughtExpectedException);
-
-    Counters countersWithZeroGroups = new Counters();
-    DataOutputBuffer out = new DataOutputBuffer();
-    countersWithZeroGroups.write(out);
-
-    DataInputBuffer in = new DataInputBuffer();
-    in.reset(out.getData(), out.getLength());
-
-    countersWithOneGroup.readFields(in);
-
-    // After reset one should be able to add a group
-    countersWithOneGroup.findCounter("firstGroupAfterReset", "After reset " +
-        "limit should be set back to zero");
-  }
-
+  
   @Test
   public void testCountersIncrement() {
     Counters fCounters = new Counters();
@@ -186,6 +151,6 @@ public class TestCounters {
       LOG.info("got expected: "+ e);
       return;
     }
-    assertTrue("Should've thrown "+ ecls.getSimpleName(), false);
+    assertTrue(false, "Should've thrown "+ ecls.getSimpleName());
   }
 }

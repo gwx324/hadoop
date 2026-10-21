@@ -31,12 +31,16 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import junit.framework.TestCase;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.http.HttpServer2;
+import org.junit.jupiter.api.Test;
 
-public class TestJobEndNotifier extends TestCase {
+public class TestJobEndNotifier {
   HttpServer2 server;
   URL baseUrl;
 
@@ -46,7 +50,7 @@ public class TestJobEndNotifier extends TestCase {
     public static URI requestUri;
 
     @Override
-    public void doGet(HttpServletRequest request, 
+    public void doGet(HttpServletRequest request,
                       HttpServletResponse response
                       ) throws ServletException, IOException {
       InputStreamReader in = new InputStreamReader(request.getInputStream());
@@ -70,18 +74,18 @@ public class TestJobEndNotifier extends TestCase {
     public static volatile int calledTimes = 0;
 
     @Override
-    public void doGet(HttpServletRequest request, 
+    public void doGet(HttpServletRequest request,
                       HttpServletResponse response
                       ) throws ServletException, IOException {
       boolean timedOut = false;
       calledTimes++;
       try {
         // Sleep for a long time
-        Thread.sleep(1000000);
+        Thread.sleep(3000);
       } catch (InterruptedException e) {
         timedOut = true;
       }
-      assertTrue("DelayServlet should be interrupted", timedOut);
+      assertTrue(timedOut, "DelayServlet should be interrupted");
     }
   }
 
@@ -91,7 +95,7 @@ public class TestJobEndNotifier extends TestCase {
     public static volatile int calledTimes = 0;
 
     @Override
-    public void doGet(HttpServletRequest request, 
+    public void doGet(HttpServletRequest request,
                       HttpServletResponse response
                       ) throws ServletException, IOException {
       calledTimes++;
@@ -99,6 +103,7 @@ public class TestJobEndNotifier extends TestCase {
     }
   }
 
+  @BeforeEach
   public void setUp() throws Exception {
     new File(System.getProperty("build.webapps", "build/webapps") + "/test"
         ).mkdirs();
@@ -118,6 +123,7 @@ public class TestJobEndNotifier extends TestCase {
     FailServlet.calledTimes = 0;
   }
 
+  @AfterEach
   public void tearDown() throws Exception {
     server.stop();
   }
@@ -125,6 +131,7 @@ public class TestJobEndNotifier extends TestCase {
   /**
    * Basic validation for localRunnerNotification.
    */
+  @Test
   public void testLocalJobRunnerUriSubstitution() throws InterruptedException {
     JobStatus jobStatus = createTestJobStatus(
         "job_20130313155005308_0001", JobStatus.SUCCEEDED);
@@ -133,7 +140,7 @@ public class TestJobEndNotifier extends TestCase {
         baseUrl + "jobend?jobid=$jobId&status=$jobStatus");
     JobEndNotifier.localRunnerNotification(jobConf, jobStatus);
 
-    // No need to wait for the notification to go thru since calls are
+    // No need to wait for the notification to go through since calls are
     // synchronous
 
     // Validate params
@@ -145,6 +152,7 @@ public class TestJobEndNotifier extends TestCase {
   /**
    * Validate job.end.retry.attempts for the localJobRunner.
    */
+  @Test
   public void testLocalJobRunnerRetryCount() throws InterruptedException {
     int retryAttempts = 3;
     JobStatus jobStatus = createTestJobStatus(
@@ -161,6 +169,7 @@ public class TestJobEndNotifier extends TestCase {
    * Validate that the notification times out after reaching
    * mapreduce.job.end-notification.timeout.
    */
+  @Test
   public void testNotificationTimeout() throws InterruptedException {
     Configuration conf = new Configuration();
     // Reduce the timeout to 1 second

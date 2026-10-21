@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.snapshot;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -30,13 +30,15 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.INode;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
 import org.apache.hadoop.hdfs.server.namenode.INodesInPath;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * This class tests the replication handling/calculation of snapshots to make
@@ -60,7 +62,7 @@ public class TestSnapshotReplication {
   DistributedFileSystem hdfs;
   FSDirectory fsdir;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new Configuration();
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(NUMDATANODE)
@@ -71,7 +73,7 @@ public class TestSnapshotReplication {
     fsdir = fsn.getFSDirectory();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
@@ -105,7 +107,8 @@ public class TestSnapshotReplication {
   /**
    * Test replication number calculation for a normal file without snapshots.
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testReplicationWithoutSnapshot() throws Exception {
     // Create file1, set its replication to REPLICATION
     DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, REPLICATION, seed);
@@ -146,7 +149,7 @@ public class TestSnapshotReplication {
     }
     // Then check replication for every snapshot
     for (Path ss : snapshotRepMap.keySet()) {
-      final INodesInPath iip = fsdir.getINodesInPath(ss.toString(), true);
+      final INodesInPath iip = fsdir.getINodesInPath(ss.toString(), DirOp.READ);
       final INodeFile ssInode = iip.getLastINode().asFile();
       // The replication number derived from the
       // INodeFileWithLink#getPreferredBlockReplication should
@@ -163,7 +166,8 @@ public class TestSnapshotReplication {
   /**
    * Test replication number calculation for a file with snapshots.
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testReplicationWithSnapshot() throws Exception {
     short fileRep = 1;
     // Create file1, set its replication to 1
@@ -204,7 +208,8 @@ public class TestSnapshotReplication {
    * Test replication for a file with snapshots, also including the scenario
    * where the original file is deleted
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testReplicationAfterDeletion() throws Exception {
     // Create file1, set its replication to 3
     DFSTestUtil.createFile(hdfs, file1, BLOCKSIZE, REPLICATION, seed);

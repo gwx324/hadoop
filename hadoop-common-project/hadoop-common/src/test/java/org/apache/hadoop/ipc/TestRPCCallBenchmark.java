@@ -17,28 +17,17 @@
  */
 package org.apache.hadoop.ipc;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.apache.hadoop.util.ToolRunner;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 
 public class TestRPCCallBenchmark {
 
-  @Test(timeout=20000)
-  public void testBenchmarkWithWritable() throws Exception {
-    int rc = ToolRunner.run(new RPCCallBenchmark(),
-        new String[] {
-      "--clientThreads", "30",
-      "--serverThreads", "30",
-      "--time", "5",
-      "--serverReaderThreads", "4",
-      "--messageSize", "1024",
-      "--engine", "writable"});
-    assertEquals(0, rc);
-  }
-  
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testBenchmarkWithProto() throws Exception {
     int rc = ToolRunner.run(new RPCCallBenchmark(),
         new String[] {

@@ -20,10 +20,15 @@ package org.apache.hadoop.yarn.server.nodemanager.webapp;
 
 import static org.apache.hadoop.yarn.util.StringHelper.pajoin;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.yarn.server.nodemanager.webapp.jsonprovider.NMJsonProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.security.AuthenticationFilterInitializer;
 import org.apache.hadoop.security.HttpCrossOriginFilterInitializer;
 import org.apache.hadoop.service.AbstractService;
+import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
@@ -36,31 +41,68 @@ import org.apache.hadoop.yarn.webapp.WebApps;
 import org.apache.hadoop.yarn.webapp.YarnWebParams;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 
-import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
+import javax.servlet.Filter;
+import org.glassfish.jersey.internal.inject.AbstractBinder;
+import org.glassfish.jersey.server.ResourceConfig;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class WebServer extends AbstractService {
 
-  private static final Log LOG = LogFactory.getLog(WebServer.class);
+  private static final Logger LOG =
+       LoggerFactory.getLogger(WebServer.class);
 
   private final Context nmContext;
   private final NMWebApp nmWebApp;
+  private final ResourceView resourceView;
   private WebApp webApp;
   private int port;
 
-  public WebServer(Context nmContext, ResourceView resourceView,
+  public WebServer(Context nmContext, ResourceView resView,
       ApplicationACLsManager aclsManager,
       LocalDirsHandlerService dirsHandler) {
     super(WebServer.class.getName());
     this.nmContext = nmContext;
-    this.nmWebApp = new NMWebApp(resourceView, aclsManager, dirsHandler);
+    this.nmWebApp = new NMWebApp(resView, aclsManager, dirsHandler);
+    this.resourceView = resView;
+  }
+
+  protected ResourceConfig configure() {
+    NMJsonProvider nmJsonProvider = new NMJsonProvider();
+
+    ResourceConfig config = new ResourceConfig();
+    config.packages("org.apache.hadoop.yarn.server.nodemanager.webapp");
+    config.register(new JerseyBinder());
+    config.register(NMWebServices.class);
+    config.register(GenericExceptionHandler.class);
+    config.register(nmJsonProvider);
+    config.register(JAXBContextResolver.class);
+    return config;
+  }
+
+  private class JerseyBinder extends AbstractBinder {
+    @Override
+    protected void configure() {
+      bind(nmContext).to(Context.class).named("nm");
+      bind(nmWebApp).to(WebApp.class).named("webapp");
+      bind(resourceView).to(ResourceView.class).named("view");
+    }
   }
 
   @Override
   protected void serviceStart() throws Exception {
-    String bindAddress = WebAppUtils.getWebAppBindURL(getConfig(),
-                          YarnConfiguration.NM_BIND_HOST,
-                          WebAppUtils.getNMWebAppURLWithoutScheme(getConfig()));
-    boolean enableCors = getConfig()
+    Configuration conf = getConfig();
+    Map<String, String> params = new HashMap<>();
+    Map<String, String> terminalParams = new HashMap<>();
+    terminalParams.put("resourceBase", WebServer.class
+        .getClassLoader().getResource("TERMINAL").toExternalForm());
+    terminalParams.put("dirAllowed", "false");
+    terminalParams.put("pathInfoOnly", "true");
+    String bindAddress = WebAppUtils.getWebAppBindURL(conf,
+        YarnConfiguration.NM_BIND_HOST, WebAppUtils.getNMWebAppURLWithoutScheme(conf));
+    boolean enableCors = conf
         .getBoolean(YarnConfiguration.NM_WEBAPP_ENABLE_CORS_FILTER,
             YarnConfiguration.DEFAULT_NM_WEBAPP_ENABLE_CORS_FILTER);
     if (enableCors) {
@@ -68,20 +110,43 @@ public class WebServer extends AbstractService {
           + HttpCrossOriginFilterInitializer.ENABLED_SUFFIX, true);
     }
 
-    LOG.info("Instantiating NMWebApp at " + bindAddress);
+    // Always load pseudo authentication filter to parse "user.name" in an URL
+    // to identify a HTTP request's user.
+    boolean hasHadoopAuthFilterInitializer = false;
+    String filterInitializerConfKey = "hadoop.http.filter.initializers";
+    Class<?>[] initializersClasses = conf.getClasses(filterInitializerConfKey);
+    List<String> targets = new ArrayList<>();
+    if (initializersClasses != null) {
+      for (Class<?> initializer : initializersClasses) {
+        if (initializer.getName().equals(
+            AuthenticationFilterInitializer.class.getName())) {
+          hasHadoopAuthFilterInitializer = true;
+          break;
+        }
+        targets.add(initializer.getName());
+      }
+    }
+    if (!hasHadoopAuthFilterInitializer) {
+      targets.add(AuthenticationFilterInitializer.class.getName());
+      conf.set(filterInitializerConfKey, StringUtils.join(",", targets));
+    }
+    ContainerShellWebSocket.init(nmContext);
+    LOG.info("Instantiating NMWebApp at {}.", bindAddress);
     try {
-      this.webApp =
-          WebApps
-            .$for("node", Context.class, this.nmContext, "ws")
-            .at(bindAddress)
-            .with(getConfig())
-            .withHttpSpnegoPrincipalKey(
-              YarnConfiguration.NM_WEBAPP_SPNEGO_USER_NAME_KEY)
-            .withHttpSpnegoKeytabKey(
-                YarnConfiguration.NM_WEBAPP_SPNEGO_KEYTAB_FILE_KEY)
-              .withCSRFProtection(YarnConfiguration.NM_CSRF_PREFIX)
-              .withXFSProtection(YarnConfiguration.NM_XFS_PREFIX)
-            .start(this.nmWebApp);
+      this.webApp = WebApps
+          .$for("node", Context.class, this.nmContext, "jersey-ws")
+          .at(bindAddress)
+          .withServlet("ContainerShellWebSocket", "/container/*",
+           ContainerShellWebSocketServlet.class, params, false)
+          .withServlet("Terminal", "/terminal/*",
+           TerminalServlet.class, terminalParams, false)
+          .with(conf)
+          .withHttpSpnegoPrincipalKey(YarnConfiguration.NM_WEBAPP_SPNEGO_USER_NAME_KEY)
+          .withHttpSpnegoKeytabKey(YarnConfiguration.NM_WEBAPP_SPNEGO_KEYTAB_FILE_KEY)
+          .withCSRFProtection(YarnConfiguration.NM_CSRF_PREFIX)
+          .withXFSProtection(YarnConfiguration.NM_XFS_PREFIX)
+          .withResourceConfig(configure())
+          .start(this.nmWebApp);
       this.port = this.webApp.httpServer().getConnectorAddress(0).getPort();
     } catch (Exception e) {
       String msg = "NMWebapps failed to start.";
@@ -120,9 +185,6 @@ public class WebServer extends AbstractService {
 
     @Override
     public void setup() {
-      bind(NMWebServices.class);
-      bind(GenericExceptionHandler.class);
-      bind(JAXBContextResolver.class);
       bind(ResourceView.class).toInstance(this.resourceView);
       bind(ApplicationACLsManager.class).toInstance(this.aclsManager);
       bind(LocalDirsHandlerService.class).toInstance(dirsHandler);
@@ -141,7 +203,7 @@ public class WebServer extends AbstractService {
     }
 
     @Override
-    protected Class<? extends GuiceContainer> getWebAppFilterClass() {
+    protected Class<? extends Filter> getWebAppFilterClass() {
       return NMWebAppFilter.class;
     }
   }

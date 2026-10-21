@@ -18,17 +18,21 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt;
 
+import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.Dispatcher;
+import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.util.AbstractLivelinessMonitor;
 import org.apache.hadoop.yarn.util.Clock;
 
+import java.util.concurrent.TimeUnit;
+
 public class AMLivelinessMonitor extends AbstractLivelinessMonitor<ApplicationAttemptId> {
 
-  private EventHandler dispatcher;
+  private EventHandler<Event> dispatcher;
   
   public AMLivelinessMonitor(Dispatcher d) {
     super("AMLivelinessMonitor");
@@ -42,8 +46,15 @@ public class AMLivelinessMonitor extends AbstractLivelinessMonitor<ApplicationAt
 
   public void serviceInit(Configuration conf) throws Exception {
     super.serviceInit(conf);
-    int expireIntvl = conf.getInt(YarnConfiguration.RM_AM_EXPIRY_INTERVAL_MS,
-            YarnConfiguration.DEFAULT_RM_AM_EXPIRY_INTERVAL_MS);
+    long expireIntvl;
+    String rmAmExpiryIntervalMS = conf.get(YarnConfiguration.RM_AM_EXPIRY_INTERVAL_MS);
+    if (NumberUtils.isDigits(rmAmExpiryIntervalMS)) {
+      expireIntvl = conf.getLong(YarnConfiguration.RM_AM_EXPIRY_INTERVAL_MS,
+          YarnConfiguration.DEFAULT_RM_AM_EXPIRY_INTERVAL_MS);
+    } else {
+      expireIntvl = conf.getTimeDuration(YarnConfiguration.RM_AM_EXPIRY_INTERVAL_MS,
+          YarnConfiguration.DEFAULT_RM_AM_EXPIRY_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    }
     setExpireInterval(expireIntvl);
     setMonitorInterval(expireIntvl/3);
   }

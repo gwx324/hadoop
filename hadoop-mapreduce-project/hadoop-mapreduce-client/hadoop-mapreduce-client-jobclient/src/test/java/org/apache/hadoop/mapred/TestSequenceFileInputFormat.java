@@ -18,23 +18,23 @@
 
 package org.apache.hadoop.mapred;
 
-import org.apache.commons.logging.Log;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.SequenceFile;
-import org.junit.Test;
+import org.slf4j.Logger;
+import org.junit.jupiter.api.Test;
 
 import java.util.BitSet;
 import java.util.Random;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 public class TestSequenceFileInputFormat {
-  private static final Log LOG = FileInputFormat.LOG;
+  private static final Logger LOG = FileInputFormat.LOG;
 
   private static int MAX_LENGTH = 10000;
   private static Configuration conf = new Configuration();
@@ -102,7 +102,7 @@ public class TestSequenceFileInputFormat {
               // LOG.info("splits["+j+"]="+splits[j]+" : " + key.get());
               // LOG.info("@"+reader.getPos());
               // }
-              assertFalse("Key in multiple partitions.", bits.get(key.get()));
+              assertFalse(bits.get(key.get()), "Key in multiple partitions.");
               bits.set(key.get());
               count++;
             }
@@ -111,7 +111,7 @@ public class TestSequenceFileInputFormat {
             reader.close();
           }
         }
-        assertEquals("Some keys in no partition.", length, bits.cardinality());
+        assertEquals(length, bits.cardinality(), "Some keys in no partition.");
       }
 
     }

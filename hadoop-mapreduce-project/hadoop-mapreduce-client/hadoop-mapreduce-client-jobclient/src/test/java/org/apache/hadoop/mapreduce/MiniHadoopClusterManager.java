@@ -31,11 +31,9 @@ import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.GnuParser;
 import org.apache.commons.cli.HelpFormatter;
-import org.apache.commons.cli.OptionBuilder;
+import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
@@ -43,9 +41,11 @@ import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.MiniMRClientCluster;
 import org.apache.hadoop.mapred.MiniMRClientClusterFactory;
 import org.apache.hadoop.mapreduce.v2.jobhistory.JHAdminConfig;
+import org.apache.hadoop.util.JsonUtils;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.MiniYARNCluster;
-import org.mortbay.util.ajax.JSON;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class drives the creation of a mini-cluster on the local machine. By
@@ -60,8 +60,8 @@ import org.mortbay.util.ajax.JSON;
  * To shutdown the cluster, kill the process.
  */
 public class MiniHadoopClusterManager {
-  private static final Log LOG = LogFactory
-      .getLog(MiniHadoopClusterManager.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(MiniHadoopClusterManager.class);
 
   private MiniMRClientCluster mr;
   private MiniDFSCluster dfs;
@@ -69,6 +69,7 @@ public class MiniHadoopClusterManager {
   private int numNodeManagers;
   private int numDataNodes;
   private int nnPort;
+  private int nnHttpPort;
   private int rmPort;
   private int jhsPort;
   private StartupOption dfsOpts;
@@ -92,6 +93,8 @@ public class MiniHadoopClusterManager {
         .addOption("datanodes", true, "How many datanodes to start (default 1)")
         .addOption("format", false, "Format the DFS (default false)")
         .addOption("nnport", true, "NameNode port (default 0--we choose)")
+        .addOption("nnhttpport", true,
+            "NameNode HTTP port (default 0--we choose)")
         .addOption(
             "namenode",
             true,
@@ -102,18 +105,17 @@ public class MiniHadoopClusterManager {
         .addOption("jhsport", true,
             "JobHistoryServer port (default 0--we choose)")
         .addOption(
-            OptionBuilder.hasArgs().withArgName("property=value")
-                .withDescription("Options to pass into configuration object")
-                .create("D"))
+            Option.builder("D").hasArgs().argName("property=value")
+                .desc("Options to pass into configuration object")
+                .build())
         .addOption(
-            OptionBuilder.hasArg().withArgName("path").withDescription(
-                "Save configuration to this XML file.").create("writeConfig"))
+                Option.builder("writeConfig").hasArg().argName("path").desc(
+                "Save configuration to this XML file.").build())
         .addOption(
-            OptionBuilder.hasArg().withArgName("path").withDescription(
-                "Write basic information to this JSON file.").create(
-                "writeDetails"))
+                Option.builder("writeDetails").hasArg().argName("path").desc(
+                "Write basic information to this JSON file.").build())
         .addOption(
-            OptionBuilder.withDescription("Prints option help.").create("help"));
+                Option.builder("help").desc("Prints option help.").build());
     return options;
   }
 
@@ -134,7 +136,7 @@ public class MiniHadoopClusterManager {
     while (true) {
       try {
         Thread.sleep(1000 * 60);
-      } catch (InterruptedException _) {
+      } catch (InterruptedException e) {
         // nothing
       }
     }
@@ -152,7 +154,9 @@ public class MiniHadoopClusterManager {
       URISyntaxException {
     if (!noDFS) {
       dfs = new MiniDFSCluster.Builder(conf).nameNodePort(nnPort)
-          .numDataNodes(numDataNodes).startupOption(dfsOpts).build();
+          .nameNodeHttpPort(nnHttpPort).numDataNodes(numDataNodes)
+          .format(dfsOpts == StartupOption.FORMAT)
+          .startupOption(dfsOpts).build();
       LOG.info("Started MiniDFSCluster -- namenode on port "
           + dfs.getNameNodePort());
     }
@@ -192,7 +196,7 @@ public class MiniHadoopClusterManager {
             YarnConfiguration.RM_ADDRESS).split(":")[1]);
       }
       FileWriter fw = new FileWriter(new File(writeDetails));
-      fw.write(new JSON().toJSON(map));
+      fw.write(JsonUtils.toString(map));
       fw.close();
     }
   }
@@ -254,6 +258,7 @@ public class MiniHadoopClusterManager {
     noDFS = cli.hasOption("nodfs");
     numDataNodes = intArgument(cli, "datanodes", 1);
     nnPort = intArgument(cli, "nnport", 0);
+    nnHttpPort = intArgument(cli, "nnhttpport", 0);
     dfsOpts = cli.hasOption("format") ? StartupOption.FORMAT
         : StartupOption.REGULAR;
 

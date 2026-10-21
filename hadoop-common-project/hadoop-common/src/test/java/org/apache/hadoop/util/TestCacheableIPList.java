@@ -18,14 +18,12 @@
 package org.apache.hadoop.util;
 
 import java.io.IOException;
+import org.junit.jupiter.api.Test;
 
-import org.apache.hadoop.util.CacheableIPList;
-import org.apache.hadoop.util.FileBasedIPList;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-
-import junit.framework.TestCase;
-
-public class TestCacheableIPList extends TestCase {
+public class TestCacheableIPList {
 
   /**
    * Add a bunch of subnets and IPSs to the file
@@ -37,6 +35,7 @@ public class TestCacheableIPList extends TestCase {
    * test for inclusion
    * Check for exclusion
    */
+  @Test
   public void testAddWithSleepForCacheTimeout() throws IOException, InterruptedException {
 
     String[] ips = {"10.119.103.112", "10.221.102.0/23", "10.113.221.221"};
@@ -46,10 +45,8 @@ public class TestCacheableIPList extends TestCase {
     CacheableIPList cipl = new CacheableIPList(
         new FileBasedIPList("ips.txt"),100);
 
-    assertFalse("10.113.221.222 is in the list",
-        cipl.isIn("10.113.221.222"));
-    assertFalse ("10.222.103.121 is  in the list",
-        cipl.isIn("10.222.103.121"));
+    assertFalse(cipl.isIn("10.113.221.222"), "10.113.221.222 is in the list");
+    assertFalse(cipl.isIn("10.222.103.121"), "10.222.103.121 is  in the list");
 
     TestFileBasedIPList.removeFile("ips.txt");
     String[]ips2 = {"10.119.103.112", "10.221.102.0/23",
@@ -58,10 +55,8 @@ public class TestCacheableIPList extends TestCase {
     TestFileBasedIPList.createFileWithEntries ("ips.txt", ips2);
     Thread.sleep(101);
 
-    assertTrue("10.113.221.222 is not in the list",
-        cipl.isIn("10.113.221.222"));
-    assertTrue ("10.222.103.121 is not in the list",
-        cipl.isIn("10.222.103.121"));
+    assertTrue(cipl.isIn("10.113.221.222"), "10.113.221.222 is not in the list");
+    assertTrue(cipl.isIn("10.222.103.121"), "10.222.103.121 is not in the list");
 
     TestFileBasedIPList.removeFile("ips.txt");
   }
@@ -76,6 +71,7 @@ public class TestCacheableIPList extends TestCase {
    * test for inclusion
    * Check for exclusion
    */
+  @Test
   public void testRemovalWithSleepForCacheTimeout() throws IOException, InterruptedException {
 
     String[] ips = {"10.119.103.112", "10.221.102.0/23",
@@ -86,10 +82,8 @@ public class TestCacheableIPList extends TestCase {
     CacheableIPList cipl = new CacheableIPList(
         new FileBasedIPList("ips.txt"),100);
 
-    assertTrue("10.113.221.222 is not in the list",
-        cipl.isIn("10.113.221.222"));
-    assertTrue ("10.222.103.121 is not in the list",
-        cipl.isIn("10.222.103.121"));
+    assertTrue(cipl.isIn("10.113.221.222"), "10.113.221.222 is not in the list");
+    assertTrue(cipl.isIn("10.222.103.121"), "10.222.103.121 is not in the list");
 
     TestFileBasedIPList.removeFile("ips.txt");
     String[]ips2 = {"10.119.103.112", "10.221.102.0/23", "10.113.221.221"};
@@ -97,10 +91,8 @@ public class TestCacheableIPList extends TestCase {
     TestFileBasedIPList.createFileWithEntries ("ips.txt", ips2);
     Thread.sleep(1005);
 
-    assertFalse("10.113.221.222 is in the list",
-        cipl.isIn("10.113.221.222"));
-    assertFalse ("10.222.103.121 is  in the list",
-        cipl.isIn("10.222.103.121"));
+    assertFalse(cipl.isIn("10.113.221.222"), "10.113.221.222 is in the list");
+    assertFalse(cipl.isIn("10.222.103.121"), "10.222.103.121 is  in the list");
 
     TestFileBasedIPList.removeFile("ips.txt");
   }
@@ -115,6 +107,7 @@ public class TestCacheableIPList extends TestCase {
    * test for inclusion
    * Check for exclusion
    */
+  @Test
   public void testAddWithRefresh() throws IOException, InterruptedException {
 
     String[] ips = {"10.119.103.112", "10.221.102.0/23", "10.113.221.221"};
@@ -124,10 +117,8 @@ public class TestCacheableIPList extends TestCase {
     CacheableIPList cipl = new CacheableIPList(
         new FileBasedIPList("ips.txt"),100);
 
-    assertFalse("10.113.221.222 is in the list",
-        cipl.isIn("10.113.221.222"));
-    assertFalse ("10.222.103.121 is  in the list",
-        cipl.isIn("10.222.103.121"));
+    assertFalse(cipl.isIn("10.113.221.222"), "10.113.221.222 is in the list");
+    assertFalse(cipl.isIn("10.222.103.121"), "10.222.103.121 is  in the list");
 
     TestFileBasedIPList.removeFile("ips.txt");
     String[]ips2 = {"10.119.103.112", "10.221.102.0/23",
@@ -136,10 +127,8 @@ public class TestCacheableIPList extends TestCase {
     TestFileBasedIPList.createFileWithEntries ("ips.txt", ips2);
     cipl.refresh();
 
-    assertTrue("10.113.221.222 is not in the list",
-        cipl.isIn("10.113.221.222"));
-    assertTrue ("10.222.103.121 is not in the list",
-        cipl.isIn("10.222.103.121"));
+    assertTrue(cipl.isIn("10.113.221.222"), "10.113.221.222 is not in the list");
+    assertTrue(cipl.isIn("10.222.103.121"), "10.222.103.121 is not in the list");
 
     TestFileBasedIPList.removeFile("ips.txt");
   }
@@ -154,6 +143,7 @@ public class TestCacheableIPList extends TestCase {
    * test for inclusion
    * Check for exclusion
    */
+  @Test
   public void testRemovalWithRefresh() throws IOException, InterruptedException {
 
     String[] ips = {"10.119.103.112", "10.221.102.0/23",
@@ -164,10 +154,8 @@ public class TestCacheableIPList extends TestCase {
     CacheableIPList cipl = new CacheableIPList(
         new FileBasedIPList("ips.txt"),100);
 
-    assertTrue("10.113.221.222 is not in the list",
-        cipl.isIn("10.113.221.222"));
-    assertTrue ("10.222.103.121 is not in the list",
-        cipl.isIn("10.222.103.121"));
+    assertTrue(cipl.isIn("10.113.221.222"), "10.113.221.222 is not in the list");
+    assertTrue(cipl.isIn("10.222.103.121"), "10.222.103.121 is not in the list");
 
     TestFileBasedIPList.removeFile("ips.txt");
     String[]ips2 = {"10.119.103.112", "10.221.102.0/23", "10.113.221.221"};
@@ -175,10 +163,8 @@ public class TestCacheableIPList extends TestCase {
     TestFileBasedIPList.createFileWithEntries ("ips.txt", ips2);
     cipl.refresh();
 
-    assertFalse("10.113.221.222 is in the list",
-        cipl.isIn("10.113.221.222"));
-    assertFalse ("10.222.103.121 is  in the list",
-        cipl.isIn("10.222.103.121"));
+    assertFalse(cipl.isIn("10.113.221.222"), "10.113.221.222 is in the list");
+    assertFalse(cipl.isIn("10.222.103.121"), "10.222.103.121 is  in the list");
 
     TestFileBasedIPList.removeFile("ips.txt");
   }

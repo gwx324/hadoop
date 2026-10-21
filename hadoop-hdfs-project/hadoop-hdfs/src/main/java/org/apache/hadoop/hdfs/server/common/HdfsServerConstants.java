@@ -23,15 +23,15 @@ import java.io.IOException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.commons.lang3.Validate;
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSUtil;
-import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-import org.apache.hadoop.hdfs.server.datanode.DataNodeLayoutVersion;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
 import org.apache.hadoop.hdfs.server.namenode.MetaRecoveryContext;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeLayoutVersion;
 import org.apache.hadoop.util.StringUtils;
 
@@ -42,14 +42,9 @@ import org.apache.hadoop.util.StringUtils;
 
 @InterfaceAudience.Private
 public interface HdfsServerConstants {
+  // Will be set by
+  // {@code DFSConfigKeys.DFS_NAMENODE_BLOCKPLACEMENTPOLICY_MIN_BLOCKS_FOR_WRITE_KEY}.
   int MIN_BLOCKS_FOR_WRITE = 1;
-
-  /**
-   * Please see {@link HdfsConstants#LEASE_SOFTLIMIT_PERIOD} and
-   * {@link HdfsConstants#LEASE_HARDLIMIT_PERIOD} for more information.
-   */
-  long LEASE_SOFTLIMIT_PERIOD = HdfsConstants.LEASE_SOFTLIMIT_PERIOD;
-  long LEASE_HARDLIMIT_PERIOD = HdfsConstants.LEASE_HARDLIMIT_PERIOD;
 
   long LEASE_RECOVER_PERIOD = 10 * 1000; // in ms
   // We need to limit the length and depth of a path in the filesystem.
@@ -69,11 +64,11 @@ public interface HdfsServerConstants {
   int NAMENODE_LAYOUT_VERSION
       = NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION;
   /**
-   * Current layout version for DataNode.
-   * Please see {@link DataNodeLayoutVersion.Feature} on adding new layout version.
-   */
-  int DATANODE_LAYOUT_VERSION
-      = DataNodeLayoutVersion.CURRENT_LAYOUT_VERSION;
+  * Current minimum compatible version for NameNode
+  * Please see {@link NameNodeLayoutVersion.Feature} on adding new layout version.
+  */
+  int MINIMUM_COMPATIBLE_NAMENODE_LAYOUT_VERSION
+      = NameNodeLayoutVersion.MINIMUM_COMPATIBLE_LAYOUT_VERSION;
   /**
    * Path components that are reserved in HDFS.
    * <p>
@@ -156,6 +151,7 @@ public interface HdfsServerConstants {
     RECOVER  ("-recover"),
     FORCE("-force"),
     NONINTERACTIVE("-nonInteractive"),
+    SKIPSHAREDEDITSCHECK("-skipSharedEditsCheck"),
     RENAMERESERVED("-renameReserved"),
     METADATAVERSION("-metadataVersion"),
     UPGRADEONLY("-upgradeOnly"),
@@ -163,7 +159,9 @@ public interface HdfsServerConstants {
     // only used for StorageDirectory.analyzeStorage() in hot swap drive scenario.
     // TODO refactor StorageDirectory.analyzeStorage() so that we can do away with
     // this in StartupOption.
-    HOTSWAP("-hotswap");
+    HOTSWAP("-hotswap"),
+    // Startup the namenode in observer mode.
+    OBSERVER("-observer");
 
     private static final Pattern ENUM_WITH_ROLLING_UPGRADE_OPTION = Pattern.compile(
         "(\\w+)\\((\\w+)\\)");
@@ -298,6 +296,10 @@ public interface HdfsServerConstants {
     /** Temporary replica: created for replication and relocation only. */
     TEMPORARY(4);
 
+    // Since ReplicaState (de)serialization depends on ordinal, either adding
+    // new value should be avoided to this enum or newly appended value should
+    // be handled by NameNodeLayoutVersion#Feature.
+
     private static final ReplicaState[] cachedValues = ReplicaState.values();
 
     private final int value;
@@ -310,13 +312,32 @@ public interface HdfsServerConstants {
       return value;
     }
 
+    /**
+     * Retrieve ReplicaState corresponding to given index.
+     *
+     * @param v Index to retrieve {@link ReplicaState}.
+     * @return {@link ReplicaState} object.
+     * @throws IndexOutOfBoundsException if the index is invalid.
+     */
     public static ReplicaState getState(int v) {
+      Validate.validIndex(cachedValues, v, "Index Expected range: [0, "
+          + (cachedValues.length - 1) + "]. Actual value: " + v);
       return cachedValues[v];
     }
 
-    /** Read from in */
+    /**
+     * Retrieve ReplicaState corresponding to index provided in binary stream.
+     *
+     * @param in Index value provided as bytes in given binary stream.
+     * @return {@link ReplicaState} object.
+     * @throws IOException if an I/O error occurs while reading bytes.
+     * @throws IndexOutOfBoundsException if the index is invalid.
+     */
     public static ReplicaState read(DataInput in) throws IOException {
-      return cachedValues[in.readByte()];
+      byte idx = in.readByte();
+      Validate.validIndex(cachedValues, idx, "Index Expected range: [0, "
+          + (cachedValues.length - 1) + "]. Actual value: " + idx);
+      return cachedValues[idx];
     }
 
     /** Write to out */
@@ -369,8 +390,15 @@ public interface HdfsServerConstants {
   String SECURITY_XATTR_UNREADABLE_BY_SUPERUSER =
       "security.hdfs.unreadable.by.superuser";
   String XATTR_ERASURECODING_POLICY =
-      "raw.hdfs.erasurecoding.policy";
+      "system.hdfs.erasurecoding.policy";
+  String XATTR_SNAPSHOT_DELETED = "system.hdfs.snapshot.deleted";
+
+  String XATTR_SATISFY_STORAGE_POLICY = "user.hdfs.sps";
+
+  Path MOVER_ID_PATH = new Path("/system/mover.id");
 
   long BLOCK_GROUP_INDEX_MASK = 15;
   byte MAX_BLOCKS_IN_GROUP = 16;
+  // maximum bandwidth per datanode 1TB/sec.
+  long MAX_BANDWIDTH_PER_DATANODE = 1099511627776L;
 }

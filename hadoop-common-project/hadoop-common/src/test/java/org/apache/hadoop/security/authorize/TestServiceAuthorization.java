@@ -17,17 +17,24 @@
  */
 package org.apache.hadoop.security.authorize;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
+import java.lang.annotation.Annotation;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.ipc.TestRPC.TestProtocol;
+import org.apache.hadoop.security.KerberosInfo;
+import org.apache.hadoop.security.SecurityInfo;
+import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.junit.Test;
+import org.apache.hadoop.security.token.TokenInfo;
+import org.junit.jupiter.api.Test;
 
 public class TestServiceAuthorization {
 
@@ -49,6 +56,53 @@ public class TestServiceAuthorization {
       return new Service[] { new Service(ACL_CONFIG, TestProtocol.class), 
           new Service(ACL_CONFIG1, TestProtocol1.class),
       };
+    }
+  }
+
+  private static class CustomSecurityInfo extends SecurityInfo {
+    @Override
+    public KerberosInfo getKerberosInfo(Class<?> protocol,
+        Configuration conf) {
+      return new KerberosInfo() {
+        @Override
+        public Class<? extends Annotation> annotationType() {
+          return null;
+        }
+        @Override
+        public String serverPrincipal() {
+          return null;
+        }
+        @Override
+        public String clientPrincipal() {
+          return "dfs.datanode.kerberos.principal";
+        }
+      };
+    }
+
+    @Override
+    public TokenInfo getTokenInfo(Class<?> protocol, Configuration conf) {
+      return null;
+    }
+  }
+
+  @Test
+  public void testWithClientPrincipalOnUnsecureMode()
+      throws UnknownHostException {
+    UserGroupInformation hdfsUser = UserGroupInformation.createUserForTesting(
+        "hdfs", new String[] {"hadoop"});
+    ServiceAuthorizationManager serviceAuthorizationManager =
+        new ServiceAuthorizationManager();
+    SecurityUtil.setSecurityInfoProviders(new CustomSecurityInfo());
+
+    Configuration conf = new Configuration();
+    conf.set("dfs.datanode.kerberos.principal", "dn/_HOST@EXAMPLE.COM");
+    conf.set(ACL_CONFIG, "user1 hadoop");
+    serviceAuthorizationManager.refresh(conf, new TestPolicyProvider());
+    try {
+      serviceAuthorizationManager.authorize(hdfsUser, TestProtocol.class, conf,
+          InetAddress.getByName(ADDRESS));
+    } catch (AuthorizationException e) {
+      fail();
     }
   }
 
@@ -284,6 +338,39 @@ public class TestServiceAuthorization {
     } catch (AuthorizationException e) {
       fail();
     }
+  }
+
+  @Test
+  public void testBlockedMachineListWithIPv6Client() throws UnknownHostException {
+    UserGroupInformation drwho =
+        UserGroupInformation.createUserForTesting("drwho@EXAMPLE.COM",
+            new String[] {"group1", "group2"});
+    InetAddress ipv6Client = InetAddress.getByName("2001:db8::1");
+
+    ServiceAuthorizationManager serviceAuthorizationManager =
+        new ServiceAuthorizationManager();
+    Configuration conf = new Configuration();
+
+    // a blocked MachineList with only IPv4 ranges does not block an IPv6 client
+    conf.set(BLOCKED_HOST_CONFIG, IP_RANGE);
+    serviceAuthorizationManager.refresh(conf, new TestPolicyProvider());
+    assertThatCode(() -> serviceAuthorizationManager.authorize(drwho,
+        TestProtocol.class, conf, ipv6Client)).doesNotThrowAnyException();
+
+    // a blocked MachineList with a matching IPv6 range blocks the IPv6 client
+    conf.set(BLOCKED_HOST_CONFIG, IP_RANGE + ",2001:db8::/32");
+    serviceAuthorizationManager.refresh(conf, new TestPolicyProvider());
+    assertThatThrownBy(() -> serviceAuthorizationManager.authorize(drwho,
+        TestProtocol.class, conf, ipv6Client))
+        .isInstanceOf(AuthorizationException.class)
+        .hasMessageContaining("Host 2001:db8:0:0:0:0:0:1 is not authorized");
+    assertThatThrownBy(() -> serviceAuthorizationManager.authorize(drwho,
+        TestProtocol.class, conf, InetAddress.getByName("10.222.0.0")))
+        .isInstanceOf(AuthorizationException.class);
+    // an IPv6 client outside of the blocked range is not blocked
+    assertThatCode(() -> serviceAuthorizationManager.authorize(drwho,
+        TestProtocol.class, conf, InetAddress.getByName("2001:db9::1")))
+        .doesNotThrowAnyException();
   }
 
   @Test

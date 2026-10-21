@@ -18,14 +18,15 @@
 package org.apache.hadoop.mount;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.oncrpc.RpcProgram;
 import org.apache.hadoop.oncrpc.SimpleTcpServer;
 import org.apache.hadoop.oncrpc.SimpleUdpServer;
 import org.apache.hadoop.portmap.PortmapMapping;
 import org.apache.hadoop.util.ShutdownHookManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.hadoop.util.ExitUtil.terminate;
 
@@ -37,10 +38,13 @@ import static org.apache.hadoop.util.ExitUtil.terminate;
  * handle for requested directory and returns it to the client.
  */
 abstract public class MountdBase {
-  public static final Log LOG = LogFactory.getLog(MountdBase.class);
+  public static final Logger LOG = LoggerFactory.getLogger(MountdBase.class);
   private final RpcProgram rpcProgram;
   private int udpBoundPort; // Will set after server starts
   private int tcpBoundPort; // Will set after server starts
+  private boolean registered = false;
+  private SimpleUdpServer udpServer = null;
+  private SimpleTcpServer tcpServer = null;
 
   public RpcProgram getRpcProgram() {
     return rpcProgram;
@@ -57,13 +61,13 @@ abstract public class MountdBase {
 
   /* Start UDP server */
   private void startUDPServer() {
-    SimpleUdpServer udpServer = new SimpleUdpServer(rpcProgram.getPort(),
-        rpcProgram, 1);
+    udpServer = new SimpleUdpServer(rpcProgram.getPort(),
+        rpcProgram.getBindHost(), rpcProgram, 1);
     rpcProgram.startDaemons();
     try {
       udpServer.run();
     } catch (Throwable e) {
-      LOG.fatal("Failed to start the UDP server.", e);
+      LOG.error("Failed to start the UDP server.", e);
       if (udpServer.getBoundPort() > 0) {
         rpcProgram.unregister(PortmapMapping.TRANSPORT_UDP,
             udpServer.getBoundPort());
@@ -76,13 +80,13 @@ abstract public class MountdBase {
 
   /* Start TCP server */
   private void startTCPServer() {
-    SimpleTcpServer tcpServer = new SimpleTcpServer(rpcProgram.getPort(),
-        rpcProgram, 1);
+    tcpServer = new SimpleTcpServer(rpcProgram.getPort(),
+        rpcProgram.getBindHost(), rpcProgram, 1);
     rpcProgram.startDaemons();
     try {
       tcpServer.run();
     } catch (Throwable e) {
-      LOG.fatal("Failed to start the TCP server.", e);
+      LOG.error("Failed to start the TCP server.", e);
       if (tcpServer.getBoundPort() > 0) {
         rpcProgram.unregister(PortmapMapping.TRANSPORT_TCP,
             tcpServer.getBoundPort());
@@ -94,6 +98,7 @@ abstract public class MountdBase {
   }
 
   public void start(boolean register) {
+    registered = register;
     startUDPServer();
     startTCPServer();
     if (register) {
@@ -103,9 +108,44 @@ abstract public class MountdBase {
         rpcProgram.register(PortmapMapping.TRANSPORT_UDP, udpBoundPort);
         rpcProgram.register(PortmapMapping.TRANSPORT_TCP, tcpBoundPort);
       } catch (Throwable e) {
-        LOG.fatal("Failed to register the MOUNT service.", e);
+        LOG.error("Failed to register the MOUNT service.", e);
         terminate(1, e);
       }
+    }
+  }
+
+  /**
+   * Returns the local TCP listen address of mountd.
+   * @return local TCP listen address, or null if the server is not running
+   */
+  public InetSocketAddress getBoundTcpAddress() {
+    return tcpServer != null ? tcpServer.getBoundAddress() : null;
+  }
+
+  /**
+   * Returns the local UDP listen address of mountd.
+   * @return local UDP listen address, or null if the server is not running
+   */
+  public InetSocketAddress getBoundUdpAddress() {
+    return udpServer != null ? udpServer.getBoundAddress() : null;
+  }
+
+  public void stop() {
+    if (registered && udpBoundPort > 0) {
+      rpcProgram.unregister(PortmapMapping.TRANSPORT_UDP, udpBoundPort);
+      udpBoundPort = 0;
+    }
+    if (registered && tcpBoundPort > 0) {
+      rpcProgram.unregister(PortmapMapping.TRANSPORT_TCP, tcpBoundPort);
+      tcpBoundPort = 0;
+    }
+    if (udpServer != null) {
+      udpServer.shutdown();
+      udpServer = null;
+    }
+    if (tcpServer != null) {
+      tcpServer.shutdown();
+      tcpServer = null;
     }
   }
 
@@ -117,8 +157,7 @@ abstract public class MountdBase {
   private class Unregister implements Runnable {
     @Override
     public synchronized void run() {
-      rpcProgram.unregister(PortmapMapping.TRANSPORT_UDP, udpBoundPort);
-      rpcProgram.unregister(PortmapMapping.TRANSPORT_TCP, tcpBoundPort);
+      stop();
     }
   }
 

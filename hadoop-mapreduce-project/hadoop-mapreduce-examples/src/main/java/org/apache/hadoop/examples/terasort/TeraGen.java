@@ -23,10 +23,9 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.CRC32;
 import java.util.zip.Checksum;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.Path;
@@ -35,7 +34,6 @@ import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableUtils;
-import org.apache.hadoop.mapreduce.Cluster;
 import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.InputFormat;
 import org.apache.hadoop.mapreduce.InputSplit;
@@ -46,9 +44,10 @@ import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
-import org.apache.hadoop.util.PureJavaCrc32;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Generate the official GraySort input data set.
@@ -66,9 +65,9 @@ import org.apache.hadoop.util.ToolRunner;
  * <b>bin/hadoop jar hadoop-*-examples.jar teragen 10000000000 in-dir</b>
  */
 public class TeraGen extends Configured implements Tool {
-  private static final Log LOG = LogFactory.getLog(TeraSort.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TeraGen.class);
 
-  public static enum Counters {CHECKSUM}
+  public enum Counters {CHECKSUM}
 
   /**
    * An input format that assigns ranges of longs to each mapper.
@@ -208,7 +207,7 @@ public class TeraGen extends Configured implements Tool {
     private Unsigned16 rand = null;
     private Unsigned16 rowId = null;
     private Unsigned16 checksum = new Unsigned16();
-    private Checksum crc32 = new PureJavaCrc32();
+    private Checksum crc32 = new CRC32();
     private Unsigned16 total = new Unsigned16();
     private static final Unsigned16 ONE = new Unsigned16(1);
     private byte[] buffer = new byte[TeraInputFormat.KEY_LENGTH +
@@ -246,6 +245,9 @@ public class TeraGen extends Configured implements Tool {
 
   private static void usage() throws IOException {
     System.err.println("teragen <num rows> <output dir>");
+    System.err.println("If you want to generate data and store them as " +
+        "erasure code striping file, just make sure that the parent dir " +
+        "of <output dir> has erasure code policy set");
   }
 
   /**

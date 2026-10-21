@@ -30,8 +30,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.StringTokenizer;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
@@ -39,17 +37,22 @@ import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.TaskCounter;
 import org.apache.hadoop.util.ReflectionUtils;
-import org.junit.Ignore;
-import org.junit.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertNotNull;
-@Ignore
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+@Disabled
 public class TestBadRecords extends ClusterMapReduceTestCase {
   
-  private static final Log LOG = 
-    LogFactory.getLog(TestBadRecords.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestBadRecords.class);
   
   private static final List<String> MAPPER_BAD_RECORDS = 
     Arrays.asList("hello01","hello04","hello05");
@@ -58,7 +61,12 @@ public class TestBadRecords extends ClusterMapReduceTestCase {
     Arrays.asList("hello08","hello10");
   
   private List<String> input;
-  
+
+  @BeforeAll
+  public static void setupClass() throws Exception {
+    setupClassBase(TestBadRecords.class);
+  }
+
   public TestBadRecords() {
     input = new ArrayList<String>();
     for(int i=1;i<=10;i++) {

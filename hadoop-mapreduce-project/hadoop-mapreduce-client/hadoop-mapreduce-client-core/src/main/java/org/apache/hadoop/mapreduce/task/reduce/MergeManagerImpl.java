@@ -25,8 +25,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.ChecksumFileSystem;
@@ -55,19 +53,22 @@ import org.apache.hadoop.mapred.Task.CombineValuesIterator;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskID;
-import org.apache.hadoop.mapreduce.CryptoUtils;
+import org.apache.hadoop.mapreduce.security.IntermediateEncryptedStream;
 import org.apache.hadoop.mapreduce.task.reduce.MapOutput.MapOutputComparator;
 import org.apache.hadoop.util.Progress;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 @SuppressWarnings(value={"unchecked"})
 @InterfaceAudience.LimitedPrivate({"MapReduce"})
 @InterfaceStability.Unstable
 public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
   
-  private static final Log LOG = LogFactory.getLog(MergeManagerImpl.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(MergeManagerImpl.class);
   
   /* Maximum percentage of the in-memory limit that a single shuffle can 
    * consume*/ 
@@ -175,7 +176,8 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
         MRJobConfig.REDUCE_MEMORY_TOTAL_BYTES,
         Runtime.getRuntime().maxMemory()) * maxInMemCopyUse);
 
-    this.ioSortFactor = jobConf.getInt(MRJobConfig.IO_SORT_FACTOR, 100);
+    this.ioSortFactor = jobConf.getInt(MRJobConfig.IO_SORT_FACTOR,
+        MRJobConfig.DEFAULT_IO_SORT_FACTOR);
 
     final float singleShuffleMemoryLimitPercent =
         jobConf.getFloat(MRJobConfig.SHUFFLE_MEMORY_LIMIT_PERCENT,
@@ -466,7 +468,9 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
                                            mergeOutputSize).suffix(
                                                Task.MERGED_OUTPUT_PREFIX);
 
-      FSDataOutputStream out = CryptoUtils.wrapIfNecessary(jobConf, rfs.create(outputPath));
+      FSDataOutputStream out =
+          IntermediateEncryptedStream.wrapIfNecessary(jobConf,
+              rfs.create(outputPath), outputPath);
       Writer<K, V> writer = new Writer<K, V>(jobConf, out,
           (Class<K>) jobConf.getMapOutputKeyClass(),
           (Class<V>) jobConf.getMapOutputValueClass(), codec, null, true);
@@ -550,7 +554,9 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
         localDirAllocator.getLocalPathForWrite(inputs.get(0).toString(), 
             approxOutputSize, jobConf).suffix(Task.MERGED_OUTPUT_PREFIX);
 
-      FSDataOutputStream out = CryptoUtils.wrapIfNecessary(jobConf, rfs.create(outputPath));
+      FSDataOutputStream out =
+          IntermediateEncryptedStream.wrapIfNecessary(jobConf,
+              rfs.create(outputPath), outputPath);
       Writer<K, V> writer = new Writer<K, V>(jobConf, out,
           (Class<K>) jobConf.getMapOutputKeyClass(),
           (Class<V>) jobConf.getMapOutputValueClass(), codec, null, true);
@@ -733,7 +739,9 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
             tmpDir, comparator, reporter, spilledRecordsCounter, null, 
             mergePhase);
 
-        FSDataOutputStream out = CryptoUtils.wrapIfNecessary(job, fs.create(outputPath));
+        FSDataOutputStream out =
+            IntermediateEncryptedStream.wrapIfNecessary(job,
+                fs.create(outputPath), outputPath);
         Writer<K, V> writer = new Writer<K, V>(job, out, keyClass, valueClass,
             codec, null, true);
         try {
@@ -858,18 +866,22 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
     }
 
     @Override
-    public int compareTo(Object obj) {
-      if(obj instanceof CompressAwarePath) {
+    public int compareTo(Path obj) {
+      if (obj instanceof CompressAwarePath) {
         CompressAwarePath compPath = (CompressAwarePath) obj;
-        if(this.compressedSize < compPath.getCompressedSize()) {
-          return -1;
-        } else if (this.getCompressedSize() > compPath.getCompressedSize()) {
-          return 1;
-        }
+        int c = Long.compare(this.compressedSize, compPath.compressedSize);
         // Not returning 0 here so that objects with the same size (but
         // different paths) are still added to the TreeSet.
+        if (c != 0) {
+          return c;
+        }
       }
       return super.compareTo(obj);
     }
+  }
+
+  @VisibleForTesting
+  OnDiskMerger getOnDiskMerger() {
+    return onDiskMerger;
   }
 }

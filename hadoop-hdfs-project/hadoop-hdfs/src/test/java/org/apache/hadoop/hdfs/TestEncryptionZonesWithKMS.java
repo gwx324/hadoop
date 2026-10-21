@@ -17,27 +17,35 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
+import org.apache.hadoop.crypto.key.kms.KMSDelegationToken;
+import org.apache.hadoop.crypto.key.kms.LoadBalancingKMSClientProvider;
 import org.apache.hadoop.crypto.key.kms.server.MiniKMS;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.web.WebHdfsConstants;
+import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
+import org.apache.hadoop.hdfs.web.WebHdfsTestUtil;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.util.Arrays;
 import java.util.UUID;
 
+@Tag("slow")
 public class TestEncryptionZonesWithKMS extends TestEncryptionZones {
 
   private MiniKMS miniKMS;
@@ -48,18 +56,18 @@ public class TestEncryptionZonesWithKMS extends TestEncryptionZones {
         miniKMS.getKMSUrl().toExternalForm().replace("://", "@");
   }
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     File kmsDir = new File("target/test-classes/" +
         UUID.randomUUID().toString());
-    Assert.assertTrue(kmsDir.mkdirs());
+    assertTrue(kmsDir.mkdirs());
     MiniKMS.Builder miniKMSBuilder = new MiniKMS.Builder();
     miniKMS = miniKMSBuilder.setKmsConfDir(kmsDir).build();
     miniKMS.start();
     super.setup();
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     super.teardown();
     miniKMS.stop();
@@ -69,36 +77,45 @@ public class TestEncryptionZonesWithKMS extends TestEncryptionZones {
   protected void setProvider() {
   }
 
-  @Test(timeout = 120000)
+  private KMSClientProvider getKMSClientProvider() {
+    LoadBalancingKMSClientProvider lbkmscp =
+        (LoadBalancingKMSClientProvider) Whitebox
+        .getInternalState(cluster.getNamesystem().getProvider(), "extension");
+    assert lbkmscp.getProviders().length == 1;
+    return lbkmscp.getProviders()[0];
+  }
+
+  @Test
+  @Timeout(value = 120)
   public void testCreateEZPopulatesEDEKCache() throws Exception {
     final Path zonePath = new Path("/TestEncryptionZone");
     fsWrapper.mkdir(zonePath, FsPermission.getDirDefault(), false);
     dfsAdmin.createEncryptionZone(zonePath, TEST_KEY, NO_TRASH);
     @SuppressWarnings("unchecked")
-    KMSClientProvider kcp = (KMSClientProvider) Whitebox
-        .getInternalState(cluster.getNamesystem().getProvider(), "extension");
+    KMSClientProvider kcp = getKMSClientProvider();
     assertTrue(kcp.getEncKeyQueueSize(TEST_KEY) > 0);
   }
 
-  @Test(timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testDelegationToken() throws Exception {
     final String renewer = "JobTracker";
     UserGroupInformation.createRemoteUser(renewer);
 
     Credentials creds = new Credentials();
     Token<?> tokens[] = fs.addDelegationTokens(renewer, creds);
-    DistributedFileSystem.LOG.debug("Delegation tokens: " +
-        Arrays.asList(tokens));
-    Assert.assertEquals(2, tokens.length);
-    Assert.assertEquals(2, creds.numberOfTokens());
+    LOG.debug("Delegation tokens: " + Arrays.asList(tokens));
+    assertEquals(2, tokens.length);
+    assertEquals(2, creds.numberOfTokens());
     
     // If the dt exists, will not get again
     tokens = fs.addDelegationTokens(renewer, creds);
-    Assert.assertEquals(0, tokens.length);
-    Assert.assertEquals(2, creds.numberOfTokens());
+    assertEquals(0, tokens.length);
+    assertEquals(2, creds.numberOfTokens());
   }
 
-  @Test(timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testWarmupEDEKCacheOnStartup() throws Exception {
     Path zonePath = new Path("/TestEncryptionZone");
     fsWrapper.mkdir(zonePath, FsPermission.getDirDefault(), false);
@@ -110,10 +127,9 @@ public class TestEncryptionZonesWithKMS extends TestEncryptionZones {
     dfsAdmin.createEncryptionZone(zonePath, anotherKey, NO_TRASH);
 
     @SuppressWarnings("unchecked")
-    KMSClientProvider spy = (KMSClientProvider) Whitebox
-        .getInternalState(cluster.getNamesystem().getProvider(), "extension");
-    assertTrue("key queue is empty after creating encryption zone",
-        spy.getEncKeyQueueSize(TEST_KEY) > 0);
+    KMSClientProvider spy = getKMSClientProvider();
+    assertTrue(spy.getEncKeyQueueSize(TEST_KEY) > 0,
+        "key queue is empty after creating encryption zone");
 
     conf.setInt(
         DFSConfigKeys.DFS_NAMENODE_EDEKCACHELOADER_INITIAL_DELAY_MS_KEY, 0);
@@ -122,11 +138,28 @@ public class TestEncryptionZonesWithKMS extends TestEncryptionZones {
     GenericTestUtils.waitFor(new Supplier<Boolean>() {
       @Override
       public Boolean get() {
-        final KMSClientProvider kspy = (KMSClientProvider) Whitebox
-            .getInternalState(cluster.getNamesystem().getProvider(),
-                "extension");
+        final KMSClientProvider kspy = getKMSClientProvider();
         return kspy.getEncKeyQueueSize(TEST_KEY) > 0;
       }
     }, 1000, 60000);
+  }
+
+  /**
+   * This method fetches the kms delegation token
+   * for {@link WebHdfsFileSystem}.
+   * @throws Exception
+   */
+  @Test
+  public void addDelegationTokenFromWebhdfsFileSystem() throws Exception {
+    UserGroupInformation.createRemoteUser("JobTracker");
+    WebHdfsFileSystem webfs = WebHdfsTestUtil.getWebHdfsFileSystem(
+        conf, WebHdfsConstants.WEBHDFS_SCHEME);
+    Credentials creds = new Credentials();
+    final Token<?>[] tokens = webfs.addDelegationTokens("JobTracker", creds);
+
+    assertEquals(2, tokens.length);
+    assertEquals(KMSDelegationToken.TOKEN_KIND_STR,
+        tokens[1].getKind().toString());
+    assertEquals(2, creds.numberOfTokens());
   }
 }

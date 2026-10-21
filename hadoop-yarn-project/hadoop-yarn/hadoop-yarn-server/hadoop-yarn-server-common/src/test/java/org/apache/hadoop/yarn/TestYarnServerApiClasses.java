@@ -18,10 +18,13 @@
 
 package org.apache.hadoop.yarn;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,6 +32,12 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 
+import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
+import org.apache.hadoop.io.DataInputByteBuffer;
+import org.apache.hadoop.io.DataOutputBuffer;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.Container;
@@ -48,14 +57,15 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb.NodeHeartbeatRe
 import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb.RegisterNodeManagerRequestPBImpl;
 import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb.RegisterNodeManagerResponsePBImpl;
 import org.apache.hadoop.yarn.server.api.protocolrecords.impl.pb.UnRegisterNodeManagerRequestPBImpl;
+import org.apache.hadoop.yarn.server.api.records.AppCollectorData;
 import org.apache.hadoop.yarn.server.api.records.MasterKey;
 import org.apache.hadoop.yarn.server.api.records.NodeAction;
 import org.apache.hadoop.yarn.server.api.records.NodeHealthStatus;
 import org.apache.hadoop.yarn.server.api.records.NodeStatus;
 import org.apache.hadoop.yarn.server.api.records.impl.pb.MasterKeyPBImpl;
 import org.apache.hadoop.yarn.server.api.records.impl.pb.NodeStatusPBImpl;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.yarn.server.utils.YarnServerBuilderUtils;
+import org.junit.jupiter.api.Test;
 
 /**
  * Simple test classes from org.apache.hadoop.yarn.server.api
@@ -109,23 +119,33 @@ public class TestYarnServerApiClasses {
     original.setLastKnownNMTokenMasterKey(getMasterKey());
     original.setNodeStatus(getNodeStatus());
     original.setNodeLabels(getValidNodeLabels());
-    Map<ApplicationId, String> collectors = getCollectors();
-    original.setRegisteredCollectors(collectors);
+    Map<ApplicationId, AppCollectorData> collectors = getCollectors(false);
+    original.setRegisteringCollectors(collectors);
     NodeHeartbeatRequestPBImpl copy = new NodeHeartbeatRequestPBImpl(
         original.getProto());
     assertEquals(1, copy.getLastKnownContainerTokenMasterKey().getKeyId());
     assertEquals(1, copy.getLastKnownNMTokenMasterKey().getKeyId());
     assertEquals("localhost", copy.getNodeStatus().getNodeId().getHost());
-    assertEquals(collectors, copy.getRegisteredCollectors());
+    assertEquals(collectors, copy.getRegisteringCollectors());
     // check labels are coming with valid values
-    Assert.assertTrue(original.getNodeLabels()
+    assertTrue(original.getNodeLabels()
         .containsAll(copy.getNodeLabels()));
     // check for empty labels
     original.setNodeLabels(new HashSet<NodeLabel> ());
     copy = new NodeHeartbeatRequestPBImpl(
         original.getProto());
-    Assert.assertNotNull(copy.getNodeLabels());
-    Assert.assertEquals(0, copy.getNodeLabels().size());
+    assertNotNull(copy.getNodeLabels());
+    assertEquals(0, copy.getNodeLabels().size());
+  }
+
+  @Test
+  public void testNodeHBRequestPBImplWithNullCollectorToken() {
+    NodeHeartbeatRequestPBImpl original = new NodeHeartbeatRequestPBImpl();
+    Map<ApplicationId, AppCollectorData> collectors = getCollectors(true);
+    original.setRegisteringCollectors(collectors);
+    NodeHeartbeatRequestPBImpl copy = new NodeHeartbeatRequestPBImpl(
+        original.getProto());
+    assertEquals(collectors, copy.getRegisteringCollectors());
   }
 
   /**
@@ -136,15 +156,17 @@ public class TestYarnServerApiClasses {
     NodeHeartbeatRequestPBImpl original = new NodeHeartbeatRequestPBImpl();
     NodeHeartbeatRequestPBImpl copy =
         new NodeHeartbeatRequestPBImpl(original.getProto());
-    Assert.assertNull(copy.getNodeLabels());
+    assertNull(copy.getNodeLabels());
   }
 
   /**
    * Test NodeHeartbeatResponsePBImpl.
+   *
+   * @throws IOException
    */
 
   @Test
-  public void testNodeHeartbeatResponsePBImpl() {
+  public void testNodeHeartbeatResponsePBImpl() throws IOException {
     NodeHeartbeatResponsePBImpl original = new NodeHeartbeatResponsePBImpl();
 
     original.setDiagnosticsMessage("testDiagnosticMessage");
@@ -153,8 +175,31 @@ public class TestYarnServerApiClasses {
     original.setNextHeartBeatInterval(1000);
     original.setNodeAction(NodeAction.NORMAL);
     original.setResponseId(100);
-    Map<ApplicationId, String> collectors = getCollectors();
-    original.setAppCollectorsMap(collectors);
+    Map<ApplicationId, AppCollectorData> collectors = getCollectors(false);
+    original.setAppCollectors(collectors);
+
+    // create token1
+    Text userText1 = new Text("user1");
+    DelegationTokenIdentifier dtId1 = new DelegationTokenIdentifier(userText1,
+        new Text("renewer1"), userText1);
+    final Token<DelegationTokenIdentifier> expectedToken1 =
+        new Token<DelegationTokenIdentifier>(dtId1.getBytes(),
+            "password12".getBytes(), dtId1.getKind(), new Text("service1"));
+
+    Credentials credentials1 = new Credentials();
+    credentials1.addToken(expectedToken1.getService(), expectedToken1);
+
+    DataOutputBuffer dob1 = new DataOutputBuffer();
+    credentials1.writeTokenStorageToStream(dob1);
+
+    ByteBuffer byteBuffer1 =
+        ByteBuffer.wrap(dob1.getData(), 0, dob1.getLength());
+
+    Map<ApplicationId, ByteBuffer> systemCredentials =
+        new HashMap<ApplicationId, ByteBuffer>();
+    systemCredentials.put(getApplicationId(1), byteBuffer1);
+    original.setSystemCredentialsForApps(
+        YarnServerBuilderUtils.convertToProtoFormat(systemCredentials));
 
     NodeHeartbeatResponsePBImpl copy = new NodeHeartbeatResponsePBImpl(
         original.getProto());
@@ -164,8 +209,24 @@ public class TestYarnServerApiClasses {
     assertEquals(1, copy.getContainerTokenMasterKey().getKeyId());
     assertEquals(1, copy.getNMTokenMasterKey().getKeyId());
     assertEquals("testDiagnosticMessage", copy.getDiagnosticsMessage());
-    assertEquals(collectors, copy.getAppCollectorsMap());
+    assertEquals(collectors, copy.getAppCollectors());
     assertEquals(false, copy.getAreNodeLabelsAcceptedByRM());
+    assertEquals(1, copy.getSystemCredentialsForApps().size());
+
+    Credentials credentials1Out = new Credentials();
+    DataInputByteBuffer buf = new DataInputByteBuffer();
+    ByteBuffer buffer =
+        YarnServerBuilderUtils
+            .convertFromProtoFormat(copy.getSystemCredentialsForApps())
+            .get(getApplicationId(1));
+    assertNotNull(buffer);
+    buffer.rewind();
+    buf.reset(buffer);
+    credentials1Out.readTokenStorageStream(buf);
+    assertEquals(1, credentials1Out.getAllTokens().size());
+    // Ensure token1's password "password12" is available from proto response
+    assertEquals(10,
+        credentials1Out.getAllTokens().iterator().next().getPassword().length);
    }
 
   @Test
@@ -178,16 +239,26 @@ public class TestYarnServerApiClasses {
   }
 
   @Test
+  public void testNodeHBResponsePBImplWithNullCollectorToken() {
+    NodeHeartbeatResponsePBImpl original = new NodeHeartbeatResponsePBImpl();
+    Map<ApplicationId, AppCollectorData> collectors = getCollectors(true);
+    original.setAppCollectors(collectors);
+    NodeHeartbeatResponsePBImpl copy = new NodeHeartbeatResponsePBImpl(
+        original.getProto());
+    assertEquals(collectors, copy.getAppCollectors());
+  }
+
+  @Test
   public void testNodeHeartbeatResponsePBImplWithDecreasedContainers() {
     NodeHeartbeatResponsePBImpl original = new NodeHeartbeatResponsePBImpl();
-    original.addAllContainersToDecrease(
+    original.addAllContainersToUpdate(
         Arrays.asList(getDecreasedContainer(1, 2, 2048, 2),
             getDecreasedContainer(2, 3, 1024, 1)));
     NodeHeartbeatResponsePBImpl copy =
         new NodeHeartbeatResponsePBImpl(original.getProto());
-    assertEquals(1, copy.getContainersToDecrease().get(0)
+    assertEquals(1, copy.getContainersToUpdate().get(0)
         .getId().getContainerId());
-    assertEquals(1024, copy.getContainersToDecrease().get(1)
+    assertEquals(1024, copy.getContainersToUpdate().get(1)
         .getResource().getMemorySize());
   }
 
@@ -204,6 +275,7 @@ public class TestYarnServerApiClasses {
     resource.setMemorySize(10000);
     resource.setVirtualCores(2);
     original.setResource(resource);
+    original.setPhysicalResource(resource);
     RegisterNodeManagerRequestPBImpl copy = new RegisterNodeManagerRequestPBImpl(
         original.getProto());
 
@@ -211,6 +283,8 @@ public class TestYarnServerApiClasses {
     assertEquals(9090, copy.getNodeId().getPort());
     assertEquals(10000, copy.getResource().getMemorySize());
     assertEquals(2, copy.getResource().getVirtualCores());
+    assertEquals(10000, copy.getPhysicalResource().getMemorySize());
+    assertEquals(2, copy.getPhysicalResource().getVirtualCores());
 
   }
 
@@ -297,7 +371,7 @@ public class TestYarnServerApiClasses {
             ((RegisterNodeManagerRequestPBImpl) request).getProto());
 
     // check labels are coming with no values
-    Assert.assertNull(request1.getNodeLabels());
+    assertNull(request1.getNodeLabels());
   }
 
   @Test
@@ -314,14 +388,14 @@ public class TestYarnServerApiClasses {
             ((RegisterNodeManagerRequestPBImpl) request).getProto());
 
     // check labels are coming with valid values
-    Assert.assertEquals(true, nodeLabels.containsAll(copy.getNodeLabels()));
+    assertEquals(true, nodeLabels.containsAll(copy.getNodeLabels()));
 
     // check for empty labels
     request.setNodeLabels(new HashSet<NodeLabel> ());
     copy = new RegisterNodeManagerRequestPBImpl(
         ((RegisterNodeManagerRequestPBImpl) request).getProto());
-    Assert.assertNotNull(copy.getNodeLabels());
-    Assert.assertEquals(0, copy.getNodeLabels().size());
+    assertNotNull(copy.getNodeLabels());
+    assertEquals(0, copy.getNodeLabels().size());
   }
 
   @Test
@@ -332,7 +406,7 @@ public class TestYarnServerApiClasses {
 
     UnRegisterNodeManagerRequestPBImpl copy = new UnRegisterNodeManagerRequestPBImpl(
         request.getProto());
-    Assert.assertEquals(nodeId, copy.getNodeId());
+    assertEquals(nodeId, copy.getNodeId());
   }
 
   private HashSet<NodeLabel> getValidNodeLabels() {
@@ -344,12 +418,19 @@ public class TestYarnServerApiClasses {
     return nodeLabels;
   }
 
-  private Map<ApplicationId, String> getCollectors() {
+  private Map<ApplicationId, AppCollectorData> getCollectors(
+      boolean hasNullCollectorToken) {
     ApplicationId appID = ApplicationId.newInstance(1L, 1);
     String collectorAddr = "localhost:0";
-    Map<ApplicationId, String> collectorMap =
-        new HashMap<ApplicationId, String>();
-    collectorMap.put(appID, collectorAddr);
+    AppCollectorData data = AppCollectorData.newInstance(appID, collectorAddr);
+    if (!hasNullCollectorToken) {
+      data.setCollectorToken(
+          org.apache.hadoop.yarn.api.records.Token.newInstance(new byte[0],
+              "kind", new byte[0], "s"));
+    }
+    Map<ApplicationId, AppCollectorData> collectorMap =
+        new HashMap<>();
+    collectorMap.put(appID, data);
     return collectorMap;
   }
 

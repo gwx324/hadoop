@@ -19,6 +19,7 @@
 package org.apache.hadoop.fs;
 
 import static org.apache.hadoop.fs.FileContextTestHelper.createFile;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.IOException;
 import java.net.URI;
@@ -32,15 +33,15 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem.Statistics;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import com.google.common.base.Supplier;
-import com.google.common.util.concurrent.Uninterruptibles;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Uninterruptibles;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * <p>
@@ -48,7 +49,8 @@ import com.google.common.util.concurrent.Uninterruptibles;
  * </p>
  */
 public abstract class FCStatisticsBaseTest {
-  private static final Log LOG = LogFactory.getLog(FCStatisticsBaseTest.class);
+  private static final Logger LOG = LoggerFactory.getLogger(FCStatisticsBaseTest
+      .class);
 
   static protected int blockSize = 512;
   static protected int numBlocks = 1;
@@ -58,17 +60,18 @@ public abstract class FCStatisticsBaseTest {
   //fc should be set appropriately by the deriving test.
   protected static FileContext fc = null;
   
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testStatisticsOperations() throws Exception {
     final Statistics stats = new Statistics("file");
-    Assert.assertEquals(0L, stats.getBytesRead());
-    Assert.assertEquals(0L, stats.getBytesWritten());
-    Assert.assertEquals(0, stats.getWriteOps());
+    assertEquals(0L, stats.getBytesRead());
+    assertEquals(0L, stats.getBytesWritten());
+    assertEquals(0, stats.getWriteOps());
     stats.incrementBytesWritten(1000);
-    Assert.assertEquals(1000L, stats.getBytesWritten());
-    Assert.assertEquals(0, stats.getWriteOps());
+    assertEquals(1000L, stats.getBytesWritten());
+    assertEquals(0, stats.getWriteOps());
     stats.incrementWriteOps(123);
-    Assert.assertEquals(123, stats.getWriteOps());
+    assertEquals(123, stats.getWriteOps());
     
     Thread thread = new Thread() {
       @Override
@@ -78,33 +81,33 @@ public abstract class FCStatisticsBaseTest {
     };
     thread.start();
     Uninterruptibles.joinUninterruptibly(thread);
-    Assert.assertEquals(124, stats.getWriteOps());
+    assertEquals(124, stats.getWriteOps());
     // Test copy constructor and reset function
     Statistics stats2 = new Statistics(stats);
     stats.reset();
-    Assert.assertEquals(0, stats.getWriteOps());
-    Assert.assertEquals(0L, stats.getBytesWritten());
-    Assert.assertEquals(0L, stats.getBytesRead());
-    Assert.assertEquals(124, stats2.getWriteOps());
-    Assert.assertEquals(1000L, stats2.getBytesWritten());
-    Assert.assertEquals(0L, stats2.getBytesRead());
+    assertEquals(0, stats.getWriteOps());
+    assertEquals(0L, stats.getBytesWritten());
+    assertEquals(0L, stats.getBytesRead());
+    assertEquals(124, stats2.getWriteOps());
+    assertEquals(1000L, stats2.getBytesWritten());
+    assertEquals(0L, stats2.getBytesRead());
   }
 
   @Test
   public void testStatistics() throws IOException, URISyntaxException {
     URI fsUri = getFsUri();
     Statistics stats = FileContext.getStatistics(fsUri);
-    Assert.assertEquals(0, stats.getBytesRead());
+    assertEquals(0, stats.getBytesRead());
     Path filePath = fileContextTestHelper .getTestRootPath(fc, "file1");
     createFile(fc, filePath, numBlocks, blockSize);
 
-    Assert.assertEquals(0, stats.getBytesRead());
+    assertEquals(0, stats.getBytesRead());
     verifyWrittenBytes(stats);
     FSDataInputStream fstr = fc.open(filePath);
     byte[] buf = new byte[blockSize];
     int bytesRead = fstr.read(buf, 0, blockSize);
     fstr.read(0, buf, 0, blockSize);
-    Assert.assertEquals(blockSize, bytesRead);
+    assertEquals(blockSize, bytesRead);
     verifyReadBytes(stats);
     verifyWrittenBytes(stats);
     verifyReadBytes(FileContext.getStatistics(getFsUri()));
@@ -114,7 +117,8 @@ public abstract class FCStatisticsBaseTest {
     fc.delete(filePath, true);
   }
 
-  @Test(timeout=70000)
+  @Test
+  @Timeout(value = 70)
   public void testStatisticsThreadLocalDataCleanUp() throws Exception {
     final Statistics stats = new Statistics("test");
     // create a small thread pool to test the statistics
@@ -135,8 +139,8 @@ public abstract class FCStatisticsBaseTest {
     // assert that the data size is exactly the number of threads
     final AtomicInteger allDataSize = new AtomicInteger(0);
     allDataSize.set(stats.getAllThreadLocalDataSize());
-    Assert.assertEquals(size, allDataSize.get());
-    Assert.assertEquals(size, stats.getReadOps());
+    assertEquals(size, allDataSize.get());
+    assertEquals(size, stats.getReadOps());
     // force the GC to collect the threads by shutting down the thread pool
     es.shutdownNow();
     es.awaitTermination(1, TimeUnit.MINUTES);
@@ -159,8 +163,8 @@ public abstract class FCStatisticsBaseTest {
             return false;
           }
         }, 500, 60*1000);
-    Assert.assertEquals(0, allDataSize.get());
-    Assert.assertEquals(size, stats.getReadOps());
+    assertEquals(0, allDataSize.get());
+    assertEquals(size, stats.getReadOps());
   }
 
   /**
@@ -177,7 +181,8 @@ public abstract class FCStatisticsBaseTest {
    * 
    * @param stats
    */
-  protected abstract void verifyWrittenBytes(Statistics stats);
+  protected abstract void verifyWrittenBytes(Statistics stats)
+      throws IOException;
   
   /**
    * Returns the filesystem uri. Should be set

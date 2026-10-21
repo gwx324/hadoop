@@ -30,8 +30,6 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.TreeMap;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -43,6 +41,8 @@ import org.apache.hadoop.io.file.tfile.CompareUtils.ScalarComparator;
 import org.apache.hadoop.io.file.tfile.CompareUtils.ScalarLong;
 import org.apache.hadoop.io.file.tfile.Compression.Algorithm;
 import org.apache.hadoop.io.file.tfile.Utils.Version;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Block Compressed file, the underlying physical storage layer for TFile.
@@ -54,7 +54,10 @@ final class BCFile {
   // the current version of BCFile impl, increment them (major or minor) made
   // enough changes
   static final Version API_VERSION = new Version((short) 1, (short) 0);
-  static final Log LOG = LogFactory.getLog(BCFile.class);
+  static final Logger LOG = LoggerFactory.getLogger(BCFile.class);
+
+  // Largest encoded length accepted for the short metadata strings: {@value}.
+  private static final int MAX_META_STRING_LENGTH = 64 * 1024;
 
   /**
    * Prevent the instantiation of BCFile objects.
@@ -636,11 +639,8 @@ final class BCFile {
       metaIndex = new MetaIndex(fin);
 
       // read data:BCFile.index, the data block index
-      BlockReader blockR = getMetaBlock(DataIndex.BLOCK_NAME);
-      try {
+      try (BlockReader blockR = getMetaBlock(DataIndex.BLOCK_NAME)) {
         dataIndex = new DataIndex(blockR);
-      } finally {
-        blockR.close();
       }
     }
 
@@ -771,6 +771,10 @@ final class BCFile {
     // for read, construct the map from the file
     public MetaIndex(DataInput in) throws IOException {
       int count = Utils.readVInt(in);
+      if (count < 0) {
+        throw new IOException("Corrupted meta index: negative entry count "
+            + count);
+      }
       index = new TreeMap<String, MetaIndexEntry>();
 
       for (int nx = 0; nx < count; nx++) {
@@ -807,7 +811,7 @@ final class BCFile {
     private final BlockRegion region;
 
     public MetaIndexEntry(DataInput in) throws IOException {
-      String fullMetaName = Utils.readString(in);
+      String fullMetaName = Utils.readString(in, MAX_META_STRING_LENGTH);
       if (fullMetaName.startsWith(defaultPrefix)) {
         metaName =
             fullMetaName.substring(defaultPrefix.length(), fullMetaName
@@ -817,7 +821,8 @@ final class BCFile {
       }
 
       compressionAlgorithm =
-          Compression.getCompressionAlgorithmByName(Utils.readString(in));
+          Compression.getCompressionAlgorithmByName(
+              Utils.readString(in, MAX_META_STRING_LENGTH));
       region = new BlockRegion(in);
     }
 
@@ -863,10 +868,17 @@ final class BCFile {
     // for read, deserialized from a file
     public DataIndex(DataInput in) throws IOException {
       defaultCompressionAlgorithm =
-          Compression.getCompressionAlgorithmByName(Utils.readString(in));
+          Compression.getCompressionAlgorithmByName(
+              Utils.readString(in, MAX_META_STRING_LENGTH));
 
       int n = Utils.readVInt(in);
-      listRegions = new ArrayList<BlockRegion>(n);
+      if (n < 0) {
+        throw new IOException("Corrupted data index: negative block count "
+            + n);
+      }
+      // Only a capacity hint: bound it so a corrupt count cannot force a huge
+      // pre-allocation. The loop is limited by the bytes actually available.
+      listRegions = new ArrayList<>(Math.min(n, 1024));
 
       for (int i = 0; i < n; i++) {
         BlockRegion region = new BlockRegion(in);
@@ -879,7 +891,7 @@ final class BCFile {
       this.defaultCompressionAlgorithm =
           Compression
               .getCompressionAlgorithmByName(defaultCompressionAlgorithmName);
-      listRegions = new ArrayList<BlockRegion>();
+      listRegions = new ArrayList<>();
     }
 
     public Algorithm getDefaultCompressionAlgorithm() {

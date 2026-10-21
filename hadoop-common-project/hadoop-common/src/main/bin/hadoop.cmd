@@ -149,7 +149,7 @@ call :updatepath %HADOOP_BIN_PATH%
     exit /b
   )
 
-  set corecommands=fs version jar checknative conftest distch distcp daemonlog archive classpath credential kerbname key trace
+  set corecommands=fs version jar checknative conftest distch distcp daemonlog archive classpath credential kerbname key kdiag
   for %%i in ( %corecommands% ) do (
     if %hadoop-command% == %%i set corecommand=true  
   )
@@ -188,6 +188,11 @@ call :updatepath %HADOOP_BIN_PATH%
     @echo WARNING: Use "yarn jar" to launch YARN applications.
   ) else if defined YARN_CLIENT_OPTS (
     @echo WARNING: Use "yarn jar" to launch YARN applications.
+  )
+  @rem if --help option is used, no need to call command
+  if [!hadoop-command-arguments[%1%]!]==["--help"] (
+    @echo Usage: hadoop jar <jar> [mainClass] args...
+    goto :eof
   )
   set CLASS=org.apache.hadoop.util.RunJar
   goto :eof
@@ -231,12 +236,12 @@ call :updatepath %HADOOP_BIN_PATH%
   set CLASS=org.apache.hadoop.security.HadoopKerberosName
   goto :eof
 
-:key
-  set CLASS=org.apache.hadoop.crypto.key.KeyShell
+:kdiag
+  set CLASS=org.apache.hadoop.security.KDiag
   goto :eof
 
-:trace
-  set CLASS=org.apache.hadoop.tracing.TraceAdmin
+:key
+  set CLASS=org.apache.hadoop.crypto.key.KeyShell
   goto :eof
 
 :updatepath
@@ -307,8 +312,8 @@ call :updatepath %HADOOP_BIN_PATH%
   @echo   credential           interact with credential providers
   @echo   jnipath              prints the java.library.path
   @echo   kerbname             show auth_to_local principal conversion
+  @echo   kdiag                diagnose kerberos problems
   @echo   key                  manage keys via the KeyProvider
-  @echo   trace                view and modify Hadoop tracing settings
   @echo   daemonlog            get/set the log level for each daemon
   @echo  or
   @echo   CLASSNAME            run the class named CLASSNAME

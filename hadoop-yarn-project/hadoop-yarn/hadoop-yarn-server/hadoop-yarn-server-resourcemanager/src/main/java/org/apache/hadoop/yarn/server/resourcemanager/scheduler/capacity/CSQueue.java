@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Stable;
@@ -30,20 +31,26 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
+import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.QueueACL;
 import org.apache.hadoop.yarn.api.records.QueueState;
 import org.apache.hadoop.yarn.api.records.Resource;
-import org.apache.hadoop.yarn.exceptions.InvalidResourceRequestException;
 import org.apache.hadoop.yarn.security.PrivilegedEntity;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEventType;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ActiveUsersManager;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractUsersManager;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueResourceQuotas;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceLimits;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceUsage;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicationAttempt;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedContainerChangeRequest;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerQueue;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AbstractCSQueue.CapacityConfigType;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.ResourceCommitRequest;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerNode;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.CandidateNodeSet;
+
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * <code>CSQueue</code> represents a node in the tree of 
@@ -51,8 +58,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaS
  */
 @Stable
 @Private
-public interface CSQueue 
-extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
+public interface CSQueue extends SchedulerQueue<CSQueue> {
   /**
    * Get the parent <code>Queue</code>.
    * @return the parent queue
@@ -66,10 +72,16 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
   public void setParent(CSQueue newParentQueue);
 
   /**
-   * Get the queue name.
+   * Get the queue's internal reference name.
    * @return the queue name
    */
   public String getQueueName();
+
+  /**
+   * Get the queue's legacy name.
+   * @return the queue name
+   */
+  String getQueueShortName();
 
   /**
    * Get the full name of the queue, including the heirarchy.
@@ -77,7 +89,24 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
    */
   public String getQueuePath();
 
+  /**
+   * Gets the queue path object.
+   * @return the object of the queue
+   */
+  QueuePath getQueuePathObject();
+
+  /**
+   * Checks whether the queue is a dynamic queue (created dynamically in the fashion of auto queue
+   * creation v2).
+   * @return true, if it is a dynamic queue, false otherwise
+   */
+  boolean isDynamicQueue();
+
   public PrivilegedEntity getPrivilegedEntity();
+
+  Resource getMaximumAllocation();
+
+  Resource getMinimumAllocation();
 
   /**
    * Get the configured <em>capacity</em> of the queue.
@@ -92,7 +121,7 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
    *         cumulative capacity in the cluster
    */
   public float getAbsoluteCapacity();
-  
+
   /**
    * Get the configured maximum-capacity of the queue. 
    * @return the configured maximum-capacity of the queue
@@ -115,20 +144,6 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
   public float getAbsoluteUsedCapacity();
 
   /**
-   * Set used capacity of the queue.
-   * @param usedCapacity
-   *          used capacity of the queue
-   */
-  public void setUsedCapacity(float usedCapacity);
-
-  /**
-   * Set absolute used capacity of the queue.
-   * @param absUsedCapacity
-   *          absolute used capacity of the queue
-   */
-  public void setAbsoluteUsedCapacity(float absUsedCapacity);
-
-  /**
    * Get the current used capacity of nodes without label(s) of the queue
    * and it's children (if any).
    * @return queue used capacity
@@ -148,12 +163,24 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
    * @return current run-state
    */
   public QueueState getState();
-  
+
+  /**
+   * Get the max-parallel-applications property of the queue
+   * @return max-parallel-applications
+   */
+  public int getMaxParallelApps();
+
   /**
    * Get child queues
    * @return child queues
    */
   public List<CSQueue> getChildQueues();
+
+  /**
+   * Get child queues By tryLock.
+   * @return child queues
+   */
+  List<CSQueue> getChildQueuesByTryLock();
   
   /**
    * Check if the <code>user</code> has permission to perform the operation
@@ -169,25 +196,41 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
    * @param applicationId the applicationId of the application being submitted
    * @param user user who submitted the application
    * @param queue queue to which the application is submitted
+   * @throws AccessControlException if any acl violation is there.
    */
   public void submitApplication(ApplicationId applicationId, String user,
       String queue) throws AccessControlException;
 
   /**
    * Submit an application attempt to the queue.
+   *
+   * @param application application whose attempt is being submitted.
+   * @param userName userName who submitted the application.
    */
   public void submitApplicationAttempt(FiCaSchedulerApp application,
       String userName);
 
   /**
+   * Submit an application attempt to the queue.
+   * @param application application whose attempt is being submitted
+   * @param userName user who submitted the application attempt
+   * @param isMoveApp is application being moved across the queue
+   */
+  public void submitApplicationAttempt(FiCaSchedulerApp application,
+      String userName, boolean isMoveApp);
+
+  /**
    * An application submitted to this queue has finished.
-   * @param applicationId
+   * @param applicationId applicationId.
    * @param user user who submitted the application
    */
   public void finishApplication(ApplicationId applicationId, String user);
 
   /**
    * An application attempt submitted to this queue has finished.
+   *
+   * @param application application attempt.
+   * @param queue queue.
    */
   public void finishApplicationAttempt(FiCaSchedulerApp application,
       String queue);
@@ -195,15 +238,16 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
   /**
    * Assign containers to applications in the queue or it's children (if any).
    * @param clusterResource the resource of the cluster.
-   * @param node node on which resources are available
+   * @param candidates {@link CandidateNodeSet} the nodes that are considered
+   *                   for the current placement.
    * @param resourceLimits how much overall resource of this queue can use. 
    * @param schedulingMode Type of exclusive check when assign container on a 
    * NodeManager, see {@link SchedulingMode}.
    * @return the assignment
    */
   public CSAssignment assignContainers(Resource clusterResource,
-      FiCaSchedulerNode node, ResourceLimits resourceLimits,
-      SchedulingMode schedulingMode);
+      CandidateNodeSet<FiCaSchedulerNode> candidates,
+      ResourceLimits resourceLimits, SchedulingMode schedulingMode);
   
   /**
    * A container assigned to the queue has completed.
@@ -225,14 +269,6 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
       boolean sortQueues);
 
   /**
-   * We have a reserved increased container in the queue, we need to unreserve
-   * it. Since we just want to cancel the reserved increase request instead of
-   * stop the container, we shouldn't call completedContainer for such purpose.
-   */
-  public void unreserveIncreasedContainer(Resource clusterResource,
-      FiCaSchedulerApp app, FiCaSchedulerNode node, RMContainer rmContainer);
-
-  /**
    * Get the number of applications in the queue.
    * @return number of applications
    */
@@ -243,9 +279,13 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
    * Reinitialize the queue.
    * @param newlyParsedQueue new queue to re-initalize from
    * @param clusterResource resources in the cluster
+   * @throws IOException an I/O exception has occurred.
    */
-  public void reinitialize(CSQueue newlyParsedQueue, Resource clusterResource) 
+  public void reinitialize(CSQueue newlyParsedQueue, Resource clusterResource)
   throws IOException;
+
+  public void refreshAfterResourceCalculation(
+      Resource clusterResource, ResourceLimits resourceLimits);
 
    /**
    * Update the cluster resource for queues as we add/remove nodes
@@ -256,10 +296,10 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
       ResourceLimits resourceLimits);
   
   /**
-   * Get the {@link ActiveUsersManager} for the queue.
-   * @return the <code>ActiveUsersManager</code> for the queue
+   * Get the {@link AbstractUsersManager} for the queue.
+   * @return the <code>AbstractUsersManager</code> for the queue
    */
-  public ActiveUsersManager getActiveUsersManager();
+  public AbstractUsersManager getAbstractUsersManager();
   
   /**
    * Adds all applications in the queue and its subqueues to the given collection.
@@ -290,7 +330,21 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
    * @return true if <em>disable_preemption</em> is set, false if not
    */
   public boolean getPreemptionDisabled();
-  
+
+  /**
+   * Check whether intra-queue preemption is disabled for this queue
+   * @return true if either intra-queue preemption or inter-queue preemption
+   * is disabled for this queue, false if neither is disabled.
+   */
+  public boolean getIntraQueuePreemptionDisabled();
+
+  /**
+   * Determines whether or not the intra-queue preemption disabled switch is set
+   *  at any level in this queue's hierarchy.
+   * @return state of the intra-queue preemption switch at this queue level
+   */
+  public boolean getIntraQueuePreemptionDisabledInHierarchy();
+
   /**
    * Get QueueCapacities of this queue
    * @return queueCapacities
@@ -306,6 +360,10 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
   /**
    * When partition of node updated, we will update queue's resource usage if it
    * has container(s) running on that.
+   *
+   * @param nodePartition node label.
+   * @param resourceToInc resource.
+   * @param application application.
    */
   public void incUsedResource(String nodePartition, Resource resourceToInc,
       SchedulerApplicationAttempt application);
@@ -313,6 +371,10 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
   /**
    * When partition of node updated, we will update queue's resource usage if it
    * has container(s) running on that.
+   *
+   * @param nodePartition node label.
+   * @param resourceToDec resource.
+   * @param application application.
    */
   public void decUsedResource(String nodePartition, Resource resourceToDec,
       SchedulerApplicationAttempt application);
@@ -327,17 +389,173 @@ extends org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue {
    *          new resource asked
    */
   public void decPendingResource(String nodeLabel, Resource resourceToDec);
-  
-  /**
-   * Decrease container resource in the queue
-   */
-  public void decreaseContainer(Resource clusterResource,
-      SchedContainerChangeRequest decreaseRequest,
-      FiCaSchedulerApp app) throws InvalidResourceRequestException;
 
   /**
    * Get valid Node Labels for this queue
    * @return valid node labels
    */
   public Set<String> getNodeLabelsForQueue();
+
+  @VisibleForTesting
+  CSAssignment assignContainers(Resource clusterResource,
+      FiCaSchedulerNode node, ResourceLimits resourceLimits,
+      SchedulingMode schedulingMode);
+
+  boolean accept(Resource cluster,
+      ResourceCommitRequest<FiCaSchedulerApp, FiCaSchedulerNode> request);
+
+  void apply(Resource cluster,
+      ResourceCommitRequest<FiCaSchedulerApp, FiCaSchedulerNode> request);
+
+  /**
+   * Get readLock associated with the Queue.
+   * @return readLock of corresponding queue.
+   */
+  public ReentrantReadWriteLock.ReadLock getReadLock();
+
+  /**
+   * Get writeLock associated with the Queue.
+   * @return writeLock of corresponding queue.
+   */
+  ReentrantReadWriteLock.WriteLock getWriteLock();
+
+  /**
+   * Validate submitApplication api so that moveApplication do a pre-check.
+   * @param applicationId Application ID
+   * @param userName User Name
+   * @param queue Queue Name
+   * @throws AccessControlException if any acl violation is there.
+   */
+  public void validateSubmitApplication(ApplicationId applicationId,
+      String userName, String queue) throws AccessControlException;
+
+  /**
+   * Get priority of queue
+   * @return queue priority
+   */
+  Priority getPriority();
+
+  /**
+   * Get the UserWeights object that wraps a map of usernames and weights
+   * @return The UserWeights object.
+   */
+  UserWeights getUserWeights();
+
+  /**
+   * Get QueueResourceQuotas associated with each queue.
+   * @return QueueResourceQuotas
+   */
+  public QueueResourceQuotas getQueueResourceQuotas();
+
+  /**
+   * Get CapacityConfigType as PERCENTAGE or ABSOLUTE_RESOURCE.
+   * @return CapacityConfigType
+   */
+  public CapacityConfigType getCapacityConfigType();
+
+  /**
+   * Get effective capacity of queue. If min/max resource is configured,
+   * preference will be given to absolute configuration over normal capacity.
+   *
+   * @param label
+   *          partition
+   * @return effective queue capacity
+   */
+  Resource getEffectiveCapacity(String label);
+
+  /**
+   * Get configured capacity vector parsed from the capacity config
+   * of the queue.
+   * @param label node label (partition)
+   * @return capacity resource vector
+   */
+  QueueCapacityVector getConfiguredCapacityVector(String label);
+
+  /**
+   * Get configured maximum capacity vector parsed from the capacity config
+   * of the queue.
+   * @param label node label (partition)
+   * @return capacity resource vector
+   */
+  QueueCapacityVector getConfiguredMaxCapacityVector(String label);
+
+  /**
+   * Sets the configured minimum capacity vector to a specific value.
+   * @param label node label (partition)
+   * @param minCapacityVector capacity vector
+   */
+  void setConfiguredMinCapacityVector(String label, QueueCapacityVector minCapacityVector);
+
+  /**
+   * Sets the configured maximum capacity vector to a specific value.
+   * @param label node label (partition)
+   * @param maxCapacityVector capacity vector
+   */
+  void setConfiguredMaxCapacityVector(String label, QueueCapacityVector maxCapacityVector);
+
+  Set<String> getConfiguredNodeLabels();
+
+  /**
+   * Get effective capacity of queue. If min/max resource is configured,
+   * preference will be given to absolute configuration over normal capacity.
+   * Also round down the result to normalizeDown.
+   *
+   * @param label
+   *          partition
+   * @param factor
+   *          factor to normalize down 
+   * @return effective queue capacity
+   */
+  Resource getEffectiveCapacityDown(String label, Resource factor);
+
+  /**
+   * Get effective max capacity of queue. If min/max resource is configured,
+   * preference will be given to absolute configuration over normal capacity.
+   *
+   * @param label
+   *          partition
+   * @return effective max queue capacity
+   */
+  Resource getEffectiveMaxCapacity(String label);
+
+  /**
+   * Get effective max capacity of queue. If min/max resource is configured,
+   * preference will be given to absolute configuration over normal capacity.
+   * Also round down the result to normalizeDown.
+   *
+   * @param label
+   *          partition
+   * @param factor
+   *          factor to normalize down 
+   * @return effective max queue capacity
+   */
+  Resource getEffectiveMaxCapacityDown(String label, Resource factor);
+
+  /**
+   * Get Multi Node scheduling policy name.
+   * @return policy name
+   */
+  String getMultiNodeSortingPolicyClassName();
+
+  /**
+   * Get the maximum lifetime in seconds of an application which is submitted to
+   * this queue. Apps can set their own lifetime timeout up to this value.
+   * @return max lifetime in seconds
+   */
+  long getMaximumApplicationLifetime();
+
+  /**
+   * Get the default lifetime in seconds of an application which is submitted to
+   * this queue. If an app doesn't specify its own timeout when submitted, this
+   * value will be used.
+   * @return default app lifetime
+   */
+  long getDefaultApplicationLifetime();
+
+  /**
+   * Get the indicator of whether or not the default application lifetime was
+   * set by a config property or was calculated by the capacity scheduler.
+   * @return indicator whether set or calculated
+   */
+  boolean getDefaultAppLifetimeWasSpecifiedInConfig();
 }

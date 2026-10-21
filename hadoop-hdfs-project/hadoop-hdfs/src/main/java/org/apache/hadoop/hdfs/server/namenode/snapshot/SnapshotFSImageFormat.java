@@ -38,10 +38,9 @@ import org.apache.hadoop.hdfs.server.namenode.INodeReference;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiff;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiffList;
 import org.apache.hadoop.hdfs.tools.snapshot.SnapshotDiff;
-import org.apache.hadoop.hdfs.util.Diff.ListType;
 import org.apache.hadoop.hdfs.util.ReadOnlyList;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * A helper class defining static methods for reading/writing snapshot related
@@ -71,7 +70,7 @@ public class SnapshotFSImageFormat {
 
   /**
    * Save SnapshotDiff list for an INodeDirectoryWithSnapshot.
-   * @param sNode The directory that the SnapshotDiff list belongs to.
+   * @param diffs The directory that the SnapshotDiff list belongs to.
    * @param out The {@link DataOutput} to write.
    */
   private static <N extends INode, A extends INodeAttributes, D extends AbstractINodeDiff<N, A, D>>
@@ -82,7 +81,7 @@ public class SnapshotFSImageFormat {
     if (diffs == null) {
       out.writeInt(-1); // no diffs
     } else {
-      final List<D> list = diffs.asList();
+      final DiffList<D> list = diffs.asList();
       final int size = list.size();
       out.writeInt(size);
       for (int i = size - 1; i >= 0; i--) {
@@ -145,8 +144,7 @@ public class SnapshotFSImageFormat {
     // the INode in the created list should be a reference to another INode
     // in posterior SnapshotDiffs or one of the current children
     for (DirectoryDiff postDiff : parent.getDiffs()) {
-      final INode d = postDiff.getChildrenDiff().search(ListType.DELETED,
-          createdNodeName);
+      final INode d = postDiff.getChildrenDiff().getDeleted(createdNodeName);
       if (d != null) {
         return d;
       } // else go to the next SnapshotDiff
@@ -188,7 +186,7 @@ public class SnapshotFSImageFormat {
    * @param createdList The created list associated with the deleted list in 
    *                    the same Diff.
    * @param in The {@link DataInput} to read.
-   * @param loader The {@link Loader} instance.
+   * @param loader The {@link FSImageFormat.Loader} instance.
    * @return The deleted list.
    */
   private static List<INode> loadDeletedList(INodeDirectory parent,
@@ -262,7 +260,7 @@ public class SnapshotFSImageFormat {
    * Load the snapshotINode field of {@link AbstractINodeDiff}.
    * @param snapshot The Snapshot associated with the {@link AbstractINodeDiff}.
    * @param in The {@link DataInput} to read.
-   * @param loader The {@link Loader} instance that this loading procedure is
+   * @param loader The {@link FSImageFormat.Loader} instance that this loading procedure is
    *               using.
    * @return The snapshotINode.
    */
@@ -283,7 +281,7 @@ public class SnapshotFSImageFormat {
    * Load {@link DirectoryDiff} from fsimage.
    * @param parent The directory that the SnapshotDiff belongs to.
    * @param in The {@link DataInput} instance to read.
-   * @param loader The {@link Loader} instance that this loading procedure is 
+   * @param loader The {@link FSImageFormat.Loader} instance that this loading procedure is
    *               using.
    * @return A {@link DirectoryDiff}.
    */
@@ -306,7 +304,7 @@ public class SnapshotFSImageFormat {
     List<INode> deletedList = loadDeletedList(parent, createdList, in, loader);
     
     // 6. Compose the SnapshotDiff
-    List<DirectoryDiff> diffs = parent.getDiffs().asList();
+    DiffList<DirectoryDiff> diffs = parent.getDiffs().asList();
     DirectoryDiff sdiff = new DirectoryDiff(snapshot.getId(), snapshotINode,
         diffs.isEmpty() ? null : diffs.get(0), childrenSize, createdList,
         deletedList, snapshotINode == snapshot.getRoot());

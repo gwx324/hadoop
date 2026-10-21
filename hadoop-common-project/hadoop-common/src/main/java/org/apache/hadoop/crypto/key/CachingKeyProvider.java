@@ -22,9 +22,9 @@ import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
 
 /**
  * A <code>KeyProviderExtension</code> implementation providing a short lived
@@ -141,8 +141,7 @@ public class CachingKeyProvider extends
   public KeyVersion rollNewVersion(String name, byte[] material)
       throws IOException {
     KeyVersion key = getKeyProvider().rollNewVersion(name, material);
-    getExtension().currentKeyCache.invalidate(name);
-    getExtension().keyMetadataCache.invalidate(name);
+    invalidateCache(name);
     return key;
   }
 
@@ -150,9 +149,18 @@ public class CachingKeyProvider extends
   public KeyVersion rollNewVersion(String name)
       throws NoSuchAlgorithmException, IOException {
     KeyVersion key = getKeyProvider().rollNewVersion(name);
+    invalidateCache(name);
+    return key;
+  }
+
+  @Override
+  public void invalidateCache(String name) throws IOException {
+    getKeyProvider().invalidateCache(name);
     getExtension().currentKeyCache.invalidate(name);
     getExtension().keyMetadataCache.invalidate(name);
-    return key;
+    // invalidating all key versions as we don't know
+    // which ones belonged to the deleted key
+    getExtension().keyVersionCache.invalidateAll();
   }
 
   @Override

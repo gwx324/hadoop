@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 package org.apache.hadoop.hdfs;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 
@@ -24,12 +24,12 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.log4j.Level;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
 
 public class TestFileCreationDelete {
   {
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
   }
 
   @Test
@@ -46,7 +46,6 @@ public class TestFileCreationDelete {
     try {
       cluster.waitActive();
       fs = cluster.getFileSystem();
-      final int nnport = cluster.getNameNodePort();
 
       // create file1.
       Path dir = new Path("/foo");
@@ -68,22 +67,18 @@ public class TestFileCreationDelete {
       // rm dir
       fs.delete(dir, true);
 
-      // restart cluster with the same namenode port as before.
+      // restart cluster.
       // This ensures that leases are persisted in fsimage.
       cluster.shutdown();
       try {Thread.sleep(2*MAX_IDLE_TIME);} catch (InterruptedException e) {}
-      cluster = new MiniDFSCluster.Builder(conf).nameNodePort(nnport)
-                                                .format(false)
-                                                .build();
+      cluster = new MiniDFSCluster.Builder(conf).format(false).build();
       cluster.waitActive();
 
       // restart cluster yet again. This triggers the code to read in
       // persistent leases from fsimage.
       cluster.shutdown();
       try {Thread.sleep(5000);} catch (InterruptedException e) {}
-      cluster = new MiniDFSCluster.Builder(conf).nameNodePort(nnport)
-                                                .format(false)
-                                                .build();
+      cluster = new MiniDFSCluster.Builder(conf).format(false).build();
       cluster.waitActive();
       fs = cluster.getFileSystem();
 

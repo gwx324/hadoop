@@ -19,6 +19,7 @@
 package org.apache.hadoop.examples.dancing;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.StringTokenizer;
 
@@ -33,14 +34,13 @@ import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.*;
 
-import com.google.common.base.Charsets;
 
 /**
  * Launch a distributed pentomino solver.
  * It generates a complete list of prefixes of length N with each unique prefix
  * as a separate line. A prefix is a sequence of N integers that denote the 
- * index of the row that is choosen for each column in order. Note that the
- * next column is heuristically choosen by the solver, so it is dependant on
+ * index of the row that is chosen for each column in order. Note that the
+ * next column is heuristically chosen by the solver, so it is dependant on
  * the previous choice. That file is given as the input to
  * map/reduce. The output key/value are the move prefix/solution as Text/Text.
  */
@@ -141,7 +141,7 @@ public class DistributedPentomino extends Configured implements Tool {
     Path input = new Path(dir, "part1");
     PrintWriter file = 
       new PrintWriter(new OutputStreamWriter(new BufferedOutputStream
-                      (fs.create(input), 64*1024), Charsets.UTF_8));
+                      (fs.create(input), 64*1024), StandardCharsets.UTF_8));
     for(int[] prefix: splits) {
       for(int i=0; i < prefix.length; ++i) {
         if (i != 0) {

@@ -19,27 +19,28 @@
 package org.apache.hadoop.mapreduce.security;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeys.HADOOP_SECURITY_AUTHENTICATION;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.anyLong;
-import static org.mockito.Matchers.anyObject;
-import static org.mockito.Matchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doReturn;
 
+import java.io.Closeable;
 import java.net.InetSocketAddress;
 import java.security.PrivilegedExceptionAction;
-
-import org.apache.commons.logging.*;
-import org.apache.commons.logging.impl.Log4JLogger;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
 
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.ipc.Client;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.Server;
-import org.apache.hadoop.ipc.ProtocolSignature;
+import org.apache.hadoop.mapred.AMFeedback;
 import org.apache.hadoop.mapred.TaskUmbilicalProtocol;
+import org.apache.hadoop.mapred.proto.TaskUmbilicalProtocolProtos;
+import org.apache.hadoop.mapred.protocolPB.TaskUmbilicalProtocolPB;
+import org.apache.hadoop.mapred.protocolPB.TaskUmbilicalProtocolPBClientImpl;
+import org.apache.hadoop.mapred.protocolPB.TaskUmbilicalProtocolServerSideTranslatorPB;
 import org.apache.hadoop.mapreduce.security.token.JobTokenIdentifier;
 import org.apache.hadoop.mapreduce.security.token.JobTokenSecretManager;
 import org.apache.hadoop.net.NetUtils;
@@ -49,21 +50,21 @@ import org.apache.hadoop.security.SaslRpcClient;
 import org.apache.hadoop.security.SaslRpcServer;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.slf4j.Logger;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.Test;
+import static org.slf4j.LoggerFactory.getLogger;
 
-import org.apache.log4j.Level;
-import org.junit.Test;
-
-/** Unit tests for using Job Token over RPC. 
- * 
+/** Unit tests for using Job Token over RPC.
+ *
  * System properties required:
- * -Djava.security.krb5.conf=.../hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/target/test-classes/krb5.conf 
+ * -Djava.security.krb5.conf=.../hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/target/test-classes/krb5.conf
  * -Djava.net.preferIPv4Stack=true
  */
 public class TestUmbilicalProtocolWithJobToken {
   private static final String ADDRESS = "0.0.0.0";
 
-  public static final Log LOG = LogFactory
-      .getLog(TestUmbilicalProtocolWithJobToken.class);
+  public static final Logger LOG = getLogger(TestUmbilicalProtocolWithJobToken.class);
 
   private static Configuration conf;
   static {
@@ -73,26 +74,32 @@ public class TestUmbilicalProtocolWithJobToken {
   }
 
   static {
-    ((Log4JLogger) Client.LOG).getLogger().setLevel(Level.ALL);
-    ((Log4JLogger) Server.LOG).getLogger().setLevel(Level.ALL);
-    ((Log4JLogger) SaslRpcClient.LOG).getLogger().setLevel(Level.ALL);
-    ((Log4JLogger) SaslRpcServer.LOG).getLogger().setLevel(Level.ALL);
-    ((Log4JLogger) SaslInputStream.LOG).getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(Client.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(Server.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(SaslRpcClient.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(SaslRpcServer.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(SaslInputStream.LOG, Level.TRACE);
   }
 
   @Test
   public void testJobTokenRpc() throws Exception {
     TaskUmbilicalProtocol mockTT = mock(TaskUmbilicalProtocol.class);
-    doReturn(TaskUmbilicalProtocol.versionID)
-      .when(mockTT).getProtocolVersion(anyString(), anyLong());
-    doReturn(ProtocolSignature.getProtocolSignature(
-        mockTT, TaskUmbilicalProtocol.class.getName(),
-        TaskUmbilicalProtocol.versionID, 0))
-      .when(mockTT).getProtocolSignature(anyString(), anyLong(), anyInt());
+    AMFeedback feedback = new AMFeedback();
+    feedback.setTaskFound(true);
+    doReturn(feedback).when(mockTT).statusUpdate(any(), any());
+
+    TaskUmbilicalProtocolServerSideTranslatorPB translator =
+        new TaskUmbilicalProtocolServerSideTranslatorPB(mockTT);
+    org.apache.hadoop.thirdparty.protobuf.BlockingService blockingService =
+        TaskUmbilicalProtocolProtos.TaskUmbilicalProtocolService
+            .newReflectiveBlockingService(translator);
 
     JobTokenSecretManager sm = new JobTokenSecretManager();
+    RPC.setProtocolEngine(conf, TaskUmbilicalProtocolPB.class,
+        ProtobufRpcEngine2.class);
     final Server server = new RPC.Builder(conf)
-        .setProtocol(TaskUmbilicalProtocol.class).setInstance(mockTT)
+        .setProtocol(TaskUmbilicalProtocolPB.class)
+        .setInstance(blockingService)
         .setBindAddress(ADDRESS).setPort(0).setNumHandlers(5).setVerbose(true)
         .setSecretManager(sm).build();
 
@@ -112,14 +119,16 @@ public class TestUmbilicalProtocolWithJobToken {
       public Object run() throws Exception {
         TaskUmbilicalProtocol proxy = null;
         try {
-          proxy = (TaskUmbilicalProtocol) RPC.getProxy(
-              TaskUmbilicalProtocol.class, TaskUmbilicalProtocol.versionID,
+          TaskUmbilicalProtocolPB pbProxy = RPC.getProxy(
+              TaskUmbilicalProtocolPB.class,
+              RPC.getProtocolVersion(TaskUmbilicalProtocolPB.class),
               addr, conf);
+          proxy = new TaskUmbilicalProtocolPBClientImpl(pbProxy);
           proxy.statusUpdate(null, null);
         } finally {
           server.stop();
-          if (proxy != null) {
-            RPC.stopProxy(proxy);
+          if (proxy instanceof Closeable closeable) {
+            closeable.close();
           }
         }
         return null;

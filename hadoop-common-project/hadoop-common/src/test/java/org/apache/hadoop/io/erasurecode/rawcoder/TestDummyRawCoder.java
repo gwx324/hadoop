@@ -17,20 +17,23 @@
  */
 package org.apache.hadoop.io.erasurecode.rawcoder;
 
-import org.apache.hadoop.io.erasurecode.ECChunk;
-import org.junit.Before;
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.fail;
 
+import org.apache.hadoop.io.erasurecode.ECChunk;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
 import java.nio.ByteBuffer;
 
 /**
  * Test dummy raw coder.
  */
 public class TestDummyRawCoder extends TestRawCoderBase {
-  @Before
+  @BeforeEach
   public void setup() {
-    encoderClass = DummyRawEncoder.class;
-    decoderClass = DummyRawDecoder.class;
+    encoderFactoryClass = DummyRawErasureCoderFactory.class;
+    decoderFactoryClass = DummyRawErasureCoderFactory.class;
     setAllowDump(false);
     setChunkSize(baseChunkSize);
   }
@@ -59,7 +62,11 @@ public class TestDummyRawCoder extends TestRawCoderBase {
     ECChunk[] dataChunks = prepareDataChunksForEncoding();
     markChunks(dataChunks);
     ECChunk[] parityChunks = prepareParityChunksForEncoding();
-    encoder.encode(dataChunks, parityChunks);
+    try {
+      encoder.encode(dataChunks, parityChunks);
+    } catch (IOException e) {
+      fail("Unexpected IOException: " + e.getMessage());
+    }
     compareAndVerify(parityChunks, getEmptyChunks(parityChunks.length));
 
     // Decode
@@ -69,7 +76,12 @@ public class TestDummyRawCoder extends TestRawCoderBase {
         dataChunks, parityChunks);
     ensureOnlyLeastRequiredChunks(inputChunks);
     ECChunk[] recoveredChunks = prepareOutputChunksForDecoding();
-    decoder.decode(inputChunks, getErasedIndexesForDecoding(), recoveredChunks);
+    try {
+      decoder.decode(inputChunks, getErasedIndexesForDecoding(),
+          recoveredChunks);
+    } catch (IOException e) {
+      fail("Unexpected IOException: " + e.getMessage());
+    }
     compareAndVerify(recoveredChunks, getEmptyChunks(recoveredChunks.length));
   }
 

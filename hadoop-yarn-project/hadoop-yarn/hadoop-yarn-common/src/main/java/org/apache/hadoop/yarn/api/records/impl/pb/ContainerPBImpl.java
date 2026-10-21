@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.yarn.api.records.impl.pb;
 
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.security.proto.SecurityProtos.TokenProto;
@@ -36,6 +38,11 @@ import org.apache.hadoop.yarn.proto.YarnProtos.PriorityProto;
 import org.apache.hadoop.yarn.proto.YarnProtos.ResourceProto;
 import org.apache.hadoop.yarn.proto.YarnProtos.ExecutionTypeProto;
 
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 @Private
 @Unstable
 public class ContainerPBImpl extends Container {
@@ -49,6 +56,8 @@ public class ContainerPBImpl extends Container {
   private Resource resource = null;
   private Priority priority = null;
   private Token containerToken = null;
+  private Set<String> allocationTags = null;
+  private Map<String, List<Map<String, String>>> exposedPorts = null;
 
   public ContainerPBImpl() {
     builder = ContainerProto.newBuilder();
@@ -59,7 +68,7 @@ public class ContainerPBImpl extends Container {
     viaProto = true;
   }
   
-  public ContainerProto getProto() {
+  synchronized public ContainerProto getProto() {
   
     mergeLocalToProto();
     proto = viaProto ? proto : builder.build();
@@ -93,9 +102,7 @@ public class ContainerPBImpl extends Container {
             builder.getNodeId())) {
       builder.setNodeId(convertToProtoFormat(this.nodeId));
     }
-    if (this.resource != null
-        && !((ResourcePBImpl) this.resource).getProto().equals(
-            builder.getResource())) {
+    if (this.resource != null) {
       builder.setResource(convertToProtoFormat(this.resource));
     }
     if (this.priority != null && 
@@ -107,6 +114,15 @@ public class ContainerPBImpl extends Container {
         && !((TokenPBImpl) this.containerToken).getProto().equals(
             builder.getContainerToken())) {
       builder.setContainerToken(convertToProtoFormat(this.containerToken));
+    }
+    if (this.allocationTags != null) {
+      builder.clearAllocationTags();
+      builder.addAllAllocationTags(this.allocationTags);
+    }
+    if (this.exposedPorts != null) {
+      Gson gson = new Gson();
+      String strExposedPorts = gson.toJson(this.exposedPorts);
+      builder.setExposedPorts(strExposedPorts);
     }
   }
 
@@ -126,7 +142,7 @@ public class ContainerPBImpl extends Container {
   }
 
   @Override
-  public ContainerId getId() {
+  synchronized public ContainerId getId() {
     ContainerProtoOrBuilder p = viaProto ? proto : builder;
     if (this.containerId != null) {
       return this.containerId;
@@ -160,7 +176,7 @@ public class ContainerPBImpl extends Container {
   }
 
   @Override
-  public void setId(ContainerId id) {
+  synchronized public void setId(ContainerId id) {
     maybeInitBuilder();
     if (id == null)
       builder.clearId();
@@ -183,7 +199,7 @@ public class ContainerPBImpl extends Container {
       builder.clearNodeHttpAddress();
       return;
     }
-    builder.setNodeHttpAddress(nodeHttpAddress);
+    builder.setNodeHttpAddress(nodeHttpAddress.intern());
   }
 
   @Override
@@ -202,11 +218,38 @@ public class ContainerPBImpl extends Container {
   @Override
   public void setResource(Resource resource) {
     maybeInitBuilder();
-    if (resource == null)
+    if (resource == null) {
       builder.clearResource();
+    }
     this.resource = resource;
   }
-  
+
+  @Override
+  public Map<String, List<Map<String, String>>> getExposedPorts() {
+    ContainerProtoOrBuilder p = viaProto ? proto : builder;
+    if (this.exposedPorts != null) {
+      return this.exposedPorts;
+    }
+    if (!p.hasExposedPorts()) {
+      return null;
+    }
+    String ports = p.getExposedPorts();
+    Gson gson = new Gson();
+    this.exposedPorts = gson.fromJson(ports,
+        new TypeToken<Map<String, List<Map<String, String>>>>(){}.getType());
+
+    return this.exposedPorts;
+  }
+
+  @Override
+  public void setExposedPorts(Map<String, List<Map<String, String>>> ports) {
+    maybeInitBuilder();
+    if (resource == null) {
+      builder.clearExposedPorts();
+    }
+    this.exposedPorts = ports;
+  }
+
   @Override
   public Priority getPriority() {
     ContainerProtoOrBuilder p = viaProto ? proto : builder;
@@ -245,8 +288,9 @@ public class ContainerPBImpl extends Container {
   @Override
   public void setContainerToken(Token containerToken) {
     maybeInitBuilder();
-    if (containerToken == null) 
+    if (containerToken == null) {
       builder.clearContainerToken();
+    }
     this.containerToken = containerToken;
   }
 
@@ -274,6 +318,41 @@ public class ContainerPBImpl extends Container {
     builder.setAllocationRequestId(allocationRequestID);
   }
 
+  @Override
+  public int getVersion() {
+    ContainerProtoOrBuilder p = viaProto ? proto : builder;
+    return p.getVersion();
+  }
+
+  @Override
+  public void setVersion(int version) {
+    maybeInitBuilder();
+    builder.setVersion(version);
+  }
+
+  private void initAllocationTags() {
+    if (this.allocationTags != null) {
+      return;
+    }
+    ContainerProtoOrBuilder p = viaProto ? proto : builder;
+    this.allocationTags = new HashSet<>();
+    this.allocationTags.addAll(p.getAllocationTagsList());
+  }
+
+  @Override
+  public Set<String> getAllocationTags() {
+    initAllocationTags();
+    return this.allocationTags;
+  }
+
+  @Override
+  public void setAllocationTags(Set<String> allocationTags) {
+    maybeInitBuilder();
+    builder.clearAllocationTags();
+    this.allocationTags = allocationTags;
+  }
+
+
   private ContainerIdPBImpl convertFromProtoFormat(ContainerIdProto p) {
     return new ContainerIdPBImpl(p);
   }
@@ -295,7 +374,7 @@ public class ContainerPBImpl extends Container {
   }
 
   private ResourceProto convertToProtoFormat(Resource t) {
-    return ((ResourcePBImpl)t).getProto();
+    return ProtoUtils.convertToProtoFormat(t);
   }
 
   private PriorityPBImpl convertFromProtoFormat(PriorityProto p) {
@@ -325,17 +404,18 @@ public class ContainerPBImpl extends Container {
 
   public String toString() {
     StringBuilder sb = new StringBuilder();
-    sb.append("Container: [");
-    sb.append("ContainerId: ").append(getId()).append(", ");
-    sb.append("AllocationRequestId: ").append(getAllocationRequestId())
-        .append(", ");
-    sb.append("NodeId: ").append(getNodeId()).append(", ");
-    sb.append("NodeHttpAddress: ").append(getNodeHttpAddress()).append(", ");
-    sb.append("Resource: ").append(getResource()).append(", ");
-    sb.append("Priority: ").append(getPriority()).append(", ");
-    sb.append("Token: ").append(getContainerToken()).append(", ");
-    sb.append("ExecutionType: ").append(getExecutionType()).append(", ");
-    sb.append("]");
+    sb.append("Container: [")
+        .append("ContainerId: ").append(getId()).append(", ")
+        .append("AllocationRequestId: ").append(getAllocationRequestId())
+        .append(", ")
+        .append("Version: ").append(getVersion()).append(", ")
+        .append("NodeId: ").append(getNodeId()).append(", ")
+        .append("NodeHttpAddress: ").append(getNodeHttpAddress()).append(", ")
+        .append("Resource: ").append(getResource()).append(", ")
+        .append("Priority: ").append(getPriority()).append(", ")
+        .append("Token: ").append(getContainerToken()).append(", ")
+        .append("ExecutionType: ").append(getExecutionType()).append(", ")
+        .append("]");
     return sb.toString();
   }
 

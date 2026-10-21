@@ -17,26 +17,12 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.snapshot;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FsShell;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.TrashPolicyDefault;
 import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.DFSTestUtil;
@@ -46,47 +32,78 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockUnderConstructionFeature;
-import org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage;
-import org.apache.hadoop.hdfs.server.datanode.BlockScanner;
-import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.datanode.DirectoryScanner;
-import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
-import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
-import org.apache.hadoop.hdfs.server.namenode.INode;
-import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
-import org.apache.hadoop.hdfs.server.namenode.INodeFile;
-import org.apache.hadoop.hdfs.server.namenode.LeaseManager;
-import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
+import org.apache.hadoop.hdfs.server.datanode.*;
+import org.apache.hadoop.hdfs.server.datanode.checker.DatasetVolumeChecker;
+import org.apache.hadoop.hdfs.server.datanode.checker.ThrottledAsyncChecker;
+import org.apache.hadoop.hdfs.server.namenode.*;
+import org.apache.hadoop.hdfs.server.namenode.top.metrics.TopMetrics;
+import org.apache.hadoop.http.HttpRequestLog;
 import org.apache.hadoop.http.HttpServer2;
-import org.apache.hadoop.ipc.ProtobufRpcEngine.Server;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2.Server;
 import org.apache.hadoop.metrics2.impl.MetricsSystemImpl;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Assert;
+import org.apache.hadoop.util.GSet;
+import org.apache.log4j.Appender;
+import org.apache.log4j.Layout;
+import org.apache.log4j.LogManager;
+import org.apache.log4j.PatternLayout;
+import org.apache.log4j.WriterAppender;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Helper for writing snapshot related tests
  */
 public class SnapshotTestHelper {
-  public static final Log LOG = LogFactory.getLog(SnapshotTestHelper.class);
+  static final Logger LOG = LoggerFactory.getLogger(SnapshotTestHelper.class);
 
   /** Disable the logs that are not very useful for snapshot related tests. */
   public static void disableLogs() {
     final String[] lognames = {
-        "org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceScanner",
-        "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl",
-        "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetAsyncDiskService",
+        "org.eclipse.jetty",
+        "org.apache.hadoop.ipc",
+        "org.apache.hadoop.net",
+        "org.apache.hadoop.security",
+
+        "org.apache.hadoop.hdfs.server.blockmanagement",
+        "org.apache.hadoop.hdfs.server.common.Util",
+        "org.apache.hadoop.hdfs.server.datanode",
+        "org.apache.hadoop.hdfs.server.namenode.FileJournalManager",
+        "org.apache.hadoop.hdfs.server.namenode.NNStorageRetentionManager",
+        "org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf",
+        "org.apache.hadoop.hdfs.server.namenode.FSEditLog",
     };
     for(String n : lognames) {
-      GenericTestUtils.disableLog(LogFactory.getLog(n));
+      GenericTestUtils.disableLog(LoggerFactory.getLogger(n));
     }
     
-    GenericTestUtils.disableLog(LogFactory.getLog(UserGroupInformation.class));
-    GenericTestUtils.disableLog(LogFactory.getLog(BlockManager.class));
-    GenericTestUtils.disableLog(LogFactory.getLog(FSNamesystem.class));
-    GenericTestUtils.disableLog(LogFactory.getLog(DirectoryScanner.class));
-    GenericTestUtils.disableLog(LogFactory.getLog(MetricsSystemImpl.class));
-    
+    GenericTestUtils.disableLog(LoggerFactory.getLogger(
+        UserGroupInformation.class));
+    GenericTestUtils.disableLog(LoggerFactory.getLogger(BlockManager.class));
+    GenericTestUtils.disableLog(LoggerFactory.getLogger(FSNamesystem.class));
+    GenericTestUtils.disableLog(LoggerFactory.getLogger(
+        DirectoryScanner.class));
+    GenericTestUtils.disableLog(LoggerFactory.getLogger(
+        MetricsSystemImpl.class));
+
+    GenericTestUtils.disableLog(DatasetVolumeChecker.LOG);
+    GenericTestUtils.disableLog(DatanodeDescriptor.LOG);
+    GenericTestUtils.disableLog(GSet.LOG);
+    GenericTestUtils.disableLog(TopMetrics.LOG);
+    GenericTestUtils.disableLog(HttpRequestLog.LOG);
+    GenericTestUtils.disableLog(ThrottledAsyncChecker.LOG);
+    GenericTestUtils.disableLog(VolumeScanner.LOG);
     GenericTestUtils.disableLog(BlockScanner.LOG);
     GenericTestUtils.disableLog(HttpServer2.LOG);
     GenericTestUtils.disableLog(DataNode.LOG);
@@ -96,6 +113,198 @@ public class SnapshotTestHelper {
     GenericTestUtils.disableLog(NameNode.blockStateChangeLog);
     GenericTestUtils.disableLog(DFSClient.LOG);
     GenericTestUtils.disableLog(Server.LOG);
+  }
+
+  static class MyCluster {
+    private final MiniDFSCluster cluster;
+    private final FSNamesystem fsn;
+    private final FSDirectory fsdir;
+    private final DistributedFileSystem hdfs;
+    private final FsShell shell = new FsShell();
+
+    private final Path snapshotDir = new Path("/");
+    private final AtomicInteger snapshotCount = new AtomicInteger();
+    private final AtomicInteger trashMoveCount = new AtomicInteger();
+    private final AtomicInteger printTreeCount = new AtomicInteger();
+    private final AtomicBoolean printTree = new AtomicBoolean();
+
+    MyCluster(Configuration conf) throws Exception {
+      cluster = new MiniDFSCluster.Builder(conf)
+          .numDataNodes(1)
+          .format(true)
+          .build();
+      fsn = cluster.getNamesystem();
+      fsdir = fsn.getFSDirectory();
+
+      cluster.waitActive();
+      hdfs = cluster.getFileSystem();
+      hdfs.allowSnapshot(snapshotDir);
+      createSnapshot();
+
+      shell.setConf(cluster.getConfiguration(0));
+      runShell("-mkdir", "-p", ".Trash");
+    }
+
+    void setPrintTree(boolean print) {
+      printTree.set(print);
+    }
+
+    boolean getPrintTree() {
+      return printTree.get();
+    }
+
+    Path getTrashPath(Path p) throws Exception {
+      final Path trash = hdfs.getTrashRoot(p);
+      final Path resolved = hdfs.resolvePath(p);
+      return new Path(trash, "Current/" + resolved.toUri().getPath());
+    }
+
+    int runShell(String... argv) {
+      return shell.run(argv);
+    }
+
+    String createSnapshot()
+        throws Exception {
+      final String name = "s" + snapshotCount.getAndIncrement();
+      SnapshotTestHelper.createSnapshot(hdfs, snapshotDir, name);
+      return name;
+    }
+
+    void deleteSnapshot(String snapshotName) throws Exception {
+      LOG.info("Before delete snapshot " + snapshotName);
+      hdfs.deleteSnapshot(snapshotDir, snapshotName);
+    }
+
+    boolean assertExists(Path path) throws Exception {
+      if (path == null) {
+        return false;
+      }
+      if (!hdfs.exists(path)) {
+        final String err = "Path not found: " + path;
+        printFs(err);
+        throw new AssertionError(err);
+      }
+      return true;
+    }
+
+    void printFs(String label) {
+      final PrintStream out = System.out;
+      out.println();
+      out.println();
+      out.println("XXX " + printTreeCount.getAndIncrement() + ": " + label);
+      if (printTree.get()) {
+        fsdir.getRoot().dumpTreeRecursively(out);
+      }
+    }
+
+    void shutdown() {
+      LOG.info("snapshotCount: {}", snapshotCount);
+      cluster.shutdown();
+    }
+
+    Path mkdirs(String dir) throws Exception {
+      return mkdirs(new Path(dir));
+    }
+
+    Path mkdirs(Path dir) throws Exception {
+      final String label = "mkdirs " + dir;
+      LOG.info(label);
+      hdfs.mkdirs(dir);
+      assertTrue(hdfs.exists(dir), label);
+      return dir;
+    }
+
+    Path createFile(String file) throws Exception {
+      return createFile(new Path(file));
+    }
+
+    Path createFile(Path file) throws Exception {
+      final String label = "createFile " + file;
+      LOG.info(label);
+      DFSTestUtil.createFile(hdfs, file, 0, (short)1, 0L);
+      assertTrue(hdfs.exists(file), label);
+      return file;
+    }
+
+    String rename(Path src, Path dst) throws Exception {
+      assertExists(src);
+      final String snapshot = createSnapshot();
+
+      final String label = "rename " + src + " -> " + dst;
+      final boolean renamed = hdfs.rename(src, dst);
+      LOG.info("{}: success? {}", label, renamed);
+      assertTrue(renamed, label);
+      return snapshot;
+    }
+
+    Path moveToTrash(Path path, boolean printFs) throws Exception {
+      return moveToTrash(path.toString(), printFs);
+    }
+
+    Path moveToTrash(String path, boolean printFs) throws Exception {
+      final Log4jRecorder recorder = Log4jRecorder.record(
+          LoggerFactory.getLogger(TrashPolicyDefault.class));
+      runShell("-rm", "-r", path);
+      final String label = "moveToTrash-" + trashMoveCount.getAndIncrement() + " " + path;
+      if (printFs) {
+        printFs(label);
+      } else {
+        LOG.info(label);
+      }
+      final String recorded = recorder.getRecorded();
+      LOG.info("Recorded: {}", recorded);
+
+      final String pattern = " to trash at: ";
+      final int i = recorded.indexOf(pattern);
+      if (i > 0) {
+        final String sub = recorded.substring(i + pattern.length());
+        return new Path(sub.trim());
+      }
+      return null;
+    }
+  }
+
+  /** Records log messages from a Log4j logger. */
+  public static final class Log4jRecorder {
+    static Log4jRecorder record(org.slf4j.Logger logger) {
+      return new Log4jRecorder(toLog4j(logger), getLayout());
+    }
+
+    static org.apache.log4j.Logger toLog4j(org.slf4j.Logger logger) {
+      return LogManager.getLogger(logger.getName());
+    }
+
+    static Layout getLayout() {
+      final org.apache.log4j.Logger root
+          = org.apache.log4j.Logger.getRootLogger();
+      Appender a = root.getAppender("stdout");
+      if (a == null) {
+        a = root.getAppender("console");
+      }
+      return a == null? new PatternLayout() : a.getLayout();
+    }
+
+    private final StringWriter stringWriter = new StringWriter();
+    private final WriterAppender appender;
+    private final org.apache.log4j.Logger logger;
+
+    private Log4jRecorder(org.apache.log4j.Logger logger, Layout layout) {
+      this.appender = new WriterAppender(layout, stringWriter);
+      this.logger = logger;
+      this.logger.addAppender(this.appender);
+    }
+
+    public String getRecorded() {
+      return stringWriter.toString();
+    }
+
+    public void stop() {
+      logger.removeAppender(appender);
+    }
+
+    public void clear() {
+      stringWriter.getBuffer().setLength(0);
+    }
   }
 
   private SnapshotTestHelper() {
@@ -146,9 +355,9 @@ public class SnapshotTestHelper {
     // Compare the snapshot with the current dir
     FileStatus[] currentFiles = hdfs.listStatus(snapshottedDir);
     FileStatus[] snapshotFiles = hdfs.listStatus(snapshotRoot);
-    assertEquals("snapshottedDir=" + snapshottedDir
-        + ", snapshotRoot=" + snapshotRoot,
-        currentFiles.length, snapshotFiles.length);
+    assertEquals(currentFiles.length, snapshotFiles.length,
+        "snapshottedDir=" + snapshottedDir
+            + ", snapshotRoot=" + snapshotRoot);
   }
   
   /**
@@ -238,11 +447,10 @@ public class SnapshotTestHelper {
            "\\{blockUCState=\\w+, primaryNodeIndex=[-\\d]+, replicas=\\[\\]\\}",
            "");
         }
-        
-        assertEquals(line1, line2);
+        assertEquals(line1.trim(), line2.trim());
       }
-      Assert.assertNull(reader1.readLine());
-      Assert.assertNull(reader2.readLine());
+      assertNull(reader1.readLine());
+      assertNull(reader2.readLine());
     } finally {
       reader1.close();
       reader2.close();
@@ -469,7 +677,13 @@ public class SnapshotTestHelper {
   public static void dumpTree(String message, MiniDFSCluster cluster
       ) throws UnresolvedLinkException {
     System.out.println("XXX " + message);
-    cluster.getNameNode().getNamesystem().getFSDirectory().getINode("/"
-        ).dumpTreeRecursively(System.out);
+    try {
+      cluster.getNameNode().getNamesystem().getFSDirectory().getINode("/"
+          ).dumpTreeRecursively(System.out);
+    } catch (UnresolvedLinkException ule) {
+      throw ule;
+    } catch (IOException ioe) {
+      throw new RuntimeException(ioe);
+    }
   }
 }

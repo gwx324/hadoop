@@ -19,9 +19,9 @@
 package org.apache.hadoop.yarn.client.api.impl;
 
 import java.io.Closeable;
-import java.io.FileNotFoundException;
 import java.io.Flushable;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -38,8 +38,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import net.jodah.failsafe.RetryPolicy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
@@ -58,15 +59,16 @@ import org.apache.hadoop.yarn.api.records.timeline.TimelineEntityGroupId;
 import org.apache.hadoop.yarn.api.records.timeline.TimelinePutResponse;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
-import org.codehaus.jackson.JsonFactory;
-import org.codehaus.jackson.JsonGenerator;
-import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.jackson.map.SerializationConfig.Feature;
-import org.codehaus.jackson.map.annotate.JsonSerialize.Inclusion;
-import org.codehaus.jackson.util.MinimalPrettyPrinter;
-import org.codehaus.jackson.xc.JaxbAnnotationIntrospector;
 
-import com.sun.jersey.api.client.Client;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.util.MinimalPrettyPrinter;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.type.TypeFactory;
+import com.fasterxml.jackson.module.jaxb.JaxbAnnotationIntrospector;
+import javax.ws.rs.client.Client;
 
 /**
  * A simple writer class for storing Timeline data in any storage that
@@ -77,8 +79,8 @@ import com.sun.jersey.api.client.Client;
 @Unstable
 public class FileSystemTimelineWriter extends TimelineWriter{
 
-  private static final Log LOG = LogFactory
-      .getLog(FileSystemTimelineWriter.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(FileSystemTimelineWriter.class);
 
   // App log directory must be readable by group so server can access logs
   // and writable by group so it can be deleted by server
@@ -101,18 +103,12 @@ public class FileSystemTimelineWriter extends TimelineWriter{
   private final AttemptDirCache attemptDirCache;
 
   public FileSystemTimelineWriter(Configuration conf,
-      UserGroupInformation authUgi, Client client, URI resURI)
+      UserGroupInformation authUgi, Client client, URI resURI,
+      RetryPolicy<Object> retryPolicy)
       throws IOException {
-    super(authUgi, client, resURI);
+    super(authUgi, client, resURI, retryPolicy);
 
     Configuration fsConf = new Configuration(conf);
-    fsConf.setBoolean("dfs.client.retry.policy.enabled", true);
-    String retryPolicy =
-        fsConf.get(YarnConfiguration.
-            TIMELINE_SERVICE_ENTITYGROUP_FS_STORE_RETRY_POLICY_SPEC,
-          YarnConfiguration.
-              DEFAULT_TIMELINE_SERVICE_ENTITYGROUP_FS_STORE_RETRY_POLICY_SPEC);
-    fsConf.set("dfs.client.retry.policy.spec", retryPolicy);
 
     activePath = new Path(fsConf.get(
       YarnConfiguration
@@ -121,10 +117,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
           .TIMELINE_SERVICE_ENTITYGROUP_FS_STORE_ACTIVE_DIR_DEFAULT));
     fs = FileSystem.newInstance(activePath.toUri(), fsConf);
 
-    if (!fs.exists(activePath)) {
-      throw new FileNotFoundException(activePath + " does not exist");
-    }
-
+    // raise FileNotFoundException if the path is not found
+    fs.getFileStatus(activePath);
     summaryEntityTypes = new HashSet<String>(
         conf.getStringCollection(YarnConfiguration
             .TIMELINE_SERVICE_ENTITYGROUP_FS_STORE_SUMMARY_ENTITY_TYPES));
@@ -154,9 +148,12 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         new LogFDsCache(flushIntervalSecs, cleanIntervalSecs, ttl,
             timerTaskTTL);
 
-    this.isAppendSupported =
-        conf.getBoolean(
-            YarnConfiguration.TIMELINE_SERVICE_ENTITYFILE_FS_SUPPORT_APPEND, true);
+    this.isAppendSupported = conf.getBoolean(
+        YarnConfiguration.TIMELINE_SERVICE_ENTITYFILE_FS_SUPPORT_APPEND, true);
+
+    boolean storeInsideUserDir = conf.getBoolean(
+        YarnConfiguration.TIMELINE_SERVICE_ENTITYGROUP_FS_STORE_WITH_USER_DIR,
+        false);
 
     objMapper = createObjectMapper();
 
@@ -166,8 +163,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         YarnConfiguration
             .DEFAULT_TIMELINE_SERVICE_CLIENT_INTERNAL_ATTEMPT_DIR_CACHE_SIZE);
 
-    attemptDirCache =
-        new AttemptDirCache(attemptDirCacheSize, fs, activePath);
+    attemptDirCache = new AttemptDirCache(attemptDirCacheSize, fs, activePath,
+        authUgi, storeInsideUserDir);
 
     if (LOG.isDebugEnabled()) {
       StringBuilder debugMSG = new StringBuilder();
@@ -180,6 +177,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
               + "=" + ttl + ", " +
           YarnConfiguration.TIMELINE_SERVICE_ENTITYFILE_FS_SUPPORT_APPEND
               + "=" + isAppendSupported + ", " +
+          YarnConfiguration.TIMELINE_SERVICE_ENTITYGROUP_FS_STORE_WITH_USER_DIR
+              + "=" + storeInsideUserDir + ", " +
           YarnConfiguration.TIMELINE_SERVICE_ENTITYGROUP_FS_STORE_ACTIVE_DIR
               + "=" + activePath);
 
@@ -227,10 +226,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
     if (!entitiesToSummaryCache.isEmpty()) {
       Path summaryLogPath =
           new Path(attemptDir, SUMMARY_LOG_PREFIX + appAttemptId.toString());
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Writing summary log for " + appAttemptId.toString() + " to "
-            + summaryLogPath);
-      }
+      LOG.debug("Writing summary log for {} to {}", appAttemptId,
+          summaryLogPath);
       this.logFDsCache.writeSummaryEntityLogs(fs, summaryLogPath, objMapper,
           appAttemptId, entitiesToSummaryCache, isAppendSupported);
     }
@@ -238,10 +235,7 @@ public class FileSystemTimelineWriter extends TimelineWriter{
     if (!entitiesToEntityCache.isEmpty()) {
       Path entityLogPath =
           new Path(attemptDir, ENTITY_LOG_PREFIX + groupId.toString());
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Writing entity log for " + groupId.toString() + " to "
-            + entityLogPath);
-      }
+      LOG.debug("Writing entity log for {} to {}", groupId, entityLogPath);
       this.logFDsCache.writeEntityLogs(fs, entityLogPath, objMapper,
           appAttemptId, groupId, entitiesToEntityCache, isAppendSupported);
     }
@@ -270,7 +264,7 @@ public class FileSystemTimelineWriter extends TimelineWriter{
       LOG.debug("Closing cache");
       logFDsCache.flush();
     }
-    IOUtils.cleanup(LOG, logFDsCache, fs);
+    IOUtils.cleanupWithLogger(LOG, logFDsCache, fs);
   }
 
   @Override
@@ -283,9 +277,10 @@ public class FileSystemTimelineWriter extends TimelineWriter{
 
   private ObjectMapper createObjectMapper() {
     ObjectMapper mapper = new ObjectMapper();
-    mapper.setAnnotationIntrospector(new JaxbAnnotationIntrospector());
-    mapper.setSerializationInclusion(Inclusion.NON_NULL);
-    mapper.configure(Feature.CLOSE_CLOSEABLE, false);
+    mapper.setAnnotationIntrospector(
+        new JaxbAnnotationIntrospector(TypeFactory.defaultInstance()));
+    mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+    mapper.configure(SerializationFeature.FLUSH_AFTER_WRITE_VALUE, false);
     return mapper;
   }
 
@@ -294,10 +289,7 @@ public class FileSystemTimelineWriter extends TimelineWriter{
     Path domainLogPath =
         new Path(attemptDirCache.getAppAttemptDir(appAttemptId),
             DOMAIN_LOG_PREFIX + appAttemptId.toString());
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Writing domains for " + appAttemptId.toString() + " to "
-          + domainLogPath);
-    }
+    LOG.debug("Writing domains for {} to {}", appAttemptId, domainLogPath);
     this.logFDsCache.writeDomainLog(
         fs, domainLogPath, objMapper, domain, isAppendSupported);
   }
@@ -326,9 +318,7 @@ public class FileSystemTimelineWriter extends TimelineWriter{
       if (writerClosed()) {
         prepareForWrite();
       }
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Writing entity list of size " + entities.size());
-      }
+      LOG.debug("Writing entity list of size {}", entities.size());
       for (TimelineEntity entity : entities) {
         getObjectMapper().writeValue(getJsonGenerator(), entity);
       }
@@ -357,8 +347,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
 
     public void close() {
       if (stream != null) {
-        IOUtils.cleanup(LOG, jsonGenerator);
-        IOUtils.cleanup(LOG, stream);
+        IOUtils.cleanupWithLogger(LOG, jsonGenerator);
+        IOUtils.cleanupWithLogger(LOG, stream);
         stream = null;
         jsonGenerator = null;
       }
@@ -366,6 +356,7 @@ public class FileSystemTimelineWriter extends TimelineWriter{
 
     public void flush() throws IOException {
       if (stream != null) {
+        jsonGenerator.flush();
         stream.hflush();
       }
     }
@@ -376,10 +367,9 @@ public class FileSystemTimelineWriter extends TimelineWriter{
 
     protected void prepareForWrite() throws IOException{
       this.stream = createLogFileStream(fs, logPath);
-      this.jsonGenerator = new JsonFactory().createJsonGenerator(stream);
+      this.jsonGenerator = new JsonFactory().createGenerator(
+          (OutputStream)stream);
       this.jsonGenerator.setPrettyPrinter(new MinimalPrettyPrinter("\n"));
-      this.jsonGenerator.configure(
-          JsonGenerator.Feature.FLUSH_PASSED_TO_STREAM, false);
       this.lastModifiedTime = Time.monotonicNow();
     }
 
@@ -480,8 +470,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
 
     @Override
     public void flush() throws IOException {
+      this.domainFDLocker.lock();
       try {
-        this.domainFDLocker.lock();
         if (domainLogFD != null) {
           domainLogFD.flush();
         }
@@ -496,8 +486,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
 
     private Map<ApplicationAttemptId, EntityLogFD> copySummaryLogFDs(
         Map<ApplicationAttemptId, EntityLogFD> summanyLogFDsToCopy) {
+      summaryTableCopyLocker.lock();
       try {
-        summaryTableCopyLocker.lock();
         return new HashMap<ApplicationAttemptId, EntityLogFD>(
             summanyLogFDsToCopy);
       } finally {
@@ -508,8 +498,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
     private Map<ApplicationAttemptId, HashMap<TimelineEntityGroupId,
         EntityLogFD>> copyEntityLogFDs(Map<ApplicationAttemptId,
         HashMap<TimelineEntityGroupId, EntityLogFD>> entityLogFDsToCopy) {
+      entityTableCopyLocker.lock();
       try {
-        entityTableCopyLocker.lock();
         return new HashMap<ApplicationAttemptId, HashMap<TimelineEntityGroupId,
             EntityLogFD>>(entityLogFDsToCopy);
       } finally {
@@ -523,8 +513,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         for (Entry<ApplicationAttemptId, EntityLogFD> logFDEntry : logFDs
             .entrySet()) {
           EntityLogFD logFD = logFDEntry.getValue();
+          logFD.lock();
           try {
-            logFD.lock();
             logFD.flush();
           } finally {
             logFD.unlock();
@@ -543,8 +533,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
           for (Entry<TimelineEntityGroupId, EntityLogFD> logFDEntry
               : logFDMap.entrySet()) {
             EntityLogFD logFD = logFDEntry.getValue();
+            logFD.lock();
             try {
-              logFD.lock();
               logFD.flush();
             } finally {
               logFD.unlock();
@@ -560,17 +550,15 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         try {
           flush();
         } catch (Exception e) {
-          if (LOG.isDebugEnabled()) {
-            LOG.debug(e);
-          }
+          LOG.debug("{}", e);
         }
       }
     }
 
     private void cleanInActiveFDs() {
       long currentTimeStamp = Time.monotonicNow();
+      this.domainFDLocker.lock();
       try {
-        this.domainFDLocker.lock();
         if (domainLogFD != null) {
           if (currentTimeStamp - domainLogFD.getLastModifiedTime() >= ttl) {
             domainLogFD.close();
@@ -595,8 +583,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         for (Entry<ApplicationAttemptId, EntityLogFD> logFDEntry : logFDs
             .entrySet()) {
           EntityLogFD logFD = logFDEntry.getValue();
+          logFD.lock();
           try {
-            logFD.lock();
             if (currentTimeStamp - logFD.getLastModifiedTime() >= ttl) {
               logFD.close();
             }
@@ -619,8 +607,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
           for (Entry<TimelineEntityGroupId, EntityLogFD> logFDEntry
               : logFDMap.entrySet()) {
             EntityLogFD logFD = logFDEntry.getValue();
+            logFD.lock();
             try {
-              logFD.lock();
               if (currentTimeStamp - logFD.getLastModifiedTime() >= ttl) {
                 logFD.close();
               }
@@ -638,7 +626,7 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         try {
           cleanInActiveFDs();
         } catch (Exception e) {
-          LOG.warn(e);
+          LOG.warn(e.toString());
         }
       }
     }
@@ -646,8 +634,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
     private class TimerMonitorTask extends TimerTask {
       @Override
       public void run() {
+        timerTasksMonitorWriteLock.lock();
         try {
-          timerTasksMonitorWriteLock.lock();
           monitorTimerTasks();
         } finally {
           timerTasksMonitorWriteLock.unlock();
@@ -693,8 +681,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         monitorTaskTimer = null;
       }
 
+      this.domainFDLocker.lock();
       try {
-        this.domainFDLocker.lock();
         if (domainLogFD != null) {
           domainLogFD.close();
           domainLogFD = null;
@@ -710,8 +698,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
 
     private void closeEntityFDs(Map<ApplicationAttemptId,
         HashMap<TimelineEntityGroupId, EntityLogFD>> logFDs) {
+      entityTableLocker.lock();
       try {
-        entityTableLocker.lock();
         if (!logFDs.isEmpty()) {
           for (Entry<ApplicationAttemptId, HashMap<TimelineEntityGroupId,
                    EntityLogFD>> logFDMapEntry : logFDs.entrySet()) {
@@ -736,8 +724,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
 
     private void closeSummaryFDs(
         Map<ApplicationAttemptId, EntityLogFD> logFDs) {
+      summaryTableLocker.lock();
       try {
-        summaryTableLocker.lock();
         if (!logFDs.isEmpty()) {
           for (Entry<ApplicationAttemptId, EntityLogFD> logFDEntry
               : logFDs.entrySet()) {
@@ -759,8 +747,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         ObjectMapper objMapper, TimelineDomain domain,
         boolean isAppendSupported) throws IOException {
       checkAndStartTimeTasks();
+      this.domainFDLocker.lock();
       try {
-        this.domainFDLocker.lock();
         if (this.domainLogFD != null) {
           this.domainLogFD.writeDomain(domain);
         } else {
@@ -792,8 +780,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
       if (logMapFD != null) {
         EntityLogFD logFD = logMapFD.get(groupId);
         if (logFD != null) {
+          logFD.lock();
           try {
-            logFD.lock();
             if (serviceStopped) {
               return;
             }
@@ -816,8 +804,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         TimelineEntityGroupId groupId, List<TimelineEntity> entities,
         boolean isAppendSupported, Map<ApplicationAttemptId, HashMap<
             TimelineEntityGroupId, EntityLogFD>> logFDs) throws IOException{
+      entityTableLocker.lock();
       try {
-        entityTableLocker.lock();
         if (serviceStopped) {
           return;
         }
@@ -830,11 +818,11 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         if (logFD == null) {
           logFD = new EntityLogFD(fs, logPath, objMapper, isAppendSupported);
         }
+        logFD.lock();
         try {
-          logFD.lock();
           logFD.writeEntities(entities);
+          entityTableCopyLocker.lock();
           try {
-            entityTableCopyLocker.lock();
             logFDMap.put(groupId, logFD);
             logFDs.put(attemptId, logFDMap);
           } finally {
@@ -864,8 +852,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
       EntityLogFD logFD = null;
       logFD = logFDs.get(attemptId);
       if (logFD != null) {
+        logFD.lock();
         try {
-          logFD.lock();
           if (serviceStopped) {
             return;
           }
@@ -883,8 +871,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         ObjectMapper objMapper, ApplicationAttemptId attemptId,
         List<TimelineEntity> entities, boolean isAppendSupported,
         Map<ApplicationAttemptId, EntityLogFD> logFDs) throws IOException {
+      summaryTableLocker.lock();
       try {
-        summaryTableLocker.lock();
         if (serviceStopped) {
           return;
         }
@@ -892,11 +880,11 @@ public class FileSystemTimelineWriter extends TimelineWriter{
         if (logFD == null) {
           logFD = new EntityLogFD(fs, logPath, objMapper, isAppendSupported);
         }
+        logFD.lock();
         try {
-          logFD.lock();
           logFD.writeEntities(entities);
+          summaryTableCopyLocker.lock();
           try {
-            summaryTableCopyLocker.lock();
             logFDs.put(attemptId, logFD);
           } finally {
             summaryTableCopyLocker.unlock();
@@ -930,12 +918,12 @@ public class FileSystemTimelineWriter extends TimelineWriter{
     }
 
     private void checkAndStartTimeTasks() {
+      this.timerTasksMonitorReadLock.lock();
       try {
-        this.timerTasksMonitorReadLock.lock();
         this.timeStampOfLastWrite = Time.monotonicNow();
         if(!timerTaskStarted) {
+          timerTaskLocker.lock();
           try {
-            timerTaskLocker.lock();
             if (!timerTaskStarted) {
               createAndStartTimerTasks();
               timerTaskStarted = true;
@@ -955,8 +943,11 @@ public class FileSystemTimelineWriter extends TimelineWriter{
     private final Map<ApplicationAttemptId, Path> attemptDirCache;
     private final FileSystem fs;
     private final Path activePath;
+    private final UserGroupInformation authUgi;
+    private final boolean storeInsideUserDir;
 
-    public AttemptDirCache(int cacheSize, FileSystem fs, Path activePath) {
+    public AttemptDirCache(int cacheSize, FileSystem fs, Path activePath,
+        UserGroupInformation ugi, boolean storeInsideUserDir) {
       this.attemptDirCacheSize = cacheSize;
       this.attemptDirCache =
           new LinkedHashMap<ApplicationAttemptId, Path>(
@@ -970,6 +961,8 @@ public class FileSystemTimelineWriter extends TimelineWriter{
           };
       this.fs = fs;
       this.activePath = activePath;
+      this.authUgi = ugi;
+      this.storeInsideUserDir = storeInsideUserDir;
     }
 
     public Path getAppAttemptDir(ApplicationAttemptId attemptId)
@@ -992,27 +985,33 @@ public class FileSystemTimelineWriter extends TimelineWriter{
       Path appDir = createApplicationDir(appAttemptId.getApplicationId());
 
       Path attemptDir = new Path(appDir, appAttemptId.toString());
-      if (!fs.exists(attemptDir)) {
-        FileSystem.mkdirs(fs, attemptDir, new FsPermission(
-            APP_LOG_DIR_PERMISSIONS));
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("New attempt directory created - " + attemptDir);
-        }
+      if (FileSystem.mkdirs(fs, attemptDir,
+          new FsPermission(APP_LOG_DIR_PERMISSIONS))) {
+        LOG.debug("New attempt directory created - {}", attemptDir);
       }
       return attemptDir;
     }
 
     private Path createApplicationDir(ApplicationId appId) throws IOException {
-      Path appDir =
-          new Path(activePath, appId.toString());
-      if (!fs.exists(appDir)) {
-        FileSystem.mkdirs(fs, appDir,
-            new FsPermission(APP_LOG_DIR_PERMISSIONS));
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("New app directory created - " + appDir);
-        }
+      Path appRootDir = getAppRootDir(authUgi.getShortUserName());
+      Path appDir = new Path(appRootDir, appId.toString());
+      if (FileSystem.mkdirs(fs, appDir,
+          new FsPermission(APP_LOG_DIR_PERMISSIONS))) {
+        LOG.debug("New app directory created - {}", appDir);
       }
       return appDir;
+    }
+
+    private Path getAppRootDir(String user) throws IOException {
+      if (!storeInsideUserDir) {
+        return activePath;
+      }
+      Path userDir = new Path(activePath, user);
+      if (FileSystem.mkdirs(fs, userDir,
+          new FsPermission(APP_LOG_DIR_PERMISSIONS))) {
+        LOG.debug("New user directory created - {}", userDir);
+      }
+      return userDir;
     }
   }
 }

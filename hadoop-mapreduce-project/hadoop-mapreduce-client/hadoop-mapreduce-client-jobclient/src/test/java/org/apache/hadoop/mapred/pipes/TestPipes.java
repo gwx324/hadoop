@@ -23,8 +23,6 @@ import java.io.IOException;
 import java.util.List;
 import java.util.ArrayList;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.fs.FileUtil;
@@ -43,16 +41,18 @@ import org.apache.hadoop.mapred.Counters.Counter;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.ToolRunner;
-import org.junit.Ignore;
-import org.junit.Test;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertFalse;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-@Ignore
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+@Disabled
 public class TestPipes {
-  private static final Log LOG =
-    LogFactory.getLog(TestPipes.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(TestPipes.class);
 
   private static Path cppExamples =
     new Path(System.getProperty("install.c++.examples"));
@@ -67,7 +67,7 @@ public class TestPipes {
 
   static void cleanup(FileSystem fs, Path p) throws IOException {
     fs.delete(p, true);
-    assertFalse("output not cleaned up", fs.exists(p));
+    assertFalse(fs.exists(p), "output not cleaned up");
   }
   @Test
   public void testPipes() throws IOException {
@@ -188,7 +188,7 @@ public class TestPipes {
       } else {
         rJob = Submitter.runJob(job);
       }
-      assertTrue("pipes job failed", rJob.isSuccessful());
+      assertTrue(rJob.isSuccessful(), "pipes job failed");
 
       Counters counters = rJob.getCounters();
       Counters.Group wordCountCounters = counters.getGroup("WORDCOUNT");
@@ -197,7 +197,7 @@ public class TestPipes {
         System.out.println(c);
         ++numCounters;
       }
-      assertTrue("No counters found!", (numCounters > 0));
+      assertTrue((numCounters > 0), "No counters found!");
     }
 
     List<String> results = new ArrayList<String>();
@@ -206,11 +206,10 @@ public class TestPipes {
     		                                 .OutputFilesFilter()))) {
       results.add(MapReduceTestUtil.readOutput(p, job));
     }
-    assertEquals("number of reduces is wrong",
-                 expectedResults.length, results.size());
+    assertEquals(expectedResults.length, results.size(), "number of reduces is wrong");
     for(int i=0; i < results.size(); i++) {
-      assertEquals("pipes program " + program + " output " + i + " wrong",
-                   expectedResults[i], results.get(i));
+      assertEquals(expectedResults[i], results.get(i),
+          "pipes program " + program + " output " + i + " wrong");
     }
   }
 
@@ -278,7 +277,7 @@ public class TestPipes {
                                    "-reduces", "2"});
       assertEquals(0, ret);
     } catch (Exception e) {
-      assertTrue("got exception: " + StringUtils.stringifyException(e), false);
+      assertTrue(false, "got exception: " + StringUtils.stringifyException(e));
     }
   }
 }

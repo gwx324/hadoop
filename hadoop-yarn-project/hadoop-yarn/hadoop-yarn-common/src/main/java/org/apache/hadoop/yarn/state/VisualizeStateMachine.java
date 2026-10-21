@@ -27,9 +27,13 @@ import org.apache.hadoop.classification.InterfaceAudience.Private;
 public class VisualizeStateMachine {
 
   /**
+   * get Graph From Classes.
+   *
+   * @param graphName graphName.
    * @param classes list of classes which have static field
    *                stateMachineFactory of type StateMachineFactory
    * @return graph represent this StateMachine
+   * @throws Exception exception occurs.
    */
   public static Graph getGraphFromClasses(String graphName, List<String> classes)
       throws Exception {
@@ -49,7 +53,9 @@ public class VisualizeStateMachine {
       if (gname.endsWith("Impl")) {
         gname = gname.substring(0, gname.length()-4);
       }
-      ret.addSubGraph(factory.generateStateGraph(gname));
+      if (ret != null) {
+        ret.addSubGraph(factory.generateStateGraph(gname));
+      }
     }
     return ret;
   }

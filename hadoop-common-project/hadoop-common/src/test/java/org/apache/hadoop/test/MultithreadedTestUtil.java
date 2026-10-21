@@ -20,9 +20,9 @@ package org.apache.hadoop.test;
 import java.util.HashSet;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.util.Time;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A utility to easily test threaded/synchronized code.
@@ -60,8 +60,8 @@ import org.apache.hadoop.util.Time;
  */
 public abstract class MultithreadedTestUtil {
 
-  public static final Log LOG =
-    LogFactory.getLog(MultithreadedTestUtil.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(MultithreadedTestUtil.class);
 
   /**
    * TestContext is used to setup the multithreaded test runner.
@@ -70,8 +70,8 @@ public abstract class MultithreadedTestUtil {
   public static class TestContext {
     private Throwable err = null;
     private boolean stopped = false;
-    private Set<TestingThread> testThreads = new HashSet<TestingThread>();
-    private Set<TestingThread> finishedThreads = new HashSet<TestingThread>();
+    private Set<TestingThread> testThreads = new HashSet<>();
+    private Set<TestingThread> finishedThreads = new HashSet<>();
 
     /**
      * Check if the context can run threads.
@@ -225,7 +225,7 @@ public abstract class MultithreadedTestUtil {
 
     /**
      * User method for any code to test repeating behavior of (as threads).
-     * @throws Exception throw an exception if a failure has occured.
+     * @throws Exception throw an exception if a failure has occurred.
      */
     public abstract void doAnAction() throws Exception;
   }

@@ -25,9 +25,9 @@ import java.util.Iterator;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.io.Writable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Keeps the Ranges sorted by startIndex.
@@ -35,10 +35,10 @@ import org.apache.hadoop.io.Writable;
  * Provides the SkipRangeIterator, which skips the Ranges 
  * stored in this object.
  */
-class SortedRanges implements Writable{
+public class SortedRanges implements Writable{
   
-  private static final Log LOG = 
-    LogFactory.getLog(SortedRanges.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(SortedRanges.class);
   
   private TreeSet<Range> ranges = new TreeSet<Range>();
   private long indicesCount;
@@ -207,7 +207,7 @@ class SortedRanges implements Writable{
   }
   
   public String toString() {
-    StringBuffer sb = new StringBuffer();
+    StringBuilder sb = new StringBuilder();
     Iterator<Range> it = ranges.iterator();
     while(it.hasNext()) {
       Range range = it.next();
@@ -221,7 +221,7 @@ class SortedRanges implements Writable{
    * A Range can be of 0 length also. The Range stores indices 
    * of type long.
    */
-  static class Range implements Comparable<Range>, Writable{
+  public static class Range implements Comparable<Range>, Writable{
     private long startIndex;
     private long length;
         
@@ -233,7 +233,7 @@ class SortedRanges implements Writable{
       this.length = length;
     }
     
-    Range() {
+    public Range() {
       this(0,0);
     }
     

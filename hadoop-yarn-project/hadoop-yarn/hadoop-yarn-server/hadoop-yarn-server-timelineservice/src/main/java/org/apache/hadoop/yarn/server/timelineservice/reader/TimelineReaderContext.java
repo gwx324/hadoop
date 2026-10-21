@@ -31,6 +31,10 @@ public class TimelineReaderContext extends TimelineContext {
 
   private String entityType;
   private String entityId;
+  private Long entityIdPrefix;
+  private String doAsUser;
+  private boolean genericEntity = false;
+
   public TimelineReaderContext(String clusterId, String userId, String flowName,
       Long flowRunId, String appId, String entityType, String entityId) {
     super(clusterId, userId, flowName, flowRunId, appId);
@@ -38,16 +42,42 @@ public class TimelineReaderContext extends TimelineContext {
     this.entityId = entityId;
   }
 
+  public TimelineReaderContext(String clusterId, String userId, String flowName,
+      Long flowRunId, String appId, String entityType, Long entityIdPrefix,
+      String entityId) {
+    this(clusterId, userId, flowName, flowRunId, appId, entityType, entityId);
+    this.entityIdPrefix = entityIdPrefix;
+  }
+
+  public TimelineReaderContext(String clusterId, String userId, String flowName,
+      Long flowRunId, String appId, String entityType, Long entityIdPrefix,
+      String entityId, String doasUser) {
+    this(clusterId, userId, flowName, flowRunId, appId, entityType, entityId);
+    this.entityIdPrefix = entityIdPrefix;
+    this.doAsUser = doasUser;
+  }
+
+  public TimelineReaderContext(String clusterId, String userId, String flowName,
+      Long flowRunId, String appId, String entityType, Long entityIdPrefix,
+      String entityId, String doasUser, boolean genericEntity) {
+    this(clusterId, userId, flowName, flowRunId, appId, entityType,
+        entityIdPrefix, entityId, doasUser);
+    this.genericEntity = genericEntity;
+  }
+
   public TimelineReaderContext(TimelineReaderContext other) {
     this(other.getClusterId(), other.getUserId(), other.getFlowName(),
         other.getFlowRunId(), other.getAppId(), other.getEntityType(),
-        other.getEntityId());
+        other.getEntityIdPrefix(), other.getEntityId(), other.getDoAsUser(),
+        other.genericEntity);
   }
 
   @Override
   public int hashCode() {
     final int prime = 31;
     int result = super.hashCode();
+    result = prime * result
+        + ((entityIdPrefix == null) ? 0 : entityIdPrefix.hashCode());
     result = prime * result + ((entityId == null) ? 0 : entityId.hashCode());
     result =
         prime * result + ((entityType == null) ? 0 : entityType.hashCode());
@@ -95,4 +125,30 @@ public class TimelineReaderContext extends TimelineContext {
   public void setEntityId(String id) {
     this.entityId = id;
   }
+
+  public Long getEntityIdPrefix() {
+    return entityIdPrefix;
+  }
+
+  public void setEntityIdPrefix(Long entityIdPrefix) {
+    this.entityIdPrefix = entityIdPrefix;
+  }
+
+  public String getDoAsUser() {
+    return doAsUser;
+  }
+
+  public void setDoAsUser(String doAsUser) {
+    this.doAsUser = doAsUser;
+  }
+
+  public boolean isGenericEntity() {
+    return genericEntity;
+  }
+
+  public void setGenericEntity(boolean genericEntity) {
+    this.genericEntity = genericEntity;
+  }
+
+
 }

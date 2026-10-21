@@ -19,7 +19,7 @@
 package org.apache.hadoop.mapreduce.split;
 
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 
@@ -40,8 +40,8 @@ import org.apache.hadoop.mapreduce.split.JobSplit.SplitMetaInfo;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The class that is used by the Job clients to write splits (both the meta
@@ -51,18 +51,11 @@ import org.apache.commons.logging.LogFactory;
 @InterfaceStability.Unstable
 public class JobSplitWriter {
 
-  private static final Log LOG = LogFactory.getLog(JobSplitWriter.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(JobSplitWriter.class);
   private static final int splitVersion = JobSplit.META_SPLIT_VERSION;
-  private static final byte[] SPLIT_FILE_HEADER;
+  private static final byte[] SPLIT_FILE_HEADER = "SPL".getBytes(StandardCharsets.UTF_8);
 
-  static {
-    try {
-      SPLIT_FILE_HEADER = "SPL".getBytes("UTF-8");
-    } catch (UnsupportedEncodingException u) {
-      throw new RuntimeException(u);
-    }
-  }
-  
   @SuppressWarnings("unchecked")
   public static <T extends InputSplit> void createSplitFiles(Path jobSubmitDir, 
       Configuration conf, FileSystem fs, List<InputSplit> splits) 

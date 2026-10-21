@@ -25,14 +25,17 @@ import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.KeyProvider;
-import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.util.KMSUtil;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.RemovalListener;
-import com.google.common.cache.RemovalNotification;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.cache.Cache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.cache.RemovalListener;
+import org.apache.hadoop.thirdparty.com.google.common.cache.RemovalNotification;
 
+import org.apache.hadoop.util.ShutdownHookManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,33 +67,59 @@ public class KeyProviderCache {
           }
         })
         .build();
+
+    // Register the shutdown hook when not in shutdown
+    if (!ShutdownHookManager.get().isShutdownInProgress()) {
+      ShutdownHookManager.get().addShutdownHook(
+          new KeyProviderCacheFinalizer(), SHUTDOWN_HOOK_PRIORITY);
+    }
   }
 
-  public KeyProvider get(final Configuration conf) {
-    URI kpURI = createKeyProviderURI(conf);
-    if (kpURI == null) {
+  public KeyProvider get(final Configuration conf,
+      final URI serverProviderUri) {
+    if (serverProviderUri == null) {
       return null;
     }
     try {
-      return cache.get(kpURI, new Callable<KeyProvider>() {
+      return cache.get(serverProviderUri, new Callable<KeyProvider>() {
         @Override
         public KeyProvider call() throws Exception {
-          return DFSUtilClient.createKeyProvider(conf);
+          return KMSUtil.createKeyProviderFromUri(conf, serverProviderUri);
         }
       });
     } catch (Exception e) {
-      LOG.error("Could not create KeyProvider for DFSClient !!", e.getCause());
+      LOG.error("Could not create KeyProvider for DFSClient !!", e);
       return null;
+    }
+  }
+
+  public static final int SHUTDOWN_HOOK_PRIORITY = FileSystem.SHUTDOWN_HOOK_PRIORITY - 1;
+
+  private class KeyProviderCacheFinalizer implements Runnable {
+    @Override
+    public synchronized void run() {
+      invalidateCache();
+    }
+  }
+
+  /**
+   * Invalidate cache. KeyProviders in the cache will be closed by cache hook.
+   */
+  @VisibleForTesting
+  synchronized void invalidateCache() {
+    LOG.debug("Invalidating all cached KeyProviders.");
+    if (cache != null) {
+      cache.invalidateAll();
     }
   }
 
   private URI createKeyProviderURI(Configuration conf) {
     final String providerUriStr = conf.getTrimmed(
-        HdfsClientConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI, "");
+        CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH);
     // No provider set in conf
-    if (providerUriStr.isEmpty()) {
+    if (providerUriStr == null || providerUriStr.isEmpty()) {
       LOG.error("Could not find uri with key ["
-          + HdfsClientConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI
+          + CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH
           + "] to create a keyProvider !!");
       return null;
     }

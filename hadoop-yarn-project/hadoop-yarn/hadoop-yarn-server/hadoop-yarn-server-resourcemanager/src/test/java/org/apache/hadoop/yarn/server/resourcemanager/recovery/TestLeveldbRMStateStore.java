@@ -25,16 +25,21 @@ import static org.mockito.Mockito.verify;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.function.Consumer;
 
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.records.Version;
+import org.apache.hadoop.yarn.server.resourcemanager.DBManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
+import org.fusesource.leveldbjni.JniDBFactory;
 import org.iq80.leveldb.DB;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.iq80.leveldb.Options;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestLeveldbRMStateStore extends RMStateStoreTestBase {
 
@@ -46,14 +51,14 @@ public class TestLeveldbRMStateStore extends RMStateStoreTestBase {
   private YarnConfiguration conf;
   private LeveldbRMStateStore stateStore = null;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     FileUtil.fullyDelete(TEST_DIR);
     conf = new YarnConfiguration();
     conf.set(YarnConfiguration.RM_LEVELDB_STORE_PATH, TEST_DIR.toString());
   }
 
-  @After
+  @AfterEach
   public void cleanup() throws IOException {
     if (stateStore != null) {
       stateStore.close();
@@ -61,81 +66,115 @@ public class TestLeveldbRMStateStore extends RMStateStoreTestBase {
     FileUtil.fullyDelete(TEST_DIR);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testApps() throws Exception {
     LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
     testRMAppStateStore(tester);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testClientTokens() throws Exception {
     LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
     testRMDTSecretManagerStateStore(tester);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testVersion() throws Exception {
     LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
     testCheckVersion(tester);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testEpoch() throws Exception {
+    conf.setLong(YarnConfiguration.RM_EPOCH, epoch);
+    conf.setLong(YarnConfiguration.RM_EPOCH_RANGE, getEpochRange());
     LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
     testEpoch(tester);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testAppDeletion() throws Exception {
     LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
     testAppDeletion(tester);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testDeleteStore() throws Exception {
     LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
     testDeleteStore(tester);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testRemoveApplication() throws Exception {
     LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
     testRemoveApplication(tester);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testRemoveAttempt() throws Exception {
     LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
     testRemoveAttempt(tester);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testAMTokens() throws Exception {
     LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
     testAMRMTokenSecretManagerStateStore(tester);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testReservation() throws Exception {
     LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
     testReservationStateStore(tester);
   }
 
-  @Test(timeout = 60000)
-  public void testCompactionCycle() throws Exception {
+  @Test
+  @Timeout(value = 60)
+  public void testProxyCA() throws Exception {
+    LeveldbStateStoreTester tester = new LeveldbStateStoreTester();
+    testProxyCA(tester);
+  }
+
+  @Test
+  @Timeout(value = 60)
+  public void testCompactionCycle() {
     final DB mockdb = mock(DB.class);
     conf.setLong(YarnConfiguration.RM_LEVELDB_COMPACTION_INTERVAL_SECS, 1);
-    LeveldbRMStateStore store = new LeveldbRMStateStore() {
+    stateStore = new LeveldbRMStateStore();
+    DBManager dbManager = new DBManager() {
       @Override
-      protected DB openDatabase() throws Exception {
+      public DB initDatabase(File configurationFile, Options options,
+                             Consumer<DB> initMethod) {
         return mockdb;
       }
     };
-    store.init(conf);
-    store.start();
+    dbManager.setDb(mockdb);
+    stateStore.setDbManager(dbManager);
+    stateStore.init(conf);
+    stateStore.start();
     verify(mockdb, timeout(10000)).compactRange(
-        (byte[]) isNull(), (byte[]) isNull());
-    store.close();
+        isNull(), isNull());
+  }
+
+  @Test
+  public void testBadKeyIteration() throws Exception {
+    stateStore = new LeveldbRMStateStore();
+    stateStore.init(conf);
+    stateStore.start();
+    DB db = stateStore.getDatabase();
+    // add an entry that appears at the end of the database when iterating
+    db.put(JniDBFactory.bytes("zzz"), JniDBFactory.bytes("z"));
+    stateStore.loadState();
   }
 
   class LeveldbStateStoreTester implements RMStateStoreHelper {
@@ -148,6 +187,7 @@ public class TestLeveldbRMStateStore extends RMStateStoreTestBase {
       stateStore = new LeveldbRMStateStore();
       stateStore.init(conf);
       stateStore.start();
+      stateStore.dispatcher.disableExitOnDispatchException();
       return stateStore;
     }
 
@@ -161,12 +201,12 @@ public class TestLeveldbRMStateStore extends RMStateStoreTestBase {
     }
 
     @Override
-    public void writeVersion(Version version) throws Exception {
-      stateStore.dbStoreVersion(version);
+    public void writeVersion(Version version) {
+      stateStore.storeVersion(version);
     }
 
     @Override
-    public Version getCurrentVersion() throws Exception {
+    public Version getCurrentVersion() {
       return stateStore.getCurrentVersion();
     }
 

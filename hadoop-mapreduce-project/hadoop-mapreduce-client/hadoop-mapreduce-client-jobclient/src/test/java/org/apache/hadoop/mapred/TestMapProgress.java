@@ -22,8 +22,6 @@ import java.io.File;
 import java.io.IOException;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.ipc.ProtocolSignature;
@@ -38,8 +36,11 @@ import org.apache.hadoop.mapreduce.split.JobSplit.TaskSplitMetaInfo;
 import org.apache.hadoop.mapreduce.split.JobSplitWriter;
 import org.apache.hadoop.mapreduce.split.SplitMetaInfoReader;
 import org.apache.hadoop.util.ReflectionUtils;
-import org.junit.Test;
-import static org.junit.Assert.assertTrue;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  *  Validates map phase progress.
@@ -56,7 +57,8 @@ import static org.junit.Assert.assertTrue;
  *  validated here.
  */
 public class TestMapProgress {
-  public static final Log LOG = LogFactory.getLog(TestMapProgress.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestMapProgress.class);
   private static String TEST_ROOT_DIR;
   static {
     String root = new File(System.getProperty("test.build.data", "/tmp"))
@@ -89,8 +91,8 @@ public class TestMapProgress {
       LOG.info("Task " + taskId + " reporting shuffle error: " + message);
     }
 
-    public void fatalError(TaskAttemptID taskId, String msg) throws IOException {
-      LOG.info("Task " + taskId + " reporting fatal error: " + msg);
+    public void fatalError(TaskAttemptID taskId, String msg, boolean fastFail) throws IOException {
+      LOG.info("Task " + taskId + " reporting fatal error: " + msg + " fast fail: " + fastFail);
     }
 
     public JvmTask getTask(JvmContext context) throws IOException {
@@ -117,7 +119,7 @@ public class TestMapProgress {
     
     public AMFeedback statusUpdate(TaskAttemptID taskId, TaskStatus taskStatus) 
     throws IOException, InterruptedException {
-      StringBuffer buf = new StringBuffer("Task ");
+      StringBuilder buf = new StringBuilder("Task ");
       buf.append(taskId);
       if (taskStatus != null) {
         buf.append(" making progress to ");
@@ -191,8 +193,8 @@ public class TestMapProgress {
         return;
       }
       // validate map task progress when the map task is in map phase
-      assertTrue("Map progress is not the expected value.",
-                 Math.abs(mapTaskProgress - ((float)recordNum/3)) < 0.001);
+      assertTrue(Math.abs(mapTaskProgress - ((float)recordNum/3)) < 0.001,
+          "Map progress is not the expected value.");
     }
   }
 

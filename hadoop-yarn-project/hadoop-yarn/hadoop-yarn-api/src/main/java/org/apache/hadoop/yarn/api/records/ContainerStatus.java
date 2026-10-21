@@ -25,6 +25,8 @@ import org.apache.hadoop.classification.InterfaceStability.Stable;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.util.Records;
 
+import java.util.List;
+
 /**
  * {@code ContainerStatus} represents the current status of a
  * {@code Container}.
@@ -83,11 +85,17 @@ public abstract class ContainerStatus {
    */
   @Public
   @Evolving
-  public abstract ExecutionType getExecutionType();
+  public ExecutionType getExecutionType() {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
 
   @Private
   @Unstable
-  public abstract void setExecutionType(ExecutionType executionType);
+  public void setExecutionType(ExecutionType executionType) {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
 
   /**
    * Get the <code>ContainerState</code> of the container.
@@ -146,9 +154,91 @@ public abstract class ContainerStatus {
    */
   @Public
   @Unstable
-  public abstract Resource getCapability();
+  public Resource getCapability() {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
 
   @Private
   @Unstable
-  public abstract void setCapability(Resource capability);
+  public void setCapability(Resource capability) {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
+
+  /**
+   * Get all the IP addresses with which the container run.
+   * @return The IP address where the container runs.
+   */
+  @Public
+  @Unstable
+  public List<String> getIPs() {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
+
+  @Private
+  @Unstable
+  public void setIPs(List<String> ips) {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
+
+  /**
+   * Get the hostname where the container runs.
+   * @return The hostname where the container runs.
+   */
+  @Public
+  @Unstable
+  public String getHost() {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
+
+  @Private
+  @Unstable
+  public void setHost(String host) {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
+
+  /**
+   * Add Extra state information of the container (SCHEDULED, LOCALIZING etc.).
+   * @param subState Extra State Information.
+   */
+  @Private
+  @Unstable
+  public void setContainerSubState(ContainerSubState subState) {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
+
+  /**
+   * Get Extra state information of the container (SCHEDULED, LOCALIZING etc.).
+   * @return Extra State information.
+   */
+  @Private
+  @Unstable
+  public ContainerSubState getContainerSubState() {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
+
+  /**
+   * Get exposed ports of the container.
+   * @return List of exposed ports
+   */
+  @Public
+  @Unstable
+  public String getExposedPorts() {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
+
+  @Private
+  @Unstable
+  public void setExposedPorts(String ports) {
+    throw new UnsupportedOperationException(
+        "subclass must implement this method");
+  }
 }

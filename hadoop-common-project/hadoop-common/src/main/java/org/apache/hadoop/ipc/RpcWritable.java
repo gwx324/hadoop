@@ -24,16 +24,23 @@ import java.io.DataInputStream;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Writable;
 
-import com.google.protobuf.CodedInputStream;
-import com.google.protobuf.CodedOutputStream;
-import com.google.protobuf.Message;
+import org.apache.hadoop.thirdparty.protobuf.CodedInputStream;
+import org.apache.hadoop.thirdparty.protobuf.CodedOutputStream;
+import org.apache.hadoop.thirdparty.protobuf.Message;
 
+/**
+ * Marshalling support, for hadoop shaded protobuf and legacy
+ * protobuf 2.5.
+ * It originally supported hadoop Writables for the WritableRPCEngine;
+ * that is no removed. All that is retained is the name.
+ * Anything marked public is solely for access by SaslRpcClient
+ */
+// note
 @InterfaceAudience.Private
 public abstract class RpcWritable implements Writable {
 
@@ -41,7 +48,11 @@ public abstract class RpcWritable implements Writable {
     if (o instanceof RpcWritable) {
       return (RpcWritable)o;
     } else if (o instanceof Message) {
+      // hadoop shaded protobuf
       return new ProtobufWrapper((Message)o);
+    } else if (ProtobufWrapperLegacy.isUnshadedProtobufMessage(o)) {
+      // unshaded protobuf
+      return new ProtobufWrapperLegacy(o);
     } else if (o instanceof Writable) {
       return new WritableWrapper((Writable)o);
     }
@@ -62,7 +73,7 @@ public abstract class RpcWritable implements Writable {
   abstract void writeTo(ResponseBuffer out) throws IOException;
   abstract <T> T readFrom(ByteBuffer bb) throws IOException;
 
-  // adapter for Writables.
+  // adapter for Writables. Used for RPC_BUILTIN calls.
   static class WritableWrapper extends RpcWritable {
     private final Writable writable;
 
@@ -99,10 +110,14 @@ public abstract class RpcWritable implements Writable {
       this.message = message;
     }
 
+    Message getMessage() {
+      return message;
+    }
+
     @Override
     void writeTo(ResponseBuffer out) throws IOException {
       int length = message.getSerializedSize();
-      length += CodedOutputStream.computeRawVarint32Size(length);
+      length += CodedOutputStream.computeUInt32SizeNoTag(length);
       out.ensureCapacity(length);
       message.writeDelimitedTo(out);
     }
@@ -128,11 +143,13 @@ public abstract class RpcWritable implements Writable {
     }
   }
 
-  // adapter to allow decoding of writables and protobufs from a byte buffer.
-  static class Buffer extends RpcWritable {
+  /**
+   * adapter to allow decoding of writables and protobufs from a byte buffer.
+   */
+  public static class Buffer extends RpcWritable {
     private ByteBuffer bb;
 
-    static Buffer wrap(ByteBuffer bb) {
+    public static Buffer wrap(ByteBuffer bb) {
       return new Buffer(bb);
     }
 
@@ -140,6 +157,10 @@ public abstract class RpcWritable implements Writable {
 
     Buffer(ByteBuffer bb) {
       this.bb = bb;
+    }
+
+    ByteBuffer getByteBuffer() {
+      return bb;
     }
 
     @Override
@@ -177,7 +198,7 @@ public abstract class RpcWritable implements Writable {
       return RpcWritable.wrap(value).readFrom(bb);
     }
 
-    int remaining() {
+    public int remaining() {
       return bb.remaining();
     }
   }

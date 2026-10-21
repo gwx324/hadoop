@@ -20,9 +20,11 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.docker;
 
-import static org.junit.Assert.assertEquals;
-import org.junit.Before;
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import org.apache.hadoop.util.StringUtils;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests the docker stop command and its command
@@ -35,7 +37,7 @@ public class TestDockerStopCommand {
   private static final int GRACE_PERIOD = 10;
   private static final String CONTAINER_NAME = "foo";
 
-  @Before
+  @BeforeEach
   public void setup() {
     dockerStopCommand = new DockerStopCommand(CONTAINER_NAME);
   }
@@ -48,8 +50,13 @@ public class TestDockerStopCommand {
   @Test
   public void testSetGracePeriod() throws Exception {
     dockerStopCommand.setGracePeriod(GRACE_PERIOD);
-    assertEquals("stop foo --time=10",
-        dockerStopCommand.getCommandWithArguments());
-
+    assertEquals("stop", StringUtils.join(",",
+        dockerStopCommand.getDockerCommandWithArguments()
+            .get("docker-command")));
+    assertEquals("foo", StringUtils.join(",",
+        dockerStopCommand.getDockerCommandWithArguments().get("name")));
+    assertEquals("10", StringUtils.join(",",
+        dockerStopCommand.getDockerCommandWithArguments().get("time")));
+    assertEquals(3, dockerStopCommand.getDockerCommandWithArguments().size());
   }
 }

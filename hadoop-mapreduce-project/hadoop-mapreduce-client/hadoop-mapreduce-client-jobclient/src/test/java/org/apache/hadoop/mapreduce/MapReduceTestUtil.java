@@ -25,14 +25,13 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -46,22 +45,19 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapred.TaskLog;
 import org.apache.hadoop.mapred.Utils;
-import org.apache.hadoop.mapred.TaskLog.LogName;
-import org.apache.hadoop.mapred.TaskLog.Reader;
-import org.apache.hadoop.mapreduce.Job;
-import org.apache.hadoop.mapreduce.Mapper;
-import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Utility methods used in various Job Control unit tests.
  */
 public class MapReduceTestUtil {
-  public static final Log LOG = 
-    LogFactory.getLog(MapReduceTestUtil.class.getName());
+  public static final Logger LOG =
+      LoggerFactory.getLogger(MapReduceTestUtil.class);
 
   static private Random rand = new Random();
 
@@ -101,7 +97,7 @@ public class MapReduceTestUtil {
   public static String generateRandomLine() {
     long r = rand.nextLong() % 7;
     long n = r + 20;
-    StringBuffer sb = new StringBuffer();
+    StringBuilder sb = new StringBuilder();
     for (int i = 0; i < n; i++) {
       sb.append(generateRandomWord()).append(" ");
     }
@@ -121,7 +117,7 @@ public class MapReduceTestUtil {
     FSDataOutputStream out = fs.create(new Path(dirPath, "data.txt"));
     for (int i = 0; i < 10000; i++) {
       String line = generateRandomLine();
-      out.write(line.getBytes("UTF-8"));
+      out.write(line.getBytes(StandardCharsets.UTF_8));
     }
     out.close();
   }
@@ -405,7 +401,7 @@ public class MapReduceTestUtil {
   public static String readOutput(Path outDir, Configuration conf) 
       throws IOException {
     FileSystem fs = outDir.getFileSystem(conf);
-    StringBuffer result = new StringBuffer();
+    StringBuilder result = new StringBuilder();
 
     Path[] fileList = FileUtil.stat2Paths(fs.listStatus(outDir,
            new Utils.OutputFileUtils.OutputFilesFilter()));
@@ -440,7 +436,7 @@ public class MapReduceTestUtil {
       org.apache.hadoop.mapred.TaskAttemptID taskId, boolean isCleanup)
       throws IOException {
     // string buffer to store task log
-    StringBuffer result = new StringBuffer();
+    StringBuilder result = new StringBuilder();
     int res;
 
     // reads the whole tasklog into inputstream

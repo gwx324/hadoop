@@ -25,6 +25,7 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -35,15 +36,16 @@ import java.util.StringTokenizer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.lang.SystemUtils;
-import org.apache.commons.lang.time.FastDateFormat;
+import org.apache.commons.lang3.SystemUtils;
+import org.apache.commons.lang3.time.FastDateFormat;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.log4j.LogManager;
 
-import com.google.common.base.Preconditions;
-import com.google.common.net.InetAddresses;
+import org.apache.hadoop.thirdparty.com.google.common.net.InetAddresses;
 
 /**
  * General string utils
@@ -77,6 +79,18 @@ public class StringUtils {
    */
   public static final Pattern ENV_VAR_PATTERN = Shell.WINDOWS ?
     WIN_ENV_VAR_PATTERN : SHELL_ENV_VAR_PATTERN;
+
+  /**
+   * {@link #getTrimmedStringCollectionSplitByEquals(String)} throws
+   * {@link IllegalArgumentException} with error message starting with this string
+   * if the argument provided is not valid representation of non-empty key-value
+   * pairs.
+   * Value = {@value}
+   */
+  @VisibleForTesting
+  public static final String STRING_COLLECTION_SPLIT_EQUALS_INVALID_ARG =
+      "Trimmed string split by equals does not correctly represent "
+          + "non-empty key-value pairs.";
 
   /**
    * Make a string representation of the exception.
@@ -120,7 +134,12 @@ public class StringUtils {
     return TraditionalBinaryPrefix.long2String(number, "", 1);
   }
 
-  /** The same as String.format(Locale.ENGLISH, format, objects). */
+  /**
+   * The same as String.format(Locale.ENGLISH, format, objects).
+   * @param format format.
+   * @param objects objects.
+   * @return format string.
+   */
   public static String format(final String format, final Object... objects) {
     return String.format(Locale.ENGLISH, format, objects);
   }
@@ -156,7 +175,7 @@ public class StringUtils {
   /**
    * Given an array of bytes it will convert the bytes to a hex string
    * representation of the bytes
-   * @param bytes
+   * @param bytes bytes.
    * @param start start index, inclusively
    * @param end end index, exclusively
    * @return hex string representation of the byte array
@@ -172,9 +191,24 @@ public class StringUtils {
     return s.toString();
   }
 
-  /** Same as byteToHexString(bytes, 0, bytes.length). */
+  /**
+   * Same as byteToHexString(bytes, 0, bytes.length).
+   * @param bytes bytes.
+   * @return byteToHexString.
+   */
   public static String byteToHexString(byte bytes[]) {
     return byteToHexString(bytes, 0, bytes.length);
+  }
+
+  /**
+   * Convert a byte to a hex string.
+   * @see #byteToHexString(byte[])
+   * @see #byteToHexString(byte[], int, int)
+   * @param b byte
+   * @return byte's hex value as a String
+   */
+  public static String byteToHexString(byte b) {
+    return byteToHexString(new byte[] {b});
   }
 
   /**
@@ -192,8 +226,9 @@ public class StringUtils {
     return bts;
   }
   /**
-   * 
-   * @param uris
+   * uriToString.
+   * @param uris uris.
+   * @return uriToString.
    */
   public static String uriToString(URI[] uris){
     if (uris == null) {
@@ -210,7 +245,7 @@ public class StringUtils {
   /**
    * @param str
    *          The string array to be parsed into an URI array.
-   * @return <tt>null</tt> if str is <tt>null</tt>, else the URI array
+   * @return <code>null</code> if str is <code>null</code>, else the URI array
    *         equivalent to str.
    * @throws IllegalArgumentException
    *           If any string in str violates RFC&nbsp;2396.
@@ -231,8 +266,9 @@ public class StringUtils {
   }
   
   /**
-   * 
-   * @param str
+   * stringToPath.
+   * @param str str.
+   * @return path array.
    */
   public static Path[] stringToPath(String[] str){
     if (str == null) {
@@ -252,6 +288,8 @@ public class StringUtils {
    * 
    * @param finishTime finish time
    * @param startTime start time
+   * @return a String in the format Xhrs, Ymins, Z sec,
+   *         for the time difference between two times.
    */
   public static String formatTimeDiff(long finishTime, long startTime){
     long timeDiff = finishTime - startTime; 
@@ -264,6 +302,7 @@ public class StringUtils {
    * String in the format Xhrs, Ymins, Z sec. 
    * 
    * @param timeDiff The time difference to format
+   * @return formatTime String.
    */
   public static String formatTime(long timeDiff){
     StringBuilder buf = new StringBuilder();
@@ -294,6 +333,7 @@ public class StringUtils {
    * more than 100 hours ,it is displayed as 99hrs, 59mins, 59sec.
    *
    * @param timeDiff The time difference to format
+   * @return format time sortable.
    */
   public static String formatTimeSortable(long timeDiff) {
     StringBuilder buf = new StringBuilder();
@@ -361,8 +401,8 @@ public class StringUtils {
   
   /**
    * Returns an arraylist of strings.
-   * @param str the comma seperated string values
-   * @return the arraylist of the comma seperated string values
+   * @param str the comma separated string values
+   * @return the arraylist of the comma separated string values
    */
   public static String[] getStrings(String str){
     String delim = ",";
@@ -373,7 +413,7 @@ public class StringUtils {
    * Returns an arraylist of strings.
    * @param str the string values
    * @param delim delimiter to separate the values
-   * @return the arraylist of the seperated string values
+   * @return the arraylist of the separated string values
    */
   public static String[] getStrings(String str, String delim){
     Collection<String> values = getStringCollection(str, delim);
@@ -385,7 +425,7 @@ public class StringUtils {
 
   /**
    * Returns a collection of strings.
-   * @param str comma seperated string values
+   * @param str comma separated string values
    * @return an <code>ArrayList</code> of string values
    */
   public static Collection<String> getStringCollection(String str){
@@ -414,10 +454,36 @@ public class StringUtils {
   }
 
   /**
+   * Returns a collection of strings, trimming leading and trailing whitespace
+   * on each value. Duplicates are not removed.
+   *
+   * @param str
+   *          String separated by delim.
+   * @param delim
+   *          Delimiter to separate the values in str.
+   * @return Collection of string values.
+   */
+  public static Collection<String> getTrimmedStringCollection(String str,
+      String delim) {
+    List<String> values = new ArrayList<String>();
+    if (str == null)
+      return values;
+    StringTokenizer tokenizer = new StringTokenizer(str, delim);
+    while (tokenizer.hasMoreTokens()) {
+      String next = tokenizer.nextToken();
+      if (next == null || next.trim().isEmpty()) {
+        continue;
+      }
+      values.add(next.trim());
+    }
+    return values;
+  }
+
+  /**
    * Splits a comma separated value <code>String</code>, trimming leading and
    * trailing whitespace on each value. Duplicate and empty values are removed.
    *
-   * @param str a comma separated <String> with values, may be null
+   * @param str a comma separated <code>String</code> with values, may be null
    * @return a <code>Collection</code> of <code>String</code> values, empty
    *         Collection if null String input
    */
@@ -427,12 +493,43 @@ public class StringUtils {
     set.remove("");
     return set;
   }
-  
+
   /**
-   * Splits a comma separated value <code>String</code>, trimming leading and
-   * trailing whitespace on each value.
+   * Splits an "=" separated value <code>String</code>, trimming leading and
+   * trailing whitespace on each value after splitting by comma and new line separator.
    *
    * @param str a comma separated <code>String</code> with values, may be null
+   * @return a <code>Map</code> of <code>String</code> keys and values, empty
+   * Collection if null String input.
+   */
+  public static Map<String, String> getTrimmedStringCollectionSplitByEquals(
+      String str) {
+    String[] trimmedList = getTrimmedStrings(str);
+    Map<String, String> pairs = new HashMap<>();
+    for (String s : trimmedList) {
+      if (s.isEmpty()) {
+        continue;
+      }
+      String[] splitByKeyVal = getTrimmedStringsSplitByEquals(s);
+      Preconditions.checkArgument(
+          splitByKeyVal.length == 2,
+          STRING_COLLECTION_SPLIT_EQUALS_INVALID_ARG + " Input: " + str);
+      boolean emptyKey = org.apache.commons.lang3.StringUtils.isEmpty(splitByKeyVal[0]);
+      boolean emptyVal = org.apache.commons.lang3.StringUtils.isEmpty(splitByKeyVal[1]);
+      Preconditions.checkArgument(
+          !emptyKey && !emptyVal,
+          STRING_COLLECTION_SPLIT_EQUALS_INVALID_ARG + " Input: " + str);
+      pairs.put(splitByKeyVal[0], splitByKeyVal[1]);
+    }
+    return pairs;
+  }
+
+  /**
+   * Splits a comma or newline separated value <code>String</code>, trimming
+   * leading and trailing whitespace on each value.
+   *
+   * @param str a comma or newline separated <code>String</code> with values,
+   *            may be null
    * @return an array of <code>String</code> values, empty array if null String
    *         input
    */
@@ -441,7 +538,23 @@ public class StringUtils {
       return emptyStringArray;
     }
 
-    return str.trim().split("\\s*,\\s*");
+    return str.trim().split("\\s*[,\n]\\s*");
+  }
+
+  /**
+   * Splits "=" separated value <code>String</code>, trimming
+   * leading and trailing whitespace on each value.
+   *
+   * @param str an "=" separated <code>String</code> with values,
+   *            may be null
+   * @return an array of <code>String</code> values, empty array if null String
+   *         input
+   */
+  public static String[] getTrimmedStringsSplitByEquals(String str){
+    if (null == str || str.trim().isEmpty()) {
+      return emptyStringArray;
+    }
+    return str.trim().split("\\s*=\\s*");
   }
 
   final public static String[] emptyStringArray = {};
@@ -525,6 +638,7 @@ public class StringUtils {
    * @param escapeChar character used to escape
    * @param start from where to search
    * @param split used to pass back the extracted string
+   * @return index.
    */
   public static int findNext(String str, char separator, char escapeChar, 
                              int start, StringBuilder split) {
@@ -577,7 +691,12 @@ public class StringUtils {
   }
   
   /**
+   * escapeString.
+   *
+   * @param str str.
+   * @param escapeChar escapeChar.
    * @param charsToEscape array of characters to be escaped
+   * @return escapeString.
    */
   public static String escapeString(String str, char escapeChar, 
                                     char[] charsToEscape) {
@@ -620,7 +739,11 @@ public class StringUtils {
   }
   
   /**
+   * unEscapeString.
+   * @param str str.
+   * @param escapeChar escapeChar.
    * @param charsToEscape array of characters to unescape
+   * @return escape string.
    */
   public static String unEscapeString(String str, char escapeChar, 
                                       char[] charsToEscape) {
@@ -664,11 +787,11 @@ public class StringUtils {
    * @param msg content of the message
    * @return a message for logging
    */
-  private static String toStartupShutdownString(String prefix, String [] msg) {
+  public static String toStartupShutdownString(String prefix, String[] msg) {
     StringBuilder b = new StringBuilder(prefix);
     b.append("\n/************************************************************");
     for(String s : msg)
-      b.append("\n" + prefix + s);
+      b.append("\n").append(prefix).append(s);
     b.append("\n************************************************************/");
     return b.toString();
   }
@@ -677,60 +800,54 @@ public class StringUtils {
    * Print a log message for starting up and shutting down
    * @param clazz the class of the server
    * @param args arguments
-   * @param LOG the target log object
+   * @param log the target log object
    */
   public static void startupShutdownMessage(Class<?> clazz, String[] args,
-                                     final org.apache.commons.logging.Log LOG) {
-    startupShutdownMessage(clazz, args, LogAdapter.create(LOG));
-  }
-
-  /**
-   * Print a log message for starting up and shutting down
-   * @param clazz the class of the server
-   * @param args arguments
-   * @param LOG the target log object
-   */
-  public static void startupShutdownMessage(Class<?> clazz, String[] args,
-                                     final org.slf4j.Logger LOG) {
-    startupShutdownMessage(clazz, args, LogAdapter.create(LOG));
-  }
-
-  static void startupShutdownMessage(Class<?> clazz, String[] args,
-                                     final LogAdapter LOG) { 
+                                     final org.slf4j.Logger log) {
     final String hostname = NetUtils.getHostname();
     final String classname = clazz.getSimpleName();
-    LOG.info(
-        toStartupShutdownString("STARTUP_MSG: ", new String[] {
-            "Starting " + classname,
-            "  user = " + System.getProperty("user.name"),
-            "  host = " + hostname,
-            "  args = " + Arrays.asList(args),
-            "  version = " + VersionInfo.getVersion(),
-            "  classpath = " + System.getProperty("java.class.path"),
-            "  build = " + VersionInfo.getUrl() + " -r "
-                         + VersionInfo.getRevision()  
-                         + "; compiled by '" + VersionInfo.getUser()
-                         + "' on " + VersionInfo.getDate(),
-            "  java = " + System.getProperty("java.version") }
-        )
-      );
+    log.info(createStartupShutdownMessage(classname, hostname, args));
 
     if (SystemUtils.IS_OS_UNIX) {
       try {
-        SignalLogger.INSTANCE.register(LOG);
+        SignalLogger.INSTANCE.register(log);
       } catch (Throwable t) {
-        LOG.warn("failed to register any UNIX signal loggers: ", t);
+        log.warn("failed to register any UNIX signal loggers: ", t);
       }
     }
     ShutdownHookManager.get().addShutdownHook(
       new Runnable() {
         @Override
         public void run() {
-          LOG.info(toStartupShutdownString("SHUTDOWN_MSG: ", new String[]{
+          log.info(toStartupShutdownString("SHUTDOWN_MSG: ", new String[]{
             "Shutting down " + classname + " at " + hostname}));
+          LogManager.shutdown();
         }
       }, SHUTDOWN_HOOK_PRIORITY);
 
+  }
+
+  /**
+   * Generate the text for the startup/shutdown message of processes.
+   * @param classname short classname of the class
+   * @param hostname hostname
+   * @param args Command arguments
+   * @return a string to log.
+   */
+  public static String createStartupShutdownMessage(String classname,
+      String hostname, String[] args) {
+    return toStartupShutdownString("STARTUP_MSG: ", new String[] {
+        "Starting " + classname,
+        "  host = " + hostname,
+        "  args = " + (args != null ? Arrays.asList(args) : new ArrayList<>()),
+        "  version = " + VersionInfo.getVersion(),
+        "  classpath = " + System.getProperty("java.class.path"),
+        "  build = " + VersionInfo.getUrl() + " -r "
+                     + VersionInfo.getRevision()  
+                     + "; compiled by '" + VersionInfo.getUser()
+                     + "' on " + VersionInfo.getDate(),
+        "  java = " + System.getProperty("java.version") }
+    );
   }
 
   /**
@@ -738,7 +855,7 @@ public class StringUtils {
    * which can be represented by a 64-bit integer.
    * TraditionalBinaryPrefix symbol are case insensitive. 
    */
-  public static enum TraditionalBinaryPrefix {
+  public enum TraditionalBinaryPrefix {
     KILO(10),
     MEGA(KILO.bitShift + 10),
     GIGA(MEGA.bitShift + 10),
@@ -759,7 +876,10 @@ public class StringUtils {
     }
 
     /**
-     * @return The TraditionalBinaryPrefix object corresponding to the symbol.
+     * The TraditionalBinaryPrefix object corresponding to the symbol.
+     *
+     * @param symbol symbol.
+     * @return traditional binary prefix object.
      */
     public static TraditionalBinaryPrefix valueOf(char symbol) {
       symbol = Character.toUpperCase(symbol);
@@ -859,7 +979,7 @@ public class StringUtils {
 
     /**
      * Escapes HTML Special characters present in the string.
-     * @param string
+     * @param string param string.
      * @return HTML Escaped String representation
      */
     public static String escapeHTML(String string) {
@@ -894,13 +1014,22 @@ public class StringUtils {
     }
 
   /**
+   * a byte description of the given long interger value.
+   *
+   * @param len len.
    * @return a byte description of the given long interger value.
    */
   public static String byteDesc(long len) {
     return TraditionalBinaryPrefix.long2String(len, "B", 2);
   }
 
-  /** @deprecated use StringUtils.format("%.2f", d). */
+  /**
+   * limitDecimalTo2.
+   *
+   * @param d double param.
+   * @return string value ("%.2f").
+   * @deprecated use StringUtils.format("%.2f", d).
+   */
   @Deprecated
   public static String limitDecimalTo2(double d) {
     return format("%.2f", d);
@@ -911,6 +1040,7 @@ public class StringUtils {
    *
    * @param separator Separator to join with.
    * @param strings Strings to join.
+   * @return join string.
    */
   public static String join(CharSequence separator, Iterable<?> strings) {
     Iterator<?> i = strings.iterator();
@@ -966,7 +1096,7 @@ public class StringUtils {
     String[] words = split(StringUtils.toLowerCase(s), ESCAPE_CHAR,  '_');
 
     for (String word : words)
-      sb.append(org.apache.commons.lang.StringUtils.capitalize(word));
+      sb.append(org.apache.commons.lang3.StringUtils.capitalize(word));
 
     return sb.toString();
   }
@@ -985,8 +1115,8 @@ public class StringUtils {
    * @param template String template to receive replacements
    * @param pattern Pattern to match for identifying tokens, must use a capturing
    *   group
-   * @param replacements Map<String, String> mapping tokens identified by the
-   *   capturing group to their replacement values
+   * @param replacements Map&lt;String, String&gt; mapping tokens identified by
+   * the capturing group to their replacement values
    * @return String template with replacements
    */
   public static String replaceTokens(String template, Pattern pattern,
@@ -1006,12 +1136,27 @@ public class StringUtils {
   
   /**
    * Get stack trace for a given thread.
+   * @param t thread.
+   * @return stack trace string.
    */
   public static String getStackTrace(Thread t) {
     final StackTraceElement[] stackTrace = t.getStackTrace();
     StringBuilder str = new StringBuilder();
     for (StackTraceElement e : stackTrace) {
       str.append(e.toString() + "\n");
+    }
+    return str.toString();
+  }
+
+  /**
+   * Get stack trace from throwable exception.
+   * @param t Throwable.
+   * @return stack trace string.
+   */
+  public static String getStackTrace(Throwable t) {
+    StringBuilder str = new StringBuilder();
+    for (StackTraceElement e : t.getStackTrace()) {
+      str.append(e.toString() + "\n\t");
     }
     return str.toString();
   }
@@ -1131,4 +1276,105 @@ public class StringUtils {
     return s1.equalsIgnoreCase(s2);
   }
 
+  /**
+   * <p>Checks if the String contains only unicode letters.</p>
+   *
+   * <p><code>null</code> will return <code>false</code>.
+   * An empty String (length()=0) will return <code>true</code>.</p>
+   *
+   * <pre>
+   * StringUtils.isAlpha(null)   = false
+   * StringUtils.isAlpha("")     = true
+   * StringUtils.isAlpha("  ")   = false
+   * StringUtils.isAlpha("abc")  = true
+   * StringUtils.isAlpha("ab2c") = false
+   * StringUtils.isAlpha("ab-c") = false
+   * </pre>
+   *
+   * @param str  the String to check, may be null
+   * @return <code>true</code> if only contains letters, and is non-null
+   */
+  public static boolean isAlpha(String str) {
+    if (str == null) {
+      return false;
+    }
+    int sz = str.length();
+    for (int i = 0; i < sz; i++) {
+      if (!Character.isLetter(str.charAt(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Same as WordUtils#wrap in commons-lang 2.6. Unlike commons-lang3, leading
+   * spaces on the first line are NOT stripped.
+   *
+   * @param str  the String to be word wrapped, may be null
+   * @param wrapLength  the column to wrap the words at, less than 1 is treated
+   *                   as 1
+   * @param newLineStr  the string to insert for a new line,
+   *  <code>null</code> uses the system property line separator
+   * @param wrapLongWords  true if long words (such as URLs) should be wrapped
+   * @return a line with newlines inserted, <code>null</code> if null input
+   */
+  public static String wrap(String str, int wrapLength, String newLineStr,
+      boolean wrapLongWords) {
+    if(str == null) {
+      return null;
+    } else {
+      if(newLineStr == null) {
+        newLineStr = System.lineSeparator();
+      }
+
+      if(wrapLength < 1) {
+        wrapLength = 1;
+      }
+
+      int inputLineLength = str.length();
+      int offset = 0;
+      StringBuilder wrappedLine = new StringBuilder(inputLineLength + 32);
+
+      while(inputLineLength - offset > wrapLength) {
+        if(str.charAt(offset) == 32) {
+          ++offset;
+        } else {
+          int spaceToWrapAt = str.lastIndexOf(32, wrapLength + offset);
+          if(spaceToWrapAt >= offset) {
+            wrappedLine.append(str.substring(offset, spaceToWrapAt));
+            wrappedLine.append(newLineStr);
+            offset = spaceToWrapAt + 1;
+          } else if(wrapLongWords) {
+            wrappedLine.append(str.substring(offset, wrapLength + offset));
+            wrappedLine.append(newLineStr);
+            offset += wrapLength;
+          } else {
+            spaceToWrapAt = str.indexOf(32, wrapLength + offset);
+            if(spaceToWrapAt >= 0) {
+              wrappedLine.append(str.substring(offset, spaceToWrapAt));
+              wrappedLine.append(newLineStr);
+              offset = spaceToWrapAt + 1;
+            } else {
+              wrappedLine.append(str.substring(offset));
+              offset = inputLineLength;
+            }
+          }
+        }
+      }
+
+      wrappedLine.append(str.substring(offset));
+      return wrappedLine.toString();
+    }
+  }
+
+  /**
+   * Checks whether the given string is not {@code null} and has a length greater than zero.
+   *
+   * @param str the string to check
+   * @return {@code true} if the string is not {@code null} and not empty; {@code false} otherwise
+   */
+  public static boolean hasLength(String str) {
+    return str != null && !str.isEmpty();
+  }
 }

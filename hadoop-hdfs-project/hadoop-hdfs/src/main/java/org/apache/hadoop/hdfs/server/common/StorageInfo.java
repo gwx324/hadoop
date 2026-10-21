@@ -21,6 +21,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 import java.util.SortedSet;
@@ -34,7 +35,7 @@ import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeLayoutVersion;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeLayoutVersion;
 
-import com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
 
 /**
  * Common class for storage information.
@@ -112,6 +113,20 @@ public class StorageInfo {
     .append(";nsid=").append(namespaceID).append(";c=").append(cTime);
     return sb.toString();
   }
+
+  /**
+   * Returns string representation of Storage info attributes stored in Map.
+   *
+   * @return string representation of storage info attributes.
+   */
+  public String toMapString() {
+    Map<String, Object> storageInfo = new HashMap<>();
+    storageInfo.put("LayoutVersion", layoutVersion);
+    storageInfo.put("ClusterId", clusterID);
+    storageInfo.put("NamespaceId", namespaceID);
+    storageInfo.put("CreationTime", cTime);
+    return storageInfo.toString();
+  }
   
   public String toColonSeparatedString() {
     return Joiner.on(":").join(
@@ -152,6 +167,9 @@ public class StorageInfo {
    */
   protected void setFieldsFromProperties(
       Properties props, StorageDirectory sd) throws IOException {
+    if (props == null) {
+      return;
+    }
     setLayoutVersion(props, sd);
     setNamespaceID(props, sd);
     setcTime(props, sd);
@@ -221,7 +239,8 @@ public class StorageInfo {
   }
 
   public int getServiceLayoutVersion() {
-    return storageType == NodeType.DATA_NODE ? HdfsServerConstants.DATANODE_LAYOUT_VERSION
+    return storageType == NodeType.DATA_NODE
+        ? DataNodeLayoutVersion.getCurrentLayoutVersion()
         : HdfsServerConstants.NAMENODE_LAYOUT_VERSION;
   }
 
@@ -241,6 +260,9 @@ public class StorageInfo {
   }
 
   public static Properties readPropertiesFile(File from) throws IOException {
+    if (from == null) {
+      return null;
+    }
     RandomAccessFile file = new RandomAccessFile(from, "rws");
     FileInputStream in = null;
     Properties props = new Properties();

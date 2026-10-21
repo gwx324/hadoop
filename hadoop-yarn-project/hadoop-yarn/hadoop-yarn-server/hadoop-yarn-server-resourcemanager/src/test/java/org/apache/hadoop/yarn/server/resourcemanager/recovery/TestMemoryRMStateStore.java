@@ -22,9 +22,9 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 public class TestMemoryRMStateStore {
@@ -43,11 +43,12 @@ public class TestMemoryRMStateStore {
     store.init(conf);
     ResourceManager mockRM = mock(ResourceManager.class);
     store.setResourceManager(mockRM);
+    store.setRMDispatcher(new RMStateStoreTestBase.TestDispatcher());
     RMDelegationTokenIdentifier mockTokenId =
         mock(RMDelegationTokenIdentifier.class);
     store.removeRMDelegationToken(mockTokenId);
-    assertTrue("RMStateStore should have been in fenced state",
-        store.isFencedState());
+    assertTrue(store.isFencedState(),
+        "RMStateStore should have been in fenced state");
     store = new MemoryRMStateStore() {
       @Override
       public synchronized void removeRMDelegationToken(
@@ -58,8 +59,9 @@ public class TestMemoryRMStateStore {
     };
     store.init(conf);
     store.setResourceManager(mockRM);
+    store.setRMDispatcher(new RMStateStoreTestBase.TestDispatcher());
     store.removeRMDelegationToken(mockTokenId);
-    assertTrue("RMStateStore should have been in fenced state",
-        store.isFencedState());
+    assertTrue(store.isFencedState(),
+        "RMStateStore should have been in fenced state");
   }
 }

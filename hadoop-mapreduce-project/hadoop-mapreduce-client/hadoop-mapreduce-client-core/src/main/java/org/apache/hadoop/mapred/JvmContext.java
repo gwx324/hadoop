@@ -24,23 +24,23 @@ import java.io.IOException;
 
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-class JvmContext implements Writable {
+public class JvmContext implements Writable {
 
-  public static final Log LOG =
-    LogFactory.getLog(JvmContext.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(JvmContext.class);
   
   JVMId jvmId;
   String pid;
   
-  JvmContext() {
+  public JvmContext() {
     jvmId = new JVMId();
     pid = "";
   }
   
-  JvmContext(JVMId id, String pid) {
+  public JvmContext(JVMId id, String pid) {
     jvmId = id;
     this.pid = pid;
   }

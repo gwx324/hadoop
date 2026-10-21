@@ -18,11 +18,17 @@
 
 package org.apache.hadoop.yarn.util;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Splitter;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 import org.apache.hadoop.classification.InterfaceAudience.Private;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 
 /**
  * Common string manipulation helpers
@@ -61,7 +67,7 @@ public final class StringHelper {
   }
 
   /**
-   * Join on dot
+   * Join on dot.
    * @param args to join
    * @return args joined by dot
    */
@@ -70,7 +76,7 @@ public final class StringHelper {
   }
 
   /**
-   * Join on underscore
+   * Join on underscore.
    * @param args to join
    * @return args joined underscore
    */
@@ -79,7 +85,7 @@ public final class StringHelper {
   }
 
   /**
-   * Join on slash
+   * Join on slash.
    * @param args to join
    * @return args joined with slash
    */
@@ -97,8 +103,8 @@ public final class StringHelper {
   }
 
   /**
-   * Join without separator
-   * @param args
+   * Join without separator.
+   * @param args to join.
    * @return joined args with no separator
    */
   public static String join(Object... args) {
@@ -125,7 +131,7 @@ public final class StringHelper {
   }
 
   /**
-   * Split on _ and trim results
+   * Split on _ and trim results.
    * @param s the string to split
    * @return an iterable of strings
    */
@@ -134,7 +140,7 @@ public final class StringHelper {
   }
 
   /**
-   * Check whether a url is absolute or note
+   * Check whether a url is absolute or note.
    * @param url to check
    * @return true if url starts with scheme:// or //
    */
@@ -143,7 +149,7 @@ public final class StringHelper {
   }
 
   /**
-   * Join url components
+   * Join url components.
    * @param pathPrefix for relative urls
    * @param args url components to join
    * @return an url string
@@ -173,5 +179,35 @@ public final class StringHelper {
       sb.append('/');
     }
     sb.append(part);
+  }
+
+  public static String getResourceSecondsString(Map<String, Long> targetMap) {
+    List<String> strings = new ArrayList<>(targetMap.size());
+    //completed app report in the timeline server doesn't have usage report
+    Long memorySeconds = 0L;
+    Long vcoreSeconds = 0L;
+    if (targetMap.containsKey(ResourceInformation.MEMORY_MB.getName())) {
+      memorySeconds = targetMap.get(ResourceInformation.MEMORY_MB.getName());
+    }
+    if (targetMap.containsKey(ResourceInformation.VCORES.getName())) {
+      vcoreSeconds = targetMap.get(ResourceInformation.VCORES.getName());
+    }
+    strings.add(memorySeconds + " MB-seconds");
+    strings.add(vcoreSeconds + " vcore-seconds");
+    Map<String, ResourceInformation> tmp = ResourceUtils.getResourceTypes();
+    if (targetMap.size() > 2) {
+      for (Map.Entry<String, Long> entry : targetMap.entrySet()) {
+        if (!entry.getKey().equals(ResourceInformation.MEMORY_MB.getName())
+            && !entry.getKey().equals(ResourceInformation.VCORES.getName())) {
+          String units = "";
+          if (tmp.containsKey(entry.getKey())) {
+            units = tmp.get(entry.getKey()).getUnits();
+          }
+          strings.add(entry.getValue() + " " + entry.getKey() + "-" + units
+              + "seconds");
+        }
+      }
+    }
+    return String.join(", ", strings);
   }
 }

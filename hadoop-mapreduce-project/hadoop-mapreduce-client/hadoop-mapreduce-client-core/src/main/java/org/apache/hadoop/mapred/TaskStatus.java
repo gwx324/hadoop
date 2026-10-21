@@ -22,8 +22,6 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.io.Text;
@@ -31,6 +29,8 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.util.StringInterner;
 import org.apache.hadoop.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 /**************************************************
  * Describes the current status of a task.  This is
  * not intended to be a comprehensive piece of data.
@@ -39,18 +39,18 @@ import org.apache.hadoop.util.StringUtils;
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 public abstract class TaskStatus implements Writable, Cloneable {
-  static final Log LOG =
-    LogFactory.getLog(TaskStatus.class.getName());
+  static final Logger LOG =
+      LoggerFactory.getLogger(TaskStatus.class.getName());
   
   //enumeration for reporting current phase of a task.
   @InterfaceAudience.Private
   @InterfaceStability.Unstable
-  public static enum Phase{STARTING, MAP, SHUFFLE, SORT, REDUCE, CLEANUP}
+  public enum Phase{STARTING, MAP, SHUFFLE, SORT, REDUCE, CLEANUP}
 
   // what state is the task in?
   @InterfaceAudience.Private
   @InterfaceStability.Unstable
-  public static enum State {RUNNING, SUCCEEDED, FAILED, UNASSIGNED, KILLED, 
+  public enum State {RUNNING, SUCCEEDED, FAILED, UNASSIGNED, KILLED,
                             COMMIT_PENDING, FAILED_UNCLEAN, KILLED_UNCLEAN, PREEMPTED}
     
   private final TaskAttemptID taskid;
@@ -519,8 +519,52 @@ public abstract class TaskStatus implements Writable, Cloneable {
                                           taskTracker, phase, counters);
   }
   
+  /**
+   * Enum identifying the concrete type of a {@link TaskStatus} for serialization.
+   */
+  public enum TaskStatusKind {
+    MapTaskStatus,
+    ReduceTaskStatus
+  }
+
   static TaskStatus createTaskStatus(boolean isMap) {
-    return (isMap) ? new MapTaskStatus() : new ReduceTaskStatus();
+    return createTaskStatus(
+        isMap ? TaskStatusKind.MapTaskStatus : TaskStatusKind.ReduceTaskStatus);
+  }
+
+  static TaskStatus createTaskStatus(TaskStatusKind kind) {
+    return kind == TaskStatusKind.MapTaskStatus
+        ? new MapTaskStatus() : new ReduceTaskStatus();
+  }
+
+  /**
+   * Write a TaskStatus to a DataOutput, prefixed by a {@link TaskStatusKind} discriminator.
+   * Used by the Protobuf-based RPC layer to serialize TaskStatus values.
+   * @param out output stream
+   * @param status status to write (must not be null)
+   * @throws IOException on I/O error
+   */
+  public static void writeTaskStatusForPB(DataOutput out, TaskStatus status)
+      throws IOException {
+    TaskStatusKind kind = status.getIsMap()
+        ? TaskStatusKind.MapTaskStatus : TaskStatusKind.ReduceTaskStatus;
+    out.writeByte(kind.ordinal());
+    status.write(out);
+  }
+
+  /**
+   * Read a TaskStatus that was written with {@link #writeTaskStatusForPB}.
+   * @param in input stream
+   * @return the deserialized TaskStatus
+   * @throws IOException on I/O error
+   */
+  public static TaskStatus readTaskStatusFromPB(DataInput in)
+      throws IOException {
+    int ordinal = in.readByte() & 0xFF;
+    TaskStatusKind kind = TaskStatusKind.values()[ordinal];
+    TaskStatus status = createTaskStatus(kind);
+    status.readFields(in);
+    return status;
   }
 
 }

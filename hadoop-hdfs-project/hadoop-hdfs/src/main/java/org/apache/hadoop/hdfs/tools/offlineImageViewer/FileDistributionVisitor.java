@@ -20,26 +20,28 @@ package org.apache.hadoop.hdfs.tools.offlineImageViewer;
 import java.io.IOException;
 import java.util.LinkedList;
 
+import org.apache.hadoop.util.StringUtils;
+
 /**
  * File size distribution visitor.
  * 
  * <h3>Description.</h3>
  * This is the tool for analyzing file sizes in the namespace image.
  * In order to run the tool one should define a range of integers
- * <tt>[0, maxSize]</tt> by specifying <tt>maxSize</tt> and a <tt>step</tt>.
- * The range of integers is divided into segments of size <tt>step</tt>: 
- * <tt>[0, s<sub>1</sub>, ..., s<sub>n-1</sub>, maxSize]</tt>,
+ * <code>[0, maxSize]</code> by specifying <code>maxSize</code> and a <code>step</code>.
+ * The range of integers is divided into segments of size <code>step</code>: 
+ * <code>[0, s<sub>1</sub>, ..., s<sub>n-1</sub>, maxSize]</code>,
  * and the visitor calculates how many files in the system fall into 
- * each segment <tt>[s<sub>i-1</sub>, s<sub>i</sub>)</tt>. 
- * Note that files larger than <tt>maxSize</tt> always fall into 
+ * each segment <code>[s<sub>i-1</sub>, s<sub>i</sub>)</code>. 
+ * Note that files larger than <code>maxSize</code> always fall into 
  * the very last segment.
  * 
  * <h3>Input.</h3>
  * <ul>
- * <li><tt>filename</tt> specifies the location of the image file;</li>
- * <li><tt>maxSize</tt> determines the range <tt>[0, maxSize]</tt> of files
+ * <li><code>filename</code> specifies the location of the image file;</li>
+ * <li><code>maxSize</code> determines the range <code>[0, maxSize]</code> of files
  * sizes considered by the visitor;</li>
- * <li><tt>step</tt> the range is divided into segments of size step.</li>
+ * <li><code>step</code> the range is divided into segments of size step.</li>
  * </ul>
  *
  * <h3>Output.</h3>
@@ -67,6 +69,7 @@ class FileDistributionVisitor extends TextWriterImageVisitor {
   private FileContext current;
 
   private boolean inInode = false;
+  private boolean formatOutput = false;
 
   /**
    * File or directory information.
@@ -78,12 +81,12 @@ class FileDistributionVisitor extends TextWriterImageVisitor {
     int replication;
   }
 
-  public FileDistributionVisitor(String filename,
-                                 long maxSize,
-                                 int step) throws IOException {
+  public FileDistributionVisitor(String filename, long maxSize, int step,
+      boolean formatOutput) throws IOException {
     super(filename, false);
     this.maxSize = (maxSize == 0 ? MAX_SIZE_DEFAULT : maxSize);
     this.step = (step == 0 ? INTERVAL_DEFAULT : step);
+    this.formatOutput = formatOutput;
     long numIntervals = this.maxSize / this.step;
     if(numIntervals >= Integer.MAX_VALUE)
       throw new IOException("Too many distribution intervals " + numIntervals);
@@ -113,9 +116,22 @@ class FileDistributionVisitor extends TextWriterImageVisitor {
 
   private void output() throws IOException {
     // write the distribution into the output file
-    write("Size\tNumFiles\n");
-    for(int i = 0; i < distribution.length; i++)
-      write(((long)i * step) + "\t" + distribution[i] + "\n");
+    write((formatOutput ? "Size Range" : "Size") + "\tNumFiles\n");
+    for (int i = 0; i < distribution.length; i++) {
+      if (distribution[i] > 0) {
+        if (formatOutput) {
+          write((i == 0 ? "[" : "(")
+              + StringUtils.byteDesc(((long) (i == 0 ? 0 : i - 1) * step))
+              + ", "
+              + StringUtils.byteDesc((long)
+                  (i == distribution.length - 1 ? maxFileSize : i * step))
+                  + "]\t"
+              + distribution[i] + "\n");
+        } else {
+          write(((long) i * step) + "\t" + distribution[i] + "\n");
+        }
+      }
+    }
     System.out.println("totalFiles = " + totalFiles);
     System.out.println("totalDirectories = " + totalDirectories);
     System.out.println("totalBlocks = " + totalBlocks);

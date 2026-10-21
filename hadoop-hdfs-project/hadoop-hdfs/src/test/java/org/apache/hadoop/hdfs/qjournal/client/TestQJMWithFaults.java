@@ -20,23 +20,25 @@ package org.apache.hadoop.hdfs.qjournal.client;
 import static org.apache.hadoop.hdfs.qjournal.QJMTestUtil.FAKE_NSINFO;
 import static org.apache.hadoop.hdfs.qjournal.QJMTestUtil.JID;
 import static org.apache.hadoop.hdfs.qjournal.QJMTestUtil.writeSegment;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.UnknownHostException;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.hdfs.qjournal.MiniJournalCluster;
@@ -49,23 +51,22 @@ import org.apache.hadoop.hdfs.server.namenode.NameNodeLayoutVersion;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.util.Holder;
 import org.apache.hadoop.io.IOUtils;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
-import com.google.common.util.concurrent.MoreExecutors;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 
 public class TestQJMWithFaults {
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       TestQJMWithFaults.class);
 
   private static final String RAND_SEED_PROPERTY =
@@ -80,7 +81,7 @@ public class TestQJMWithFaults {
   static {
     // Don't retry connections - it just slows down the tests.
     conf.setInt(CommonConfigurationKeysPublic.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 0);
-    
+
     // Make tests run faster by avoiding fsync()
     EditLogFileOutputStream.setShouldSkipFsyncForTesting(true);
   }
@@ -103,10 +104,10 @@ public class TestQJMWithFaults {
     long ret;
     try {
       qjm = createInjectableQJM(cluster);
-      qjm.format(FAKE_NSINFO);
+      qjm.format(FAKE_NSINFO, false);
       doWorkload(cluster, qjm);
       
-      SortedSet<Integer> ipcCounts = Sets.newTreeSet();
+      SortedSet<Integer> ipcCounts = new TreeSet<>();
       for (AsyncLogger l : qjm.getLoggerSetForTests().getLoggersForTests()) {
         InvocationCountingChannel ch = (InvocationCountingChannel)l;
         ch.waitForAllPendingCalls();
@@ -125,7 +126,7 @@ public class TestQJMWithFaults {
     }
     return ret;
   }
-  
+
   /**
    * Sets up two of the nodes to each drop a single RPC, at all
    * possible combinations of RPCs. This may result in the
@@ -151,7 +152,7 @@ public class TestQJMWithFaults {
         QuorumJournalManager qjm = null;
         try {
           qjm = createInjectableQJM(cluster);
-          qjm.format(FAKE_NSINFO);
+          qjm.format(FAKE_NSINFO, false);
           List<AsyncLogger> loggers = qjm.getLoggerSetForTests().getLoggersForTests();
           failIpcNumber(loggers.get(0), failA);
           failIpcNumber(loggers.get(1), failB);
@@ -187,6 +188,17 @@ public class TestQJMWithFaults {
   }
   
   /**
+   * Expect {@link UnknownHostException} if a hostname can't be resolved.
+   */
+  @Test
+  public void testUnresolvableHostName() throws Exception {
+    assertThrows(UnknownHostException.class, () -> {
+      new QuorumJournalManager(conf,
+          new URI("qjournal://" + "bogus.invalid:12345" + "/" + JID), FAKE_NSINFO);
+    });
+  }
+
+  /**
    * Test case in which three JournalNodes randomly flip flop between
    * up and down states every time they get an RPC.
    * 
@@ -210,7 +222,7 @@ public class TestQJMWithFaults {
       // If the user specifies a seed, then we should gather all the
       // IPC trace information so that debugging is easier. This makes
       // the test run about 25% slower otherwise.
-      GenericTestUtils.setLogLevel(ProtobufRpcEngine.LOG, Level.ALL);
+      GenericTestUtils.setLogLevel(ProtobufRpcEngine2.LOG, Level.TRACE);
     } else {
       seed = new Random().nextLong();
     }
@@ -225,7 +237,7 @@ public class TestQJMWithFaults {
     // Format the cluster using a non-faulty QJM.
     QuorumJournalManager qjmForInitialFormat =
         createInjectableQJM(cluster);
-    qjmForInitialFormat.format(FAKE_NSINFO);
+    qjmForInitialFormat.format(FAKE_NSINFO, false);
     qjmForInitialFormat.close();
     
     try {
@@ -245,9 +257,8 @@ public class TestQJMWithFaults {
             checkException(t);
             continue;
           }
-          assertTrue("Recovered only up to txnid " + recovered +
-              " but had gotten an ack for " + lastAcked,
-              recovered >= lastAcked);
+          assertTrue(recovered >= lastAcked, "Recovered only up to txnid " + recovered
+              + " but had gotten an ack for " + lastAcked);
           
           txid = recovered + 1;
           
@@ -385,7 +396,7 @@ public class TestQJMWithFaults {
 
     @Override
     protected ExecutorService createSingleThreadExecutor() {
-      return MoreExecutors.sameThreadExecutor();
+      return new DirectExecutorService();
     }
   }
 
@@ -424,9 +435,14 @@ public class TestQJMWithFaults {
           new WrapEveryCall<Object>(realProxy) {
             void beforeCall(InvocationOnMock invocation) throws Exception {
               rpcCount++;
+
+              String param="";
+              for (Object val : invocation.getArguments()) {
+                param += val +",";
+              }
               String callStr = "[" + addr + "] " + 
                   invocation.getMethod().getName() + "(" +
-                  Joiner.on(", ").join(invocation.getArguments()) + ")";
+                  param + ")";
  
               Callable<Void> inject = injections.get(rpcCount);
               if (inject != null) {
@@ -489,7 +505,7 @@ public class TestQJMWithFaults {
     AsyncLogger.Factory spyFactory = new AsyncLogger.Factory() {
       @Override
       public AsyncLogger createLogger(Configuration conf, NamespaceInfo nsInfo,
-          String journalId, InetSocketAddress addr) {
+          String journalId, String nameserviceId, InetSocketAddress addr) {
         return new InvocationCountingChannel(conf, nsInfo, journalId, addr);
       }
     };
@@ -504,7 +520,7 @@ public class TestQJMWithFaults {
     AsyncLogger.Factory spyFactory = new AsyncLogger.Factory() {
       @Override
       public AsyncLogger createLogger(Configuration conf, NamespaceInfo nsInfo,
-          String journalId, InetSocketAddress addr) {
+          String journalId, String nameServiceId, InetSocketAddress addr) {
         return new RandomFaultyChannel(conf, nsInfo, journalId, addr,
             seedGenerator.nextLong());
       }

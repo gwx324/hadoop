@@ -21,11 +21,14 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.LengthInputStream;
 
 /** Provide utility methods for Datanode. */
@@ -36,6 +39,7 @@ public class DatanodeUtil {
   public static final String DISK_ERROR = "Possible disk error: ";
 
   private static final String SEP = System.getProperty("file.separator");
+  private static final long MASK = 0x1F;
 
   /** Get the cause of an I/O exception if caused by a possible disk error
    * @param ioe an I/O exception
@@ -55,15 +59,17 @@ public class DatanodeUtil {
    * @throws IOException 
    * if the file already exists or if the file cannot be created.
    */
-  public static File createTmpFile(Block b, File f) throws IOException {
-    if (f.exists()) {
+  public static File createFileWithExistsCheck(
+      FsVolumeSpi volume, Block b, File f,
+      FileIoProvider fileIoProvider) throws IOException {
+    if (fileIoProvider.exists(volume, f)) {
       throw new IOException("Failed to create temporary file for " + b
           + ".  File " + f + " should not be present, but is.");
     }
     // Create the zero-length temp file
     final boolean fileCreated;
     try {
-      fileCreated = f.createNewFile();
+      fileCreated = fileIoProvider.createFile(volume, f);
     } catch (IOException ioe) {
       throw new IOException(DISK_ERROR + "Failed to create " + f, ioe);
     }
@@ -92,17 +98,36 @@ public class DatanodeUtil {
    * @return true if there are no files
    * @throws IOException if unable to list subdirectories
    */
-  public static boolean dirNoFilesRecursive(File dir) throws IOException {
-    File[] contents = dir.listFiles();
+  public static boolean dirNoFilesRecursive(
+      FsVolumeSpi volume, File dir,
+      FileIoProvider fileIoProvider) throws IOException {
+    File[] contents = fileIoProvider.listFiles(volume, dir);
     if (contents == null) {
       throw new IOException("Cannot list contents of " + dir);
     }
     for (File f : contents) {
-      if (!f.isDirectory() || (f.isDirectory() && !dirNoFilesRecursive(f))) {
+      if (!f.isDirectory() ||
+          (f.isDirectory() && !dirNoFilesRecursive(
+              volume, f, fileIoProvider))) {
         return false;
       }
     }
     return true;
+  }
+
+  /**
+   * Take an example.
+   * We hava a block with blockid mapping to:
+   * "/data1/hadoop/hdfs/datanode/current/BP-xxxx/current/finalized/subdir0/subdir1"
+   * We return "subdir0/subdir0".
+   * @param blockId the block id.
+   * @return two-level subdir string where block will be stored.
+   */
+  public static String idToBlockDirSuffix(long blockId) {
+    int d1 = (int) ((blockId >> 16) & MASK);
+    int d2 = (int) ((blockId >> 8) & MASK);
+    return DataStorage.BLOCK_SUBDIR_PREFIX + d1 + SEP +
+        DataStorage.BLOCK_SUBDIR_PREFIX + d2;
   }
 
   /**
@@ -113,11 +138,19 @@ public class DatanodeUtil {
    * @return
    */
   public static File idToBlockDir(File root, long blockId) {
-    int d1 = (int) ((blockId >> 16) & 0x1F);
-    int d2 = (int) ((blockId >> 8) & 0x1F);
-    String path = DataStorage.BLOCK_SUBDIR_PREFIX + d1 + SEP +
-        DataStorage.BLOCK_SUBDIR_PREFIX + d2;
+    String path = idToBlockDirSuffix(blockId);
     return new File(root, path);
+  }
+
+  public static List<String> getAllSubDirNameForDataSetLock() {
+    List<String> res = new ArrayList<>();
+    for (int d1 = 0; d1 <= MASK; d1++) {
+      for (int d2 = 0; d2 <= MASK; d2++) {
+        res.add(DataStorage.BLOCK_SUBDIR_PREFIX + d1 + SEP +
+            DataStorage.BLOCK_SUBDIR_PREFIX + d2);
+      }
+    }
+    return res;
   }
 
   /**

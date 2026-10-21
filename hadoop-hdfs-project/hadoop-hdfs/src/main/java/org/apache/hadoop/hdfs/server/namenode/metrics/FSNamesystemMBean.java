@@ -69,7 +69,12 @@ public interface FSNamesystemMBean {
    * @return -  used capacity in bytes
    */
   public long getCapacityUsed();
- 
+
+  /**
+   * Total PROVIDED storage capacity.
+   * @return -  total PROVIDED storage capacity in bytes
+   */
+  public long getProvidedCapacityTotal();
 
   /**
    * Total number of files and directories
@@ -78,17 +83,31 @@ public interface FSNamesystemMBean {
   public long getFilesTotal();
  
   /**
-   * Blocks pending to be replicated
-   * @return -  num of blocks to be replicated
+   * Get aggregated count of all blocks pending to be reconstructed.
+   * @deprecated Use {@link #getPendingReconstructionBlocks()} instead.
    */
+  @Deprecated
   public long getPendingReplicationBlocks();
- 
+
   /**
-   * Blocks under replicated 
-   * @return -  num of blocks under replicated
+   * Get aggregated count of all blocks pending to be reconstructed.
+   * @return Number of blocks to be replicated.
    */
+  public long getPendingReconstructionBlocks();
+
+  /**
+   * Get aggregated count of all blocks with low redundancy.
+   * @deprecated Use {@link #getLowRedundancyBlocks()} instead.
+   */
+  @Deprecated
   public long getUnderReplicatedBlocks();
- 
+
+  /**
+   * Get aggregated count of all blocks with low redundancy.
+   * @return Number of blocks with low redundancy.
+   */
+  public long getLowRedundancyBlocks();
+
   /**
    * Blocks scheduled for replication
    * @return -  num of blocks scheduled for replication
@@ -130,6 +149,12 @@ public interface FSNamesystemMBean {
    * @return number of decommissioned dead data nodes
    */
   public int getNumDecomDeadDataNodes();
+
+  /**
+   * @return Number of in-service data nodes, where NumInServiceDataNodes =
+   * NumLiveDataNodes - NumDecomLiveDataNodes - NumInMaintenanceLiveDataNodes
+   */
+  int getNumInServiceLiveDataNodes();
 
   /**
    * Number of failed data volumes across all live data nodes.
@@ -208,4 +233,39 @@ public interface FSNamesystemMBean {
    * Return total time spent doing sync operations on FSEditLog.
    */
   String getTotalSyncTimes();
+
+  /**
+   * @return Number of IN_MAINTENANCE live data nodes
+   */
+  int getNumInMaintenanceLiveDataNodes();
+
+  /**
+   * @return Number of IN_MAINTENANCE dead data nodes
+   */
+  int getNumInMaintenanceDeadDataNodes();
+
+  /**
+   * @return Number of ENTERING_MAINTENANCE data nodes
+   */
+  int getNumEnteringMaintenanceDataNodes();
+
+  /**
+   * Get the current number of delegation tokens in memory.
+   * @return number of DTs
+   */
+  long getCurrentTokensCount();
+
+  /**
+   * Returns the number of paths to be processed by storage policy satisfier.
+   *
+   * @return The number of paths to be processed by sps.
+   */
+  int getPendingSPSPaths();
+
+  /**
+   * Get the progress of the reconstruction queues initialisation.
+   *
+   * @return Returns values between 0 and 1 for the progress.
+   */
+  float getReconstructionQueuesInitProgress();
 }

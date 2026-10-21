@@ -22,10 +22,10 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.HashMap;
-
-import org.junit.Assert;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -44,12 +44,16 @@ import org.apache.hadoop.mapreduce.v2.hs.HistoryFileManager.HistoryFileInfo;
 import org.apache.hadoop.mapreduce.v2.hs.CompletedJob;
 import org.apache.hadoop.mapreduce.v2.hs.TestJobHistoryEntities;
 import org.apache.hadoop.mapreduce.v2.util.MRBuilderUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 
 public class TestJobInfo {
 
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testAverageMergeTime() throws IOException {
     String historyFileName =
         "job_1329348432655_0001-1329348443227-user-Sleep+job-1329348468601-10-1-SUCCEEDED-default.jhist";
@@ -70,14 +74,14 @@ public class TestJobInfo {
     when(info.getConfFile()).thenReturn(fullConfPath);
     when(info.getHistoryFile()).thenReturn(fulleHistoryPath);
 
-    JobId jobId = MRBuilderUtils.newJobId(1329348432655l, 1, 1);
+    JobId jobId = MRBuilderUtils.newJobId(1329348432655L, 1, 1);
     CompletedJob completedJob =
         new CompletedJob(conf, jobId, fulleHistoryPath, true, "user",
             info, jobAclsMgr);
     JobInfo jobInfo = new JobInfo(completedJob);
     // There are 2 tasks with merge time of 45 and 55 respectively. So average
     // merge time should be 50.
-    Assert.assertEquals(50L, jobInfo.getAvgMergeTime().longValue());
+    assertEquals(50L, jobInfo.getAvgMergeTime().longValue());
   }
   
   @Test
@@ -136,7 +140,7 @@ public class TestJobInfo {
   
     JobInfo jobInfo = new JobInfo(job);
   
-    Assert.assertEquals(11L, jobInfo.getAvgReduceTime().longValue());
+    assertEquals(11L, jobInfo.getAvgReduceTime().longValue());
   }
 
   @Test
@@ -153,12 +157,35 @@ public class TestJobInfo {
     when(job.getID()).thenReturn(jobId);
 
     JobInfo jobInfo = new JobInfo(job);
-    Assert.assertEquals("N/A", jobInfo.getStartTimeStr());
+    assertEquals(JobInfo.NA, jobInfo.getStartTimeStr());
 
     Date date = new Date();
     when(jobReport.getStartTime()).thenReturn(date.getTime());
 
     jobInfo = new JobInfo(job);
-    Assert.assertEquals(date.toString(), jobInfo.getStartTimeStr());
+    assertEquals(date.toString(), jobInfo.getStartTimeStr());
+  }
+
+  @Test
+  public void testGetFormattedStartTimeStr() {
+    JobReport jobReport = mock(JobReport.class);
+    when(jobReport.getStartTime()).thenReturn(-1L);
+
+    Job job = mock(Job.class);
+    when(job.getReport()).thenReturn(jobReport);
+    when(job.getName()).thenReturn("TestJobInfo");
+    when(job.getState()).thenReturn(JobState.SUCCEEDED);
+
+    JobId jobId = MRBuilderUtils.newJobId(1L, 1, 1);
+    when(job.getID()).thenReturn(jobId);
+    DateFormat dateFormat = new SimpleDateFormat();
+
+    JobInfo jobInfo = new JobInfo(job);
+    assertEquals(JobInfo.NA, jobInfo.getFormattedStartTimeStr(dateFormat));
+
+    Date date = new Date();
+    when(jobReport.getStartTime()).thenReturn(date.getTime());
+    jobInfo = new JobInfo(job);
+    assertEquals(dateFormat.format(date), jobInfo.getFormattedStartTimeStr(dateFormat));
   }
 }

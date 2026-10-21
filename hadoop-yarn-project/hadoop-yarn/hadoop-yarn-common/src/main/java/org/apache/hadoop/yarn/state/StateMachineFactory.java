@@ -60,7 +60,7 @@ final public class StateMachineFactory
    * Constructor
    *
    * This is the only constructor in the API.
-   *
+   * @param defaultInitialState default initial state.
    */
   public StateMachineFactory(STATE defaultInitialState) {
     this.transitionsListNode = null;
@@ -391,6 +391,21 @@ final public class StateMachineFactory
     }
   }
 
+  /**
+   * A StateMachine that accepts a transition listener.
+   * @param operand the object upon which the returned
+   *                {@link StateMachine} will operate.
+   * @param initialState the state in which the returned
+   *                {@link StateMachine} will start.
+   * @param listener An implementation of a {@link StateTransitionListener}.
+   * @return A (@link StateMachine}.
+   */
+  public StateMachine<STATE, EVENTTYPE, EVENT>
+        make(OPERAND operand, STATE initialState,
+             StateTransitionListener<OPERAND, EVENT, STATE> listener) {
+    return new InternalStateMachine(operand, initialState, listener);
+  }
+
   /* 
    * @return a {@link StateMachine} that starts in 
    *         {@code initialState} and whose {@link Transition} s are
@@ -424,14 +439,37 @@ final public class StateMachineFactory
     return new InternalStateMachine(operand, defaultInitialState);
   }
 
+  private static class NoopStateTransitionListener
+      implements StateTransitionListener {
+    @Override
+    public void preTransition(Object op, Enum beforeState,
+        Object eventToBeProcessed) { }
+
+    @Override
+    public void postTransition(Object op, Enum beforeState, Enum afterState,
+        Object processedEvent) { }
+  }
+
+  private static final NoopStateTransitionListener NOOP_LISTENER =
+      new NoopStateTransitionListener();
+
   private class InternalStateMachine
         implements StateMachine<STATE, EVENTTYPE, EVENT> {
     private final OPERAND operand;
     private STATE currentState;
+    private STATE previousState;
+    private final StateTransitionListener<OPERAND, EVENT, STATE> listener;
 
     InternalStateMachine(OPERAND operand, STATE initialState) {
+      this(operand, initialState, null);
+    }
+
+    InternalStateMachine(OPERAND operand, STATE initialState,
+        StateTransitionListener<OPERAND, EVENT, STATE> transitionListener) {
       this.operand = operand;
       this.currentState = initialState;
+      this.listener =
+          (transitionListener == null) ? NOOP_LISTENER : transitionListener;
       if (!optimized) {
         maybeMakeStateMachineTable();
       }
@@ -443,10 +481,18 @@ final public class StateMachineFactory
     }
 
     @Override
+    public synchronized STATE getPreviousState() {
+      return previousState;
+    }
+
+    @Override
     public synchronized STATE doTransition(EVENTTYPE eventType, EVENT event)
          throws InvalidStateTransitionException  {
+      listener.preTransition(operand, currentState, event);
+      previousState = currentState;
       currentState = StateMachineFactory.this.doTransition
           (operand, currentState, eventType, event);
+      listener.postTransition(operand, previousState, currentState, event);
       return currentState;
     }
   }

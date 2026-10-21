@@ -20,6 +20,7 @@ package org.apache.hadoop.hdfs;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DeprecatedKeys;
@@ -34,7 +35,9 @@ public class HdfsConfiguration extends Configuration {
 
     // adds the default resources
     Configuration.addDefaultResource("hdfs-default.xml");
+    Configuration.addDefaultResource("hdfs-rbf-default.xml");
     Configuration.addDefaultResource("hdfs-site.xml");
+    Configuration.addDefaultResource("hdfs-rbf-site.xml");
   }
 
   public HdfsConfiguration() {
@@ -114,9 +117,15 @@ public class HdfsConfiguration extends Configuration {
         new DeprecationDelta("dfs.access.time.precision",
             DeprecatedKeys.DFS_NAMENODE_ACCESSTIME_PRECISION_KEY),
         new DeprecationDelta("dfs.replication.considerLoad",
-            DeprecatedKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY),
+            DeprecatedKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY),
+        new DeprecationDelta("dfs.namenode.replication.considerLoad",
+            DeprecatedKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY),
+        new DeprecationDelta("dfs.namenode.replication.considerLoad.factor",
+            DeprecatedKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_FACTOR),
         new DeprecationDelta("dfs.replication.interval",
-            DeprecatedKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY),
+            DeprecatedKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY),
+        new DeprecationDelta("dfs.namenode.replication.interval",
+            DeprecatedKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY),
         new DeprecationDelta("dfs.replication.min",
             DeprecatedKeys.DFS_NAMENODE_REPLICATION_MIN_KEY),
         new DeprecationDelta("dfs.replication.pending.timeout.sec",
@@ -141,6 +150,8 @@ public class HdfsConfiguration extends Configuration {
             HdfsClientConfigKeys.DFS_NAMESERVICES),
         new DeprecationDelta("dfs.federation.nameservice.id",
             DeprecatedKeys.DFS_NAMESERVICE_ID),
+        new DeprecationDelta("dfs.encryption.key.provider.uri",
+            CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH),
     });
   }
 

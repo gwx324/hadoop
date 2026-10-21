@@ -18,20 +18,23 @@
 package org.apache.hadoop.hdfs.server.namenode;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.net.NetUtils;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.net.URI;
+
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A class to test the XFrameoptions of Namenode HTTP Server. We are not reusing
@@ -41,12 +44,9 @@ import java.net.URL;
  */
 public class TestNameNodeHttpServerXFrame {
 
-  @Rule
-  public ExpectedException exception = ExpectedException.none();
-
   public static URL getServerURL(HttpServer2 server)
       throws MalformedURLException {
-    Assert.assertNotNull("No server", server);
+    assertNotNull(server, "No server");
     return new URL("http://"
         + NetUtils.getHostPortString(server.getConnectorAddress(0)));
   }
@@ -55,9 +55,8 @@ public class TestNameNodeHttpServerXFrame {
   public void testNameNodeXFrameOptionsEnabled() throws Exception {
     HttpURLConnection conn = createServerwithXFrame(true, null);
     String xfoHeader = conn.getHeaderField("X-FRAME-OPTIONS");
-    Assert.assertTrue("X-FRAME-OPTIONS is absent in the header",
-        xfoHeader != null);
-    Assert.assertTrue(xfoHeader.endsWith(HttpServer2.XFrameOption
+    assertTrue(xfoHeader != null, "X-FRAME-OPTIONS is absent in the header");
+    assertTrue(xfoHeader.endsWith(HttpServer2.XFrameOption
         .SAMEORIGIN.toString()));
   }
 
@@ -65,13 +64,14 @@ public class TestNameNodeHttpServerXFrame {
   public void testNameNodeXFrameOptionsDisabled() throws Exception {
     HttpURLConnection conn = createServerwithXFrame(false, null);
     String xfoHeader = conn.getHeaderField("X-FRAME-OPTIONS");
-    Assert.assertTrue("unexpected X-FRAME-OPTION in header", xfoHeader == null);
+    assertTrue(xfoHeader == null, "unexpected X-FRAME-OPTION in header");
   }
 
   @Test
   public void testNameNodeXFrameOptionsIllegalOption() throws Exception {
-    exception.expect(IllegalArgumentException.class);
-    createServerwithXFrame(true, "hadoop");
+    assertThrows(IllegalArgumentException.class, () -> {
+      createServerwithXFrame(true, "hadoop");
+    });
   }
 
   private HttpURLConnection createServerwithXFrame(boolean enabled, String
@@ -93,5 +93,23 @@ public class TestNameNodeHttpServerXFrame {
     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
     conn.connect();
     return conn;
+  }
+
+  @Test
+  public void testSecondaryNameNodeXFrame() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    FileSystem.setDefaultUri(conf, "hdfs://localhost:0");
+
+    SecondaryNameNode sn = new SecondaryNameNode(conf);
+    sn.startInfoServer();
+    InetSocketAddress httpAddress = SecondaryNameNode.getHttpAddress(conf);
+
+    URL url = URI.create("http://" + httpAddress.getHostName()
+        + ":" + httpAddress.getPort()).toURL();
+    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+    conn.connect();
+    String xfoHeader = conn.getHeaderField("X-FRAME-OPTIONS");
+    assertTrue(xfoHeader != null, "X-FRAME-OPTIONS is absent in the header");
+    assertTrue(xfoHeader.endsWith(HttpServer2.XFrameOption.SAMEORIGIN.toString()));
   }
 }

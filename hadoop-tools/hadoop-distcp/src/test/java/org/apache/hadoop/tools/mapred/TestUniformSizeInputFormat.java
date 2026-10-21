@@ -31,13 +31,13 @@ import org.apache.hadoop.mapreduce.task.JobContextImpl;
 import org.apache.hadoop.mapreduce.lib.input.FileSplit;
 import org.apache.hadoop.tools.CopyListing;
 import org.apache.hadoop.tools.CopyListingFileStatus;
+import org.apache.hadoop.tools.DistCpContext;
 import org.apache.hadoop.tools.DistCpOptions;
 import org.apache.hadoop.tools.StubContext;
 import org.apache.hadoop.security.Credentials;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -45,6 +45,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestUniformSizeInputFormat {
   private static MiniDFSCluster cluster;
@@ -56,7 +59,7 @@ public class TestUniformSizeInputFormat {
   private static final Credentials CREDENTIALS = new Credentials();
 
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     cluster = new MiniDFSCluster.Builder(new Configuration()).numDataNodes(1)
                                           .format(true).build();
@@ -74,9 +77,9 @@ public class TestUniformSizeInputFormat {
 
     List<Path> sourceList = new ArrayList<Path>();
     sourceList.add(sourcePath);
-    final DistCpOptions distCpOptions = new DistCpOptions(sourceList, targetPath);
-    distCpOptions.setMaxMaps(nMaps);
-    return distCpOptions;
+    return new DistCpOptions.Builder(sourceList, targetPath)
+        .maxMaps(nMaps)
+        .build();
   }
 
   private static int createFile(String path, int fileSize) throws Exception {
@@ -90,24 +93,24 @@ public class TestUniformSizeInputFormat {
       return size;
     }
     finally {
-      IOUtils.cleanup(null, fileSystem, outputStream);
+      IOUtils.cleanupWithLogger(null, fileSystem, outputStream);
     }
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     cluster.shutdown();
   }
 
   public void testGetSplits(int nMaps) throws Exception {
-    DistCpOptions options = getOptions(nMaps);
+    DistCpContext context = new DistCpContext(getOptions(nMaps));
     Configuration configuration = new Configuration();
     configuration.set("mapred.map.tasks",
-                      String.valueOf(options.getMaxMaps()));
+                      String.valueOf(context.getMaxMaps()));
     Path listFile = new Path(cluster.getFileSystem().getUri().toString()
         + "/tmp/testGetSplits_1/fileList.seq");
-    CopyListing.getCopyListing(configuration, CREDENTIALS, options).
-        buildListing(listFile, options);
+    CopyListing.getCopyListing(configuration, CREDENTIALS, context)
+        .buildListing(listFile, context);
 
     JobContext jobContext = new JobContextImpl(configuration, new JobID());
     UniformSizeInputFormat uniformSizeInputFormat = new UniformSizeInputFormat();
@@ -139,7 +142,7 @@ public class TestUniformSizeInputFormat {
         }
         currentSplitSize += fileStatus[0].getLen();
       }
-      Assert.assertTrue(
+      assertTrue(
            previousSplitSize == -1
                || Math.abs(currentSplitSize - previousSplitSize) < 0.1*sizePerMap
                || i == splits.size()-1);
@@ -147,7 +150,7 @@ public class TestUniformSizeInputFormat {
       doubleCheckedTotalSize += currentSplitSize;
     }
 
-    Assert.assertEquals(totalFileSize, doubleCheckedTotalSize);
+    assertEquals(totalFileSize, doubleCheckedTotalSize);
   }
 
   private void checkSplits(Path listFile, List<InputSplit> splits) throws IOException {
@@ -158,7 +161,7 @@ public class TestUniformSizeInputFormat {
     for (InputSplit split : splits) {
       FileSplit fileSplit = (FileSplit) split;
       long start = fileSplit.getStart();
-      Assert.assertEquals(lastEnd, start);
+      assertEquals(lastEnd, start);
       lastEnd = start + fileSplit.getLength();
     }
 
@@ -171,7 +174,7 @@ public class TestUniformSizeInputFormat {
       reader.seek(lastEnd);
       CopyListingFileStatus srcFileStatus = new CopyListingFileStatus();
       Text srcRelPath = new Text();
-      Assert.assertFalse(reader.next(srcRelPath, srcFileStatus));
+      assertFalse(reader.next(srcRelPath, srcFileStatus));
     } finally {
       IOUtils.closeStream(reader);
     }

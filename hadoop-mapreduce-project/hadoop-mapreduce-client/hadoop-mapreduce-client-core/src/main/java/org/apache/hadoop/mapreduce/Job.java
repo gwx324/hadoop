@@ -21,12 +21,14 @@ package org.apache.hadoop.mapreduce;
 import java.io.IOException;
 import java.net.URI;
 import java.security.PrivilegedExceptionAction;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
+import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configuration.IntegerRanges;
 import org.apache.hadoop.fs.FileSystem;
@@ -39,6 +41,10 @@ import org.apache.hadoop.mapreduce.task.JobContextImpl;
 import org.apache.hadoop.mapreduce.util.ConfigUtil;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.ReservationId;
+
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The job submitter's view of the Job.
@@ -75,11 +81,11 @@ import org.apache.hadoop.yarn.api.records.ReservationId;
  */
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
-public class Job extends JobContextImpl implements JobContext {  
-  private static final Log LOG = LogFactory.getLog(Job.class);
+public class Job extends JobContextImpl implements JobContext, AutoCloseable {
+  private static final Logger LOG = LoggerFactory.getLogger(Job.class);
 
   @InterfaceStability.Evolving
-  public static enum JobState {DEFINE, RUNNING};
+  public enum JobState {DEFINE, RUNNING};
   private static final long MAX_JOBSTATUS_AGE = 1000 * 2;
   public static final String OUTPUT_FILTER = "mapreduce.client.output.filter";
   /** Key in mapred-*.xml that sets completionPollInvervalMillis */
@@ -104,7 +110,7 @@ public class Job extends JobContextImpl implements JobContext {
   public static final boolean DEFAULT_USE_WILDCARD_FOR_LIBJARS = true;
 
   @InterfaceStability.Evolving
-  public static enum TaskStatusFilter { NONE, KILLED, FAILED, SUCCEEDED, ALL }
+  public enum TaskStatusFilter { NONE, KILLED, FAILED, SUCCEEDED, ALL }
 
   static {
     ConfigUtil.loadResources();
@@ -323,7 +329,7 @@ public class Job extends JobContextImpl implements JobContext {
       this.status = ugi.doAs(new PrivilegedExceptionAction<JobStatus>() {
         @Override
         public JobStatus run() throws IOException, InterruptedException {
-          return cluster.getClient().getJobStatus(status.getJobID());
+          return cluster.getClient().getJobStatus(getJobID());
         }
       });
     }
@@ -422,7 +428,7 @@ public class Job extends JobContextImpl implements JobContext {
    * The user-specified job name.
    */
   public String getJobName() {
-    if (state == JobState.DEFINE) {
+    if (state == JobState.DEFINE || status == null) {
       return super.getJobName();
     }
     ensureState(JobState.RUNNING);
@@ -470,7 +476,7 @@ public class Job extends JobContextImpl implements JobContext {
     } catch (IOException e) {
     } catch (InterruptedException ie) {
     }
-    StringBuffer sb = new StringBuffer();
+    StringBuilder sb = new StringBuilder();
     sb.append("Job: ").append(status.getJobID()).append("\n");
     sb.append("Job File: ").append(status.getJobFile()).append("\n");
     sb.append("Job Tracking URL : ").append(status.getTrackingUrl());
@@ -1114,7 +1120,18 @@ public class Job extends JobContextImpl implements JobContext {
    */
   public void setCacheArchives(URI[] archives) {
     ensureState(JobState.DEFINE);
-    DistributedCache.setCacheArchives(archives, conf);
+    setCacheArchives(archives, conf);
+  }
+
+  /**
+   * Set the configuration with the given set of archives.
+   *
+   * @param archives The list of archives that need to be localized.
+   * @param conf Configuration which will be changed.
+   */
+  public static void setCacheArchives(URI[] archives, Configuration conf) {
+    String cacheArchives = StringUtils.uriToString(archives);
+    conf.set(MRJobConfig.CACHE_ARCHIVES, cacheArchives);
   }
 
   /**
@@ -1123,7 +1140,18 @@ public class Job extends JobContextImpl implements JobContext {
    */
   public void setCacheFiles(URI[] files) {
     ensureState(JobState.DEFINE);
-    DistributedCache.setCacheFiles(files, conf);
+    setCacheFiles(files, conf);
+  }
+
+  /**
+   * Set the configuration with the given set of files.
+   *
+   * @param files The list of files that need to be localized.
+   * @param conf Configuration which will be changed.
+   */
+  public static void setCacheFiles(URI[] files, Configuration conf) {
+    String cacheFiles = StringUtils.uriToString(files);
+    conf.set(MRJobConfig.CACHE_FILES, cacheFiles);
   }
 
   /**
@@ -1132,16 +1160,53 @@ public class Job extends JobContextImpl implements JobContext {
    */
   public void addCacheArchive(URI uri) {
     ensureState(JobState.DEFINE);
-    DistributedCache.addCacheArchive(uri, conf);
+    addCacheArchive(uri, conf);
   }
-  
+
+  /**
+   * Add an archives to be localized to the conf.
+   *
+   * @param uri  The uri of the cache to be localized.
+   * @param conf Configuration to add the cache to.
+   */
+  public static void addCacheArchive(URI uri, Configuration conf) {
+    String archives = conf.get(MRJobConfig.CACHE_ARCHIVES);
+    conf.set(MRJobConfig.CACHE_ARCHIVES,
+        archives == null ? uri.toString() : archives + "," + uri.toString());
+  }
+
   /**
    * Add a file to be localized
    * @param uri The uri of the cache to be localized
    */
   public void addCacheFile(URI uri) {
     ensureState(JobState.DEFINE);
-    DistributedCache.addCacheFile(uri, conf);
+    addCacheFile(uri, conf);
+  }
+
+  /**
+   * Add a file to be localized to the conf. The localized file will be
+   * downloaded to the execution node(s), and a link will be created to the
+   * file from the job's working directory. If the last part of URI's path name
+   * is "*", then the entire parent directory will be localized and links
+   * will be created from the job's working directory to each file in the
+   * parent directory.
+   * <p>
+   * The access permissions of the file will determine whether the localized
+   * file will be shared across jobs. If the file is not readable by other or
+   * if any of its parent directories is not executable by other, then the
+   * file will not be shared. In the case of a path that ends in "/*",
+   * sharing of the localized files will be determined solely from the
+   * access permissions of the parent directories. The access permissions of
+   * the individual files will be ignored.
+   *
+   * @param uri  The uri of the cache to be localized.
+   * @param conf Configuration to add the cache to.
+   */
+  public static void addCacheFile(URI uri, Configuration conf) {
+    String files = conf.get(MRJobConfig.CACHE_FILES);
+    conf.set(MRJobConfig.CACHE_FILES,
+        files == null ? uri.toString() : files + "," + uri.toString());
   }
 
   /**
@@ -1158,7 +1223,39 @@ public class Job extends JobContextImpl implements JobContext {
   public void addFileToClassPath(Path file)
     throws IOException {
     ensureState(JobState.DEFINE);
-    DistributedCache.addFileToClassPath(file, conf, file.getFileSystem(conf));
+    addFileToClassPath(file, conf, file.getFileSystem(conf));
+  }
+
+  /**
+   * Add a file path to the current set of classpath entries. The file will
+   * also be added to the cache.
+   *
+   * @param file Path of the file to be added.
+   * @param conf Configuration that contains the classpath setting.
+   * @param fs FileSystem with respect to which {@code file} should be interpreted.
+   */
+  public static void addFileToClassPath(Path file, Configuration conf, FileSystem fs) {
+    addFileToClassPath(file, conf, fs, true);
+  }
+
+  /**
+   * Add a file path to the current set of classpath entries. The file will
+   * also be added to the cache if {@code addToCache} is true.
+   *
+   * @param file Path of the file to be added.
+   * @param conf Configuration that contains the classpath setting.
+   * @param fs FileSystem with respect to which {@code file} should be interpreted.
+   * @param addToCache Whether the file should also be added to the cache list.
+   */
+  public static void addFileToClassPath(Path file, Configuration conf, FileSystem fs,
+      boolean addToCache) {
+    String classpath = conf.get(MRJobConfig.CLASSPATH_FILES);
+    conf.set(MRJobConfig.CLASSPATH_FILES,
+        classpath == null ? file.toString() : classpath + "," + file.toString());
+    if (addToCache) {
+      URI uri = fs.makeQualified(file).toUri();
+      Job.addCacheFile(uri, conf);
+    }
   }
 
   /**
@@ -1173,7 +1270,23 @@ public class Job extends JobContextImpl implements JobContext {
   public void addArchiveToClassPath(Path archive)
     throws IOException {
     ensureState(JobState.DEFINE);
-    DistributedCache.addArchiveToClassPath(archive, conf, archive.getFileSystem(conf));
+    addArchiveToClassPath(archive, conf, archive.getFileSystem(conf));
+  }
+
+  /**
+   * Add an archive path to the current set of classpath entries. It adds the
+   * archive to cache as well.
+   *
+   * @param archive Path of the archive to be added.
+   * @param conf Configuration that contains the classpath setting.
+   * @param fs FileSystem with respect to which {@code archive} should be interpreted.
+   */
+  public static void addArchiveToClassPath(Path archive, Configuration conf, FileSystem fs) {
+    String classpath = conf.get(MRJobConfig.CLASSPATH_ARCHIVES);
+    conf.set(MRJobConfig.CLASSPATH_ARCHIVES,
+        classpath == null ? archive.toString() : classpath + "," + archive.toString());
+    URI uri = fs.makeQualified(archive).toUri();
+    Job.addCacheArchive(uri, conf);
   }
 
   /**
@@ -1303,7 +1416,226 @@ public class Job extends JobContextImpl implements JobContext {
     }   
   }
 
-  private synchronized void connect()
+  /**
+   * Add a file to job config for shared cache processing. If shared cache is
+   * enabled, it will return true, otherwise, return false. We don't check with
+   * SCM here given application might not be able to provide the job id;
+   * ClientSCMProtocol.use requires the application id. Job Submitter will read
+   * the files from job config and take care of things.
+   *
+   * @param resource The resource that Job Submitter will process later using
+   *          shared cache.
+   * @param conf Configuration to add the resource to
+   * @return whether the resource has been added to the configuration
+   */
+  @Unstable
+  public static boolean addFileToSharedCache(URI resource, Configuration conf) {
+    SharedCacheConfig scConfig = new SharedCacheConfig();
+    scConfig.init(conf);
+    if (scConfig.isSharedCacheFilesEnabled()) {
+      String files = conf.get(MRJobConfig.FILES_FOR_SHARED_CACHE);
+      conf.set(
+          MRJobConfig.FILES_FOR_SHARED_CACHE,
+          files == null ? resource.toString() : files + ","
+              + resource.toString());
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  /**
+   * Add a file to job config for shared cache processing. If shared cache is
+   * enabled, it will return true, otherwise, return false. We don't check with
+   * SCM here given application might not be able to provide the job id;
+   * ClientSCMProtocol.use requires the application id. Job Submitter will read
+   * the files from job config and take care of things. Job Submitter will also
+   * add the file to classpath. Intended to be used by user code.
+   *
+   * @param resource The resource that Job Submitter will process later using
+   *          shared cache.
+   * @param conf Configuration to add the resource to
+   * @return whether the resource has been added to the configuration
+   */
+  @Unstable
+  public static boolean addFileToSharedCacheAndClasspath(URI resource,
+      Configuration conf) {
+    SharedCacheConfig scConfig = new SharedCacheConfig();
+    scConfig.init(conf);
+    if (scConfig.isSharedCacheLibjarsEnabled()) {
+      String files =
+          conf.get(MRJobConfig.FILES_FOR_CLASSPATH_AND_SHARED_CACHE);
+      conf.set(
+          MRJobConfig.FILES_FOR_CLASSPATH_AND_SHARED_CACHE,
+          files == null ? resource.toString() : files + ","
+              + resource.toString());
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  /**
+   * Add an archive to job config for shared cache processing. If shared cache
+   * is enabled, it will return true, otherwise, return false. We don't check
+   * with SCM here given application might not be able to provide the job id;
+   * ClientSCMProtocol.use requires the application id. Job Submitter will read
+   * the files from job config and take care of things. Intended to be used by
+   * user code.
+   *
+   * @param resource The resource that Job Submitter will process later using
+   *          shared cache.
+   * @param conf Configuration to add the resource to
+   * @return whether the resource has been added to the configuration
+   */
+  @Unstable
+  public static boolean addArchiveToSharedCache(URI resource,
+      Configuration conf) {
+    SharedCacheConfig scConfig = new SharedCacheConfig();
+    scConfig.init(conf);
+    if (scConfig.isSharedCacheArchivesEnabled()) {
+      String files = conf.get(MRJobConfig.ARCHIVES_FOR_SHARED_CACHE);
+      conf.set(
+          MRJobConfig.ARCHIVES_FOR_SHARED_CACHE,
+          files == null ? resource.toString() : files + ","
+              + resource.toString());
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  /**
+   * This is to set the shared cache upload policies for files. If the parameter
+   * was previously set, this method will replace the old value with the new
+   * provided map.
+   *
+   * @param conf Configuration which stores the shared cache upload policies
+   * @param policies A map containing the shared cache upload policies for a set
+   *          of resources. The key is the url of the resource and the value is
+   *          the upload policy. True if it should be uploaded, false otherwise.
+   */
+  @Unstable
+  public static void setFileSharedCacheUploadPolicies(Configuration conf,
+      Map<String, Boolean> policies) {
+    setSharedCacheUploadPolicies(conf, policies, true);
+  }
+
+  /**
+   * This is to set the shared cache upload policies for archives. If the
+   * parameter was previously set, this method will replace the old value with
+   * the new provided map.
+   *
+   * @param conf Configuration which stores the shared cache upload policies
+   * @param policies A map containing the shared cache upload policies for a set
+   *          of resources. The key is the url of the resource and the value is
+   *          the upload policy. True if it should be uploaded, false otherwise.
+   */
+  @Unstable
+  public static void setArchiveSharedCacheUploadPolicies(Configuration conf,
+      Map<String, Boolean> policies) {
+    setSharedCacheUploadPolicies(conf, policies, false);
+  }
+
+  // We use a double colon because a colon is a reserved character in a URI and
+  // there should not be two colons next to each other.
+  private static final String DELIM = "::";
+
+  /**
+   * Set the shared cache upload policies config parameter. This is done by
+   * serializing the provided map of shared cache upload policies into a config
+   * parameter. If the parameter was previously set, this method will replace
+   * the old value with the new provided map.
+   *
+   * @param conf Configuration which stores the shared cache upload policies
+   * @param policies A map containing the shared cache upload policies for a set
+   *          of resources. The key is the url of the resource and the value is
+   *          the upload policy. True if it should be uploaded, false otherwise.
+   * @param areFiles True if these policies are for files, false if they are for
+   *          archives.
+   */
+  private static void setSharedCacheUploadPolicies(Configuration conf,
+      Map<String, Boolean> policies, boolean areFiles) {
+    String confParam = areFiles ?
+        MRJobConfig.CACHE_FILES_SHARED_CACHE_UPLOAD_POLICIES :
+        MRJobConfig.CACHE_ARCHIVES_SHARED_CACHE_UPLOAD_POLICIES;
+    // If no policy is provided, we will reset the config by setting an empty
+    // string value. In other words, cleaning up existing policies. This is
+    // useful when we try to clean up shared cache upload policies for
+    // non-application master tasks. See MAPREDUCE-7294 for details.
+    if (policies == null || policies.size() == 0) {
+      conf.set(confParam, "");
+      return;
+    }
+    StringBuilder sb = new StringBuilder();
+    policies.forEach((k,v) -> sb.append(k).append(DELIM).append(v).append(","));
+    sb.deleteCharAt(sb.length() - 1);
+    conf.set(confParam, sb.toString());
+  }
+
+  /**
+   * Deserialize a map of shared cache upload policies from a config parameter.
+   *
+   * @param conf Configuration which stores the shared cache upload policies
+   * @param areFiles True if these policies are for files, false if they are for
+   *          archives.
+   * @return A map containing the shared cache upload policies for a set of
+   *         resources. The key is the url of the resource and the value is the
+   *         upload policy. True if it should be uploaded, false otherwise.
+   */
+  private static Map<String, Boolean> getSharedCacheUploadPolicies(
+      Configuration conf, boolean areFiles) {
+    String confParam =
+        areFiles ? MRJobConfig.CACHE_FILES_SHARED_CACHE_UPLOAD_POLICIES
+            : MRJobConfig.CACHE_ARCHIVES_SHARED_CACHE_UPLOAD_POLICIES;
+    Collection<String> policies = conf.getStringCollection(confParam);
+    String[] policy;
+    Map<String, Boolean> policyMap = new LinkedHashMap<String, Boolean>();
+    for (String s : policies) {
+      policy = s.split(DELIM);
+      if (policy.length != 2) {
+        LOG.error(confParam
+            + " is mis-formatted, returning empty shared cache upload policies."
+            + " Error on [" + s + "]");
+        return new LinkedHashMap<String, Boolean>();
+      }
+      policyMap.put(policy[0], Boolean.parseBoolean(policy[1]));
+    }
+    return policyMap;
+  }
+
+  /**
+   * This is to get the shared cache upload policies for files.
+   *
+   * @param conf Configuration which stores the shared cache upload policies
+   * @return A map containing the shared cache upload policies for a set of
+   *         resources. The key is the url of the resource and the value is the
+   *         upload policy. True if it should be uploaded, false otherwise.
+   */
+  @Unstable
+  public static Map<String, Boolean> getFileSharedCacheUploadPolicies(
+      Configuration conf) {
+    return getSharedCacheUploadPolicies(conf, true);
+  }
+
+  /**
+   * This is to get the shared cache upload policies for archives.
+   *
+   * @param conf Configuration which stores the shared cache upload policies
+   * @return A map containing the shared cache upload policies for a set of
+   *         resources. The key is the url of the resource and the value is the
+   *         upload policy. True if it should be uploaded, false otherwise.
+   */
+  @Unstable
+  public static Map<String, Boolean> getArchiveSharedCacheUploadPolicies(
+      Configuration conf) {
+    return getSharedCacheUploadPolicies(conf, false);
+  }
+
+  /** Only for mocking via unit tests. */
+  @Private
+  @VisibleForTesting
+  synchronized void connect()
           throws IOException, InterruptedException, ClassNotFoundException {
     if (cluster == null) {
       cluster = 
@@ -1323,7 +1655,8 @@ public class Job extends JobContextImpl implements JobContext {
 
   /** Only for mocking via unit tests. */
   @Private
-  public JobSubmitter getJobSubmitter(FileSystem fs, 
+  @VisibleForTesting
+  JobSubmitter getJobSubmitter(FileSystem fs,
       ClientProtocol submitClient) throws IOException {
     return new JobSubmitter(fs, submitClient);
   }
@@ -1553,4 +1886,15 @@ public class Job extends JobContextImpl implements JobContext {
     this.reservationId = reservationId;
   }
   
+  /**
+   * Close the <code>Job</code>.
+   * @throws IOException if fail to close.
+   */
+  @Override
+  public void close() throws IOException {
+    if (cluster != null) {
+      cluster.close();
+      cluster = null;
+    }
+  }
 }

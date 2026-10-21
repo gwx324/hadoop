@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
 import java.util.EnumSet;
@@ -26,9 +26,11 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.permission.PermissionStatus;
+import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.net.DFSNetworkTopology;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
@@ -36,9 +38,9 @@ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.net.StaticMapping;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestDefaultBlockPlacementPolicy {
 
@@ -49,7 +51,7 @@ public class TestDefaultBlockPlacementPolicy {
   private FSNamesystem namesystem = null;
   private PermissionStatus perm = null;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     StaticMapping.resetMap();
     Configuration conf = new HdfsConfiguration();
@@ -67,7 +69,7 @@ public class TestDefaultBlockPlacementPolicy {
         FsPermission.getDefault());
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     if (cluster != null) {
       cluster.shutdown();
@@ -97,6 +99,71 @@ public class TestDefaultBlockPlacementPolicy {
     testPlacement(clientMachine, "/RACK3", true);
   }
 
+  @Test
+  public void testNonLocalRackPlacement() throws Exception {
+    String clientMachine = "/host0";
+    EnumSet<CreateFlag> flags = EnumSet.of(CreateFlag.CREATE);
+    flags.add(CreateFlag.NO_LOCAL_RACK);
+    HdfsFileStatus fileStatus = namesystem.startFile("/file", perm,
+        clientMachine, clientMachine, flags, true, REPLICATION_FACTOR,
+        DEFAULT_BLOCK_SIZE, null, null, null, false);
+    LocatedBlock locatedBlock = nameNodeRpc.addBlock("/file", clientMachine,
+        null, null, fileStatus.getFileId(), null,
+        EnumSet.of(AddBlockFlag.NO_LOCAL_RACK));
+    assertTrue(locatedBlock.getLocations()[0].getNetworkLocation() != "/RACK0");
+    assertNotEquals("/RACK0",
+        locatedBlock.getLocations()[0].getNetworkLocation());
+    assertNotEquals("/RACK0",
+        locatedBlock.getLocations()[1].getNetworkLocation());
+    assertNotEquals("/RACK0",
+        locatedBlock.getLocations()[2].getNetworkLocation());
+  }
+
+  /**
+   * Verify local node selection with using DFSNetworkTopology.
+   */
+  @Test
+  public void testPlacementWithDFSNetworkTopology() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    final String[] racks = {"/RACK0", "/RACK0", "/RACK2", "/RACK3", "/RACK2"};
+    final String[] hosts = {"/host0", "/host1", "/host2", "/host3", "/host4"};
+
+    // enables DFSNetworkTopology
+    conf.setBoolean(DFSConfigKeys.DFS_USE_DFS_NETWORK_TOPOLOGY_KEY, true);
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, DEFAULT_BLOCK_SIZE);
+    conf.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY,
+        DEFAULT_BLOCK_SIZE / 2);
+
+    if (cluster != null) {
+      cluster.shutdown();
+    }
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(5).racks(racks)
+        .hosts(hosts).build();
+    cluster.waitActive();
+    nameNodeRpc = cluster.getNameNodeRpc();
+    namesystem = cluster.getNamesystem();
+
+    DatanodeManager dm = namesystem.getBlockManager().getDatanodeManager();
+    assertTrue(dm.getNetworkTopology() instanceof DFSNetworkTopology);
+
+    String clientMachine = "/host3";
+    String clientRack = "/RACK3";
+    String src = "/test";
+    // Create the file with client machine
+    HdfsFileStatus fileStatus = namesystem.startFile(src, perm, clientMachine,
+        clientMachine, EnumSet.of(CreateFlag.CREATE), true, REPLICATION_FACTOR,
+        DEFAULT_BLOCK_SIZE, null, null, null, false);
+    LocatedBlock locatedBlock = nameNodeRpc.addBlock(src, clientMachine, null,
+        null, fileStatus.getFileId(), null, null);
+
+    assertEquals(REPLICATION_FACTOR, locatedBlock.getLocations().length,
+        "Block should be allocated sufficient locations");
+    assertEquals(clientRack, locatedBlock.getLocations()[0].getNetworkLocation(),
+        "First datanode should be rack local");
+    nameNodeRpc.abandonBlock(locatedBlock.getBlock(), fileStatus.getFileId(),
+        src, clientMachine);
+  }
+
   /**
    * Verify decommissioned nodes should not be selected.
    */
@@ -110,11 +177,11 @@ public class TestDefaultBlockPlacementPolicy {
     DatanodeDescriptor dnd3 = dnm.getDatanode(
         cluster.getDataNodes().get(3).getDatanodeId());
     assertEquals(dnd3.getNetworkLocation(), clientRack);
-    dnm.getDecomManager().startDecommission(dnd3);
+    dnm.getDatanodeAdminManager().startDecommission(dnd3);
     try {
       testPlacement(clientMachine, clientRack, false);
     } finally {
-      dnm.getDecomManager().stopDecommission(dnd3);
+      dnm.getDatanodeAdminManager().stopDecommission(dnd3);
     }
   }
 
@@ -138,16 +205,16 @@ public class TestDefaultBlockPlacementPolicy {
       // Create the file with client machine
       HdfsFileStatus fileStatus = namesystem.startFile(src, perm,
           clientMachine, clientMachine, EnumSet.of(CreateFlag.CREATE), true,
-          REPLICATION_FACTOR, DEFAULT_BLOCK_SIZE, null, false);
+          REPLICATION_FACTOR, DEFAULT_BLOCK_SIZE, null, null, null, false);
       LocatedBlock locatedBlock = nameNodeRpc.addBlock(src, clientMachine,
           null, null, fileStatus.getFileId(), null, null);
 
-      assertEquals("Block should be allocated sufficient locations",
-          REPLICATION_FACTOR, locatedBlock.getLocations().length);
+      assertEquals(REPLICATION_FACTOR, locatedBlock.getLocations().length,
+          "Block should be allocated sufficient locations");
       if (clientRack != null) {
         if (hasBlockReplicaOnRack) {
-          assertEquals("First datanode should be rack local", clientRack,
-              locatedBlock.getLocations()[0].getNetworkLocation());
+          assertEquals(clientRack, locatedBlock.getLocations()[0].getNetworkLocation(),
+              "First datanode should be rack local");
         } else {
           for (DatanodeInfo dni : locatedBlock.getLocations()) {
             assertNotEquals(clientRack, dni.getNetworkLocation());

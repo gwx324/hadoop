@@ -20,10 +20,10 @@ package org.apache.hadoop.tools;
 
 import java.io.DataInput;
 import java.io.DataOutput;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -38,8 +38,10 @@ import org.apache.commons.cli.GnuParser;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.Parser;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.mapreduce.security.TokenCache;
+import org.apache.hadoop.security.Credentials;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -73,8 +75,6 @@ import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
-import com.google.common.base.Charsets;
-
 /**
  * a archive creation utility.
  * This class provides methods that can be used 
@@ -83,7 +83,7 @@ import com.google.common.base.Charsets;
  */
 public class HadoopArchives implements Tool {
   public static final int VERSION = 3;
-  private static final Log LOG = LogFactory.getLog(HadoopArchives.class);
+  private static final Logger LOG = LoggerFactory.getLogger(HadoopArchives.class);
   
   private static final String NAME = "har"; 
   private static final String ARCHIVE_NAME = "archiveName";
@@ -149,9 +149,7 @@ public class HadoopArchives implements Tool {
   IOException {
     for (Path p : paths) {
       FileSystem fs = p.getFileSystem(conf);
-      if (!fs.exists(p)) {
-        throw new FileNotFoundException("Source " + p + " does not exist.");
-      }
+      fs.getFileStatus(p);
     }
   }
 
@@ -476,7 +474,7 @@ public class HadoopArchives implements Tool {
     conf.setLong(HAR_BLOCKSIZE_LABEL, blockSize);
     conf.setLong(HAR_PARTSIZE_LABEL, partSize);
     conf.set(DST_HAR_LABEL, archiveName);
-    conf.set(SRC_PARENT_LABEL, parentPath.makeQualified(fs).toString());
+    conf.set(SRC_PARENT_LABEL, fs.makeQualified(parentPath).toString());
     conf.setInt(HAR_REPLICATION_LABEL, repl);
     Path outputPath = new Path(dest, archiveName);
     FileOutputFormat.setOutputPath(conf, outputPath);
@@ -490,6 +488,11 @@ public class HadoopArchives implements Tool {
           + " should be a directory but is a file");
     }
     conf.set(DST_DIR_LABEL, outputPath.toString());
+    Credentials credentials = conf.getCredentials();
+    Path[] allPaths = new Path[] {parentPath, dest};
+    TokenCache.obtainTokensForNamenodes(credentials, allPaths, conf);
+    conf.setCredentials(credentials);
+
     Path stagingArea;
     try {
       stagingArea = JobSubmissionFiles.getStagingDir(new Cluster(conf), 
@@ -501,11 +504,11 @@ public class HadoopArchives implements Tool {
         NAME+"_"+Integer.toString(new Random().nextInt(Integer.MAX_VALUE), 36));
     FsPermission mapredSysPerms = 
       new FsPermission(JobSubmissionFiles.JOB_DIR_PERMISSION);
-    FileSystem.mkdirs(jobDirectory.getFileSystem(conf), jobDirectory,
-                      mapredSysPerms);
+    FileSystem jobfs = jobDirectory.getFileSystem(conf);
+    FileSystem.mkdirs(jobfs, jobDirectory,
+        mapredSysPerms);
     conf.set(JOB_DIR_LABEL, jobDirectory.toString());
     //get a tmp directory for input splits
-    FileSystem jobfs = jobDirectory.getFileSystem(conf);
     Path srcFiles = new Path(jobDirectory, "_har_src_files");
     conf.set(SRC_LIST_LABEL, srcFiles.toString());
     SequenceFile.Writer srcWriter = SequenceFile.createWriter(jobfs, conf,
@@ -619,9 +622,7 @@ public class HadoopArchives implements Tool {
       try {
         destFs = tmpOutput.getFileSystem(conf);
         //this was a stale copy
-        if (destFs.exists(tmpOutput)) {
-          destFs.delete(tmpOutput, false);
-        } 
+        destFs.delete(tmpOutput, false);
         partStream = destFs.create(tmpOutput, false, conf.getInt("io.file.buffer.size", 4096), 
             destFs.getDefaultReplication(tmpOutput), blockSize);
       } catch(IOException ie) {
@@ -690,7 +691,7 @@ public class HadoopArchives implements Tool {
       if (value.isDir()) { 
         towrite = encodeName(relPath.toString())
                   + " dir " + propStr + " 0 0 ";
-        StringBuffer sbuff = new StringBuffer();
+        StringBuilder sbuff = new StringBuilder();
         sbuff.append(towrite);
         for (String child: value.children) {
           sbuff.append(encodeName(child) + " ");
@@ -747,16 +748,12 @@ public class HadoopArchives implements Tool {
       replication = conf.getInt(HAR_REPLICATION_LABEL, 3);
       try {
         fs = masterIndex.getFileSystem(conf);
-        if (fs.exists(masterIndex)) {
-          fs.delete(masterIndex, false);
-        }
-        if (fs.exists(index)) {
-          fs.delete(index, false);
-        }
+        fs.delete(masterIndex, false);
+        fs.delete(index, false);
         indexStream = fs.create(index);
         outStream = fs.create(masterIndex);
         String version = VERSION + " \n";
-        outStream.write(version.getBytes(Charsets.UTF_8));
+        outStream.write(version.getBytes(StandardCharsets.UTF_8));
         
       } catch(IOException e) {
         throw new RuntimeException(e);
@@ -775,7 +772,7 @@ public class HadoopArchives implements Tool {
       while(values.hasNext()) {
         Text value = values.next();
         String towrite = value.toString() + "\n";
-        indexStream.write(towrite.getBytes(Charsets.UTF_8));
+        indexStream.write(towrite.getBytes(StandardCharsets.UTF_8));
         written++;
         if (written > numIndexes -1) {
           // every 1000 indexes we report status
@@ -784,7 +781,7 @@ public class HadoopArchives implements Tool {
           endIndex = keyVal;
           String masterWrite = startIndex + " " + endIndex + " " + startPos 
                               +  " " + indexStream.getPos() + " \n" ;
-          outStream.write(masterWrite.getBytes(Charsets.UTF_8));
+          outStream.write(masterWrite.getBytes(StandardCharsets.UTF_8));
           startPos = indexStream.getPos();
           startIndex = endIndex;
           written = 0;
@@ -797,7 +794,7 @@ public class HadoopArchives implements Tool {
       if (written > 0) {
         String masterWrite = startIndex + " " + keyVal + " " + startPos  +
                              " " + indexStream.getPos() + " \n";
-        outStream.write(masterWrite.getBytes(Charsets.UTF_8));
+        outStream.write(masterWrite.getBytes(StandardCharsets.UTF_8));
       }
       // close the streams
       outStream.close();

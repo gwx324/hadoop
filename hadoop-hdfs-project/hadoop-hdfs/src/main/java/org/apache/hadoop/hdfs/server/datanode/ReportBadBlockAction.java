@@ -20,8 +20,10 @@ package org.apache.hadoop.hdfs.server.datanode;
 
 import java.io.IOException;
 
+import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo.DatanodeInfoBuilder;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
@@ -52,7 +54,8 @@ public class ReportBadBlockAction implements BPServiceActorAction {
     if (bpRegistration == null) {
       return;
     }
-    DatanodeInfo[] dnArr = { new DatanodeInfo(bpRegistration) };
+    DatanodeInfo[] dnArr = {new DatanodeInfoBuilder()
+        .setNodeID(bpRegistration).build()};
     String[] uuids = { storageUuid };
     StorageType[] types = { storageType };
     LocatedBlock[] locatedBlock = { new LocatedBlock(block,
@@ -86,7 +89,7 @@ public class ReportBadBlockAction implements BPServiceActorAction {
     if (this == obj) {
       return true;
     }
-    if (obj == null || !(obj instanceof ReportBadBlockAction)) {
+    if (!(obj instanceof ReportBadBlockAction)) {
       return false;
     }
     ReportBadBlockAction other = (ReportBadBlockAction) obj;
@@ -108,5 +111,14 @@ public class ReportBadBlockAction implements BPServiceActorAction {
       return false;
     }
     return true;
+  }
+
+  @Override
+  public String toString() {
+    return new ToStringBuilder(this)
+        .append("block", block)
+        .append("storageUuid", storageUuid)
+        .append("storageType", storageType)
+        .toString();
   }
 }

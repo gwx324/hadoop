@@ -18,17 +18,18 @@
 
 package org.apache.hadoop.yarn.util;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.hadoop.test.PlatformAssumptions.assumeWindows;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestWindowsBasedProcessTree {
-  private static final Log LOG = LogFactory
-      .getLog(TestWindowsBasedProcessTree.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestWindowsBasedProcessTree.class);
 
   class WindowsBasedProcessTreeTester extends WindowsBasedProcessTree {
     String infoStr = null;
@@ -42,12 +43,13 @@ public class TestWindowsBasedProcessTree {
     }
   }
 
-  @Test (timeout = 30000)
+  @Test
+  @Timeout(30000)
   @SuppressWarnings("deprecation")
-  public void tree() {
+  void tree() {
     assumeWindows();
-    assertTrue("WindowsBasedProcessTree should be available on Windows", 
-               WindowsBasedProcessTree.isAvailable());
+    assertTrue(WindowsBasedProcessTree.isAvailable(),
+        "WindowsBasedProcessTree should be available on Windows");
     ControlledClock testClock = new ControlledClock();
     long elapsedTimeBetweenUpdatesMsec = 0;
     testClock.setTime(elapsedTimeBetweenUpdatesMsec);
@@ -56,13 +58,9 @@ public class TestWindowsBasedProcessTree {
     pTree.infoStr = "3524,1024,1024,500\r\n2844,1024,1024,500\r\n";
     pTree.updateProcessTree();
     assertTrue(pTree.getVirtualMemorySize() == 2048);
-    assertTrue(pTree.getCumulativeVmem() == 2048);
     assertTrue(pTree.getVirtualMemorySize(0) == 2048);
-    assertTrue(pTree.getCumulativeVmem(0) == 2048);
     assertTrue(pTree.getRssMemorySize() == 2048);
-    assertTrue(pTree.getCumulativeRssmem() == 2048);
     assertTrue(pTree.getRssMemorySize(0) == 2048);
-    assertTrue(pTree.getCumulativeRssmem(0) == 2048);
     assertTrue(pTree.getCumulativeCpuTime() == 1000);
     assertTrue(pTree.getCpuUsagePercent() == ResourceCalculatorProcessTree.UNAVAILABLE);
 
@@ -71,32 +69,22 @@ public class TestWindowsBasedProcessTree {
     testClock.setTime(elapsedTimeBetweenUpdatesMsec);
     pTree.updateProcessTree();
     assertTrue(pTree.getVirtualMemorySize() == 3072);
-    assertTrue(pTree.getCumulativeVmem() == 3072);
     assertTrue(pTree.getVirtualMemorySize(1) == 2048);
-    assertTrue(pTree.getCumulativeVmem(1) == 2048);
     assertTrue(pTree.getRssMemorySize() == 3072);
-    assertTrue(pTree.getCumulativeRssmem() == 3072);
     assertTrue(pTree.getRssMemorySize(1) == 2048);
-    assertTrue(pTree.getCumulativeRssmem(1) == 2048);
     assertTrue(pTree.getCumulativeCpuTime() == 3000);
     assertTrue(pTree.getCpuUsagePercent() == 200);
-    Assert.assertEquals("Percent CPU time is not correct",
-        pTree.getCpuUsagePercent(), 200, 0.01);
+    assertEquals(pTree.getCpuUsagePercent(), 200, 0.01, "Percent CPU time is not correct");
 
     pTree.infoStr = "3524,1024,1024,1500\r\n2844,1024,1024,1500\r\n";
     elapsedTimeBetweenUpdatesMsec = 2000;
     testClock.setTime(elapsedTimeBetweenUpdatesMsec);
     pTree.updateProcessTree();
     assertTrue(pTree.getVirtualMemorySize() == 2048);
-    assertTrue(pTree.getCumulativeVmem() == 2048);
     assertTrue(pTree.getVirtualMemorySize(2) == 2048);
-    assertTrue(pTree.getCumulativeVmem(2) == 2048);
     assertTrue(pTree.getRssMemorySize() == 2048);
-    assertTrue(pTree.getCumulativeRssmem() == 2048);
     assertTrue(pTree.getRssMemorySize(2) == 2048);
-    assertTrue(pTree.getCumulativeRssmem(2) == 2048);
     assertTrue(pTree.getCumulativeCpuTime() == 4000);
-    Assert.assertEquals("Percent CPU time is not correct",
-        pTree.getCpuUsagePercent(), 0, 0.01);
+    assertEquals(pTree.getCpuUsagePercent(), 0, 0.01, "Percent CPU time is not correct");
   }
 }

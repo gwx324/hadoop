@@ -18,9 +18,10 @@
 
 package org.apache.hadoop.metrics2.lib;
 
-import org.junit.Test;
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.verify;
 import org.apache.hadoop.metrics2.MetricsCollector;
 import org.apache.hadoop.metrics2.MetricsException;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
@@ -39,6 +40,7 @@ public class TestMetricsAnnotations {
     @Metric({"Counter2", "Counter2 desc"}) MutableCounterLong c2;
     @Metric MutableGaugeInt g1, g2;
     @Metric("g3 desc") MutableGaugeLong g3;
+    @Metric("g4 desc") MutableGaugeFloat g4;
     @Metric MutableRate r1;
     @Metric MutableStat s1;
     @Metric MutableRates rs1;
@@ -53,6 +55,7 @@ public class TestMetricsAnnotations {
     metrics.g1.incr();
     metrics.g2.incr();
     metrics.g3.incr();
+    metrics.g4.incr();
     metrics.r1.add(1);
     metrics.s1.add(1);
     metrics.rs1.add("rs1", 1);
@@ -64,6 +67,7 @@ public class TestMetricsAnnotations {
     verify(rb).addGauge(info("G1", "G1"), 1);
     verify(rb).addGauge(info("G2", "G2"), 1);
     verify(rb).addGauge(info("G3", "g3 desc"), 1L);
+    verify(rb).addGauge(info("G4", "g4 desc"), 1f);
     verify(rb).addCounter(info("R1NumOps", "Number of ops for r1"), 1L);
     verify(rb).addGauge(info("R1AvgTime", "Average time for r1"), 1.0);
     verify(rb).addCounter(info("S1NumOps", "Number of ops for s1"), 1L);
@@ -76,8 +80,10 @@ public class TestMetricsAnnotations {
     @Metric Integer i0;
   }
 
-  @Test(expected=MetricsException.class) public void testBadFields() {
-    MetricsAnnotations.makeSource(new BadMetrics());
+  @Test
+  public void testBadFields() {
+    assertThrows(MetricsException.class, () ->
+        MetricsAnnotations.makeSource(new BadMetrics()));
   }
 
   static class MyMetrics2 {
@@ -108,18 +114,20 @@ public class TestMetricsAnnotations {
     @Metric int foo(int i) { return i; }
   }
 
-  @Test(expected=IllegalArgumentException.class)
+  @Test
   public void testBadMethodWithArgs() {
-    MetricsAnnotations.makeSource(new BadMetrics2());
+    assertThrows(IllegalArgumentException.class,
+        ()-> MetricsAnnotations.makeSource(new BadMetrics2()));
   }
 
   static class BadMetrics3 {
     @Metric boolean foo() { return true; }
   }
 
-  @Test(expected=MetricsException.class)
+  @Test
   public void testBadMethodReturnType() {
-    MetricsAnnotations.makeSource(new BadMetrics3());
+    assertThrows(MetricsException.class,
+        ()-> MetricsAnnotations.makeSource(new BadMetrics3()));
   }
 
   @Metrics(about="My metrics", context="foo")
@@ -188,15 +196,19 @@ public class TestMetricsAnnotations {
     }
   }
 
-  @Test(expected=MetricsException.class) public void testBadHybrid() {
-    MetricsAnnotations.makeSource(new BadHybridMetrics());
+  @Test
+  public void testBadHybrid() {
+    assertThrows(MetricsException.class,
+        ()-> MetricsAnnotations.makeSource(new BadHybridMetrics()));
   }
 
   static class EmptyMetrics {
     int foo;
   }
 
-  @Test(expected=MetricsException.class) public void testEmptyMetrics() {
-    MetricsAnnotations.makeSource(new EmptyMetrics());
+  @Test
+  public void testEmptyMetrics() {
+    assertThrows(MetricsException.class, ()->
+        MetricsAnnotations.makeSource(new EmptyMetrics()));
   }
 }

@@ -33,6 +33,7 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.PrintStream;
 import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.Map;
 
@@ -72,7 +73,7 @@ class JSONHistoryViewerPrinter implements HistoryViewerPrinter {
       printTaskSummary();
       printTasks();
 
-      writer = new OutputStreamWriter(ps, "UTF-8");
+      writer = new OutputStreamWriter(ps, StandardCharsets.UTF_8);
       json.write(writer);
       writer.flush();
     } catch (JSONException je) {
@@ -104,7 +105,8 @@ class JSONHistoryViewerPrinter implements HistoryViewerPrinter {
     // Killed jobs might not have counters
     if (totalCounters != null) {
       JSONObject jGroups = new JSONObject();
-      for (String groupName : totalCounters.getGroupNames()) {
+      for (CounterGroup counterGroup : totalCounters) {
+        String groupName = counterGroup.getName();
         CounterGroup totalGroup = totalCounters.getGroup(groupName);
         CounterGroup mapGroup = mapCounters.getGroup(groupName);
         CounterGroup reduceGroup = reduceCounters.getGroup(groupName);
@@ -145,7 +147,7 @@ class JSONHistoryViewerPrinter implements HistoryViewerPrinter {
     jSums.put("setup", jSumSetup);
     JSONObject jSumMap = new JSONObject();
     jSumMap.put("total", ts.totalMaps);
-    jSumMap.put("successful", job.getFinishedMaps());
+    jSumMap.put("successful", job.getSucceededMaps());
     jSumMap.put("failed", ts.numFailedMaps);
     jSumMap.put("killed", ts.numKilledMaps);
     jSumMap.put("startTime", ts.mapStarted);
@@ -153,7 +155,7 @@ class JSONHistoryViewerPrinter implements HistoryViewerPrinter {
     jSums.put("map", jSumMap);
     JSONObject jSumReduce = new JSONObject();
     jSumReduce.put("total", ts.totalReduces);
-    jSumReduce.put("successful", job.getFinishedReduces());
+    jSumReduce.put("successful", job.getSucceededReduces());
     jSumReduce.put("failed", ts.numFailedReduces);
     jSumReduce.put("killed", ts.numKilledReduces);
     jSumReduce.put("startTime", ts.reduceStarted);

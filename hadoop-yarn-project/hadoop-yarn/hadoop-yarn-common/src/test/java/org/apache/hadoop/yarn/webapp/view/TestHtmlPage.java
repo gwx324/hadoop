@@ -18,39 +18,40 @@
 
 package org.apache.hadoop.yarn.webapp.view;
 
-import com.google.inject.Injector;
-
 import java.io.PrintWriter;
+
+import com.google.inject.Injector;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.yarn.webapp.MimeType;
 import org.apache.hadoop.yarn.webapp.WebAppException;
 import org.apache.hadoop.yarn.webapp.test.WebAppTests;
-import org.apache.hadoop.yarn.webapp.view.HtmlPage;
-import org.junit.Test;
 
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.verify;
 
 public class TestHtmlPage {
   
   public static class TestView extends HtmlPage {
     @Override
-    public void render(Page.HTML<_> html) {
+    public void render(Page.HTML<__> html) {
       html.
         title("test").
-        p("#testid")._("test note")._()._();
+        p("#testid").__("test note").__().__();
     }
   }
 
   public static class ShortView extends HtmlPage {
     @Override
-    public void render(Page.HTML<_> html) {
+    public void render(Page.HTML<__> html) {
       html.
         title("short test").
-        p()._("should throw");
+        p().__("should throw");
     }
   }
 
-  @Test public void testUsual() {
+  @Test
+  void testUsual() {
     Injector injector = WebAppTests.testPage(TestView.class);
     PrintWriter out = injector.getInstance(PrintWriter.class);
 
@@ -65,7 +66,10 @@ public class TestHtmlPage {
     verify(out).print("test note");
   }
 
-  @Test(expected=WebAppException.class) public void testShort() {
-    WebAppTests.testPage(ShortView.class);
+  @Test
+  void testShort() {
+    assertThrows(WebAppException.class, () -> {
+      WebAppTests.testPage(ShortView.class);
+    });
   }
 }

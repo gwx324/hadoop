@@ -17,10 +17,9 @@
  */
 package org.apache.hadoop.hdfs;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Supplier;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.util.Preconditions;
+import java.util.function.Supplier;
+import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -28,49 +27,62 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.server.datanode.BlockRecoveryWorker;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
+import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.TestInterDatanodeProtocol;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.Whitebox;
 import org.apache.hadoop.util.StringUtils;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeoutException;
 
-public class TestLeaseRecoveryStriped {
-  public static final Log LOG = LogFactory
-      .getLog(TestLeaseRecoveryStriped.class);
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
-  private static final ErasureCodingPolicy ecPolicy =
-      StripedFileTestUtil.TEST_EC_POLICY;
-  private static final int NUM_DATA_BLOCKS = StripedFileTestUtil.NUM_DATA_BLOCKS;
-  private static final int NUM_PARITY_BLOCKS = StripedFileTestUtil.NUM_PARITY_BLOCKS;
-  private static final int CELL_SIZE = StripedFileTestUtil.BLOCK_STRIPED_CELL_SIZE;
-  private static final int STRIPE_SIZE = NUM_DATA_BLOCKS * CELL_SIZE;
-  private static final int STRIPES_PER_BLOCK = 15;
-  private static final int BLOCK_SIZE = CELL_SIZE * STRIPES_PER_BLOCK;
-  private static final int BLOCK_GROUP_SIZE = BLOCK_SIZE * NUM_DATA_BLOCKS;
+@Tag("slow")
+public class TestLeaseRecoveryStriped {
+  public static final Logger LOG = LoggerFactory
+      .getLogger(TestLeaseRecoveryStriped.class);
+
+  private final ErasureCodingPolicy ecPolicy =
+      StripedFileTestUtil.getDefaultECPolicy();
+  private final int dataBlocks = ecPolicy.getNumDataUnits();
+  private final int parityBlocks = ecPolicy.getNumParityUnits();
+  private final int cellSize = ecPolicy.getCellSize();
+  private final int stripeSize = dataBlocks * cellSize;
+  private final int stripesPerBlock = 4;
+  private final int blockSize = cellSize * stripesPerBlock;
+  private final int blockGroupSize = blockSize * dataBlocks;
   private static final int bytesPerChecksum = 512;
 
   static {
-    GenericTestUtils.setLogLevel(DataNode.LOG, Level.ALL);
-    StripedFileTestUtil.stripesPerBlock = STRIPES_PER_BLOCK;
-    StripedFileTestUtil.blockSize = BLOCK_SIZE;
-    StripedFileTestUtil.BLOCK_GROUP_SIZE = BLOCK_GROUP_SIZE;
+    GenericTestUtils.setLogLevel(DataNode.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(DFSStripedOutputStream.LOG, Level.DEBUG);
+    GenericTestUtils.setLogLevel(BlockRecoveryWorker.LOG, Level.DEBUG);
+    GenericTestUtils.setLogLevel(DataStreamer.LOG, Level.DEBUG);
   }
 
   static private final String fakeUsername = "fakeUser1";
@@ -81,118 +93,280 @@ public class TestLeaseRecoveryStriped {
   private Configuration conf;
   private final Path dir = new Path("/" + this.getClass().getSimpleName());
   final Path p = new Path(dir, "testfile");
+  private final int testFileLength = (stripesPerBlock - 1) * stripeSize;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     conf = new HdfsConfiguration();
-    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCK_SIZE);
-    conf.setLong(HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, 6000L);
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY,
-        false);
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
+    conf.setLong(HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, 60000L);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, 0);
-    final int numDNs = NUM_DATA_BLOCKS + NUM_PARITY_BLOCKS;
+    final int numDNs = dataBlocks + parityBlocks;
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDNs).build();
     cluster.waitActive();
     dfs = cluster.getFileSystem();
+    dfs.enableErasureCodingPolicy(ecPolicy.getName());
     dfs.mkdirs(dir);
-    dfs.setErasureCodingPolicy(dir, ecPolicy);
+    dfs.setErasureCodingPolicy(dir, ecPolicy.getName());
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     if (cluster != null) {
       cluster.shutdown();
     }
   }
 
-  private static int[][][] getBlockLengthsSuite() {
-    final int groups = 4;
-    final int minNumCell = 3;
-    final int maxNumCell = 11;
-    final int minNumDelta = -4;
-    final int maxNumDelta = 2;
-    int delta = 0;
-    int[][][] blkLenSuite = new int[groups][][];
-    Random random = ThreadLocalRandom.current();
-    for (int i = 0; i < blkLenSuite.length; i++) {
-      if (i == blkLenSuite.length - 1) {
-        delta = bytesPerChecksum;
-      }
-      int[][] suite = new int[2][];
-      int[] lens = new int[NUM_DATA_BLOCKS + NUM_PARITY_BLOCKS];
-      long[] lenInLong = new long[lens.length];
-      for (int j = 0; j < lens.length; j++) {
-        int numCell = random.nextInt(maxNumCell - minNumCell + 1) + minNumCell;
-        int numDelta = j < NUM_DATA_BLOCKS ?
-            random.nextInt(maxNumDelta - minNumDelta + 1) + minNumDelta : 0;
-        lens[j] = CELL_SIZE * numCell + delta * numDelta;
-        lenInLong[j] = lens[j];
-      }
-      suite[0] = lens;
-      suite[1] = new int[]{
-          (int) StripedBlockUtil.getSafeLength(ecPolicy, lenInLong)};
-      blkLenSuite[i] = suite;
+  private static class BlockLengths {
+    private final int[] blockLengths;
+    private final long safeLength;
+
+    BlockLengths(ErasureCodingPolicy policy, int[] blockLengths) {
+      this.blockLengths = blockLengths;
+      long[] longArray = Arrays.stream(blockLengths).asLongStream().toArray();
+      this.safeLength = StripedBlockUtil.getSafeLength(policy, longArray);
     }
-    return blkLenSuite;
+
+    @Override
+    public String toString() {
+      return new ToStringBuilder(this)
+          .append("blockLengths", getBlockLengths())
+          .append("safeLength", getSafeLength())
+          .toString();
+    }
+
+    /**
+     * Length of each block in a block group.
+     */
+    public int[] getBlockLengths() {
+      return blockLengths;
+    }
+
+    /**
+     * Safe length, calculated by the block lengths.
+     */
+    public long getSafeLength() {
+      return safeLength;
+    }
   }
 
-  private static final int[][][] BLOCK_LENGTHS_SUITE = getBlockLengthsSuite();
+  private BlockLengths[] getBlockLengthsSuite() {
+    final int groups = 4;
+    final int minNumCell = 1;
+    final int maxNumCell = stripesPerBlock;
+    final int minNumDelta = -4;
+    final int maxNumDelta = 2;
+    BlockLengths[] suite = new BlockLengths[groups];
+    Random random = ThreadLocalRandom.current();
+    for (int i = 0; i < groups; i++) {
+      int[] blockLengths = new int[dataBlocks + parityBlocks];
+      for (int j = 0; j < blockLengths.length; j++) {
+        // Choose a random number of cells for the block
+        int numCell = random.nextInt(maxNumCell - minNumCell + 1) + minNumCell;
+        // For data blocks, jitter the length a bit
+        int numDelta = 0;
+        if (i == groups - 1 && j < dataBlocks) {
+          numDelta = random.nextInt(maxNumDelta - minNumDelta + 1) +
+              minNumDelta;
+        }
+        blockLengths[j] = (cellSize * numCell) + (bytesPerChecksum * numDelta);
+      }
+      suite[i] = new BlockLengths(ecPolicy, blockLengths);
+    }
+    return suite;
+  }
+
+  private final BlockLengths[] blockLengthsSuite = getBlockLengthsSuite();
 
   @Test
   public void testLeaseRecovery() throws Exception {
-    for (int i = 0; i < BLOCK_LENGTHS_SUITE.length; i++) {
-      int[] blockLengths = BLOCK_LENGTHS_SUITE[i][0];
-      int safeLength = BLOCK_LENGTHS_SUITE[i][1][0];
+    LOG.info("blockLengthsSuite: " +
+        Arrays.toString(blockLengthsSuite));
+    for (int i = 0; i < blockLengthsSuite.length; i++) {
+      BlockLengths blockLengths = blockLengthsSuite[i];
       try {
-        runTest(blockLengths, safeLength);
+        runTest(blockLengths.getBlockLengths(), blockLengths.getSafeLength());
       } catch (Throwable e) {
         String msg = "failed testCase at i=" + i + ", blockLengths="
-            + Arrays.toString(blockLengths) + "\n"
+            + blockLengths + "\n"
             + StringUtils.stringifyException(e);
-        Assert.fail(msg);
+        fail(msg);
       }
     }
   }
 
-  private void runTest(int[] blockLengths, int safeLength) throws Exception {
+  /**
+   * Test lease recovery for EC policy when one internal block located on
+   * stale datanode.
+   */
+  @Test
+  public void testLeaseRecoveryWithStaleDataNode() {
+    LOG.info("blockLengthsSuite: " +
+        Arrays.toString(blockLengthsSuite));
+    long staleInterval = conf.getLong(
+        DFSConfigKeys.DFS_NAMENODE_STALE_DATANODE_INTERVAL_KEY,
+        DFSConfigKeys.DFS_NAMENODE_STALE_DATANODE_INTERVAL_DEFAULT);
+
+    for (int i = 0; i < blockLengthsSuite.length; i++) {
+      BlockLengths blockLengths = blockLengthsSuite[i];
+      try {
+        writePartialBlocks(blockLengths.getBlockLengths());
+
+        // Get block info for the last block and mark corresponding datanode
+        // as stale.
+        LocatedBlock locatedblock =
+            TestInterDatanodeProtocol.getLastLocatedBlock(
+                dfs.dfs.getNamenode(), p.toString());
+        DatanodeInfo firstDataNode = locatedblock.getLocations()[0];
+        DatanodeDescriptor dnDes = cluster.getNameNode().getNamesystem()
+            .getBlockManager().getDatanodeManager()
+            .getDatanode(firstDataNode);
+        DataNodeTestUtils.setHeartbeatsDisabledForTests(
+            cluster.getDataNode(dnDes.getIpcPort()), true);
+        DFSTestUtil.resetLastUpdatesWithOffset(dnDes, -(staleInterval + 1));
+
+        long[] longArray = new long[blockLengths.getBlockLengths().length - 1];
+        for (int j = 0; j < longArray.length; ++j) {
+          longArray[j] = blockLengths.getBlockLengths()[j + 1];
+        }
+        int safeLength = (int) StripedBlockUtil.getSafeLength(ecPolicy,
+            longArray);
+        int checkDataLength = Math.min(testFileLength, safeLength);
+        recoverLease();
+        List<Long> oldGS = new ArrayList<>();
+        oldGS.add(1001L);
+        StripedFileTestUtil.checkData(dfs, p, checkDataLength,
+            new ArrayList<>(), oldGS, blockGroupSize);
+
+        DataNodeTestUtils.setHeartbeatsDisabledForTests(
+            cluster.getDataNode(dnDes.getIpcPort()), false);
+        DFSTestUtil.resetLastUpdatesWithOffset(dnDes, 0);
+
+      } catch (Throwable e) {
+        String msg = "failed testCase at i=" + i + ", blockLengths="
+            + blockLengths + "\n"
+            + StringUtils.stringifyException(e);
+        fail(msg);
+      }
+    }
+  }
+
+  @Test
+  public void testSafeLength() {
+    checkSafeLength(0, 0); // Length of: 0
+    checkSafeLength(1024 * 1024, 6291456L); // Length of: 1 MiB
+    checkSafeLength(64 * 1024 * 1024, 402653184L); // Length of: 64 MiB
+    checkSafeLength(189729792, 1132462080L); // Length of: 189729792
+    checkSafeLength(256 * 1024 * 1024, 1610612736L); // Length of: 256 MiB
+    checkSafeLength(517399040, 3101687808L); // Length of: 517399040
+    checkSafeLength(1024 * 1024 * 1024, 6442450944L); // Length of: 1 GiB
+  }
+
+  /**
+   * 1. Write 1MB data, then flush it.
+   * 2. Mock client quiet exceptionally.
+   * 3. Trigger lease recovery.
+   * 4. Lease recovery successfully.
+   */
+  @Test
+  public void testLeaseRecoveryWithManyZeroLengthReplica() {
+    int curCellSize = (int)1024 * 1024;
+    try {
+      final FSDataOutputStream out = dfs.create(p);
+      final DFSStripedOutputStream stripedOut = (DFSStripedOutputStream) out
+          .getWrappedStream();
+      for (int pos = 0; pos < curCellSize; pos++) {
+        out.write(StripedFileTestUtil.getByte(pos));
+      }
+      for (int i = 0; i < dataBlocks + parityBlocks; i++) {
+        StripedDataStreamer s = stripedOut.getStripedDataStreamer(i);
+        waitStreamerAllAcked(s);
+        stopBlockStream(s);
+      }
+      recoverLease();
+      LOG.info("Trigger recover lease manually successfully.");
+    } catch (Throwable e) {
+      String msg = "failed testCase" + StringUtils.stringifyException(e);
+      fail(msg);
+    }
+  }
+
+  private void checkSafeLength(int blockLength, long expectedSafeLength) {
+    int[] blockLengths = new int[]{blockLength, blockLength, blockLength, blockLength,
+        blockLength, blockLength};
+    long safeLength = new BlockLengths(ecPolicy, blockLengths).getSafeLength();
+    assertEquals(expectedSafeLength, safeLength);
+  }
+
+  private void runTest(int[] blockLengths, long safeLength) throws Exception {
     writePartialBlocks(blockLengths);
+
+    int checkDataLength = Math.min(testFileLength, (int)safeLength);
+
     recoverLease();
 
     List<Long> oldGS = new ArrayList<>();
     oldGS.add(1001L);
-    StripedFileTestUtil.checkData(dfs, p, safeLength,
-        new ArrayList<DatanodeInfo>(), oldGS);
+    StripedFileTestUtil.checkData(dfs, p, checkDataLength,
+        new ArrayList<DatanodeInfo>(), oldGS, blockGroupSize);
     // After recovery, storages are reported by primary DN. we should verify
     // storages reported by blockReport.
     cluster.restartNameNode(true);
-    StripedFileTestUtil.checkData(dfs, p, safeLength,
-        new ArrayList<DatanodeInfo>(), oldGS);
+    cluster.waitFirstBRCompleted(0, 10000);
+    StripedFileTestUtil.checkData(dfs, p, checkDataLength,
+        new ArrayList<DatanodeInfo>(), oldGS, blockGroupSize);
   }
 
+  /**
+   * Write a file with blocks of different lengths.
+   *
+   * This method depends on completing before the DFS socket timeout.
+   * Otherwise, the client will mark timed-out streamers as failed, and the
+   * write will fail if there are too many failed streamers.
+   *
+   * @param blockLengths lengths of blocks to write
+   * @throws Exception
+   */
   private void writePartialBlocks(int[] blockLengths) throws Exception {
     final FSDataOutputStream out = dfs.create(p);
     final DFSStripedOutputStream stripedOut = (DFSStripedOutputStream) out
         .getWrappedStream();
-    int length = (STRIPES_PER_BLOCK - 1) * STRIPE_SIZE;
     int[] posToKill = getPosToKill(blockLengths);
     int checkingPos = nextCheckingPos(posToKill, 0);
+    Set<Integer> stoppedStreamerIndexes = new HashSet<>();
     try {
-      for (int pos = 0; pos < length; pos++) {
+      for (int pos = 0; pos < testFileLength; pos++) {
         out.write(StripedFileTestUtil.getByte(pos));
         if (pos == checkingPos) {
           for (int index : getIndexToStop(posToKill, pos)) {
             out.flush();
             stripedOut.enqueueAllCurrentPackets();
+            LOG.info("Stopping block stream idx {} at file offset {} block " +
+                    "length {}", index, pos, blockLengths[index]);
             StripedDataStreamer s = stripedOut.getStripedDataStreamer(index);
             waitStreamerAllAcked(s);
             waitByteSent(s, blockLengths[index]);
             stopBlockStream(s);
+            stoppedStreamerIndexes.add(index);
           }
           checkingPos = nextCheckingPos(posToKill, pos);
         }
       }
     } finally {
+      // Flush everything
+      out.flush();
+      stripedOut.enqueueAllCurrentPackets();
+      // Wait for streamers that weren't killed above to be written out
+      for (int i=0; i< blockLengths.length; i++) {
+        if (stoppedStreamerIndexes.contains(i)) {
+          continue;
+        }
+        StripedDataStreamer s = stripedOut.getStripedDataStreamer(i);
+        LOG.info("Waiting for block stream idx {} to reach length {}", i,
+            blockLengths[i]);
+        waitStreamerAllAcked(s);
+      }
       DFSTestUtil.abortStream(stripedOut);
     }
   }
@@ -208,20 +382,20 @@ public class TestLeaseRecoveryStriped {
   }
 
   private int[] getPosToKill(int[] blockLengths) {
-    int[] posToKill = new int[NUM_DATA_BLOCKS + NUM_PARITY_BLOCKS];
-    for (int i = 0; i < NUM_DATA_BLOCKS; i++) {
-      int numStripe = (blockLengths[i] - 1) / CELL_SIZE;
-      posToKill[i] = numStripe * STRIPE_SIZE + i * CELL_SIZE
-          + blockLengths[i] % CELL_SIZE;
-      if (blockLengths[i] % CELL_SIZE == 0) {
-        posToKill[i] += CELL_SIZE;
+    int[] posToKill = new int[dataBlocks + parityBlocks];
+    for (int i = 0; i < dataBlocks; i++) {
+      int numStripe = (blockLengths[i] - 1) / cellSize;
+      posToKill[i] = numStripe * stripeSize + i * cellSize
+          + blockLengths[i] % cellSize;
+      if (blockLengths[i] % cellSize == 0) {
+        posToKill[i] += cellSize;
       }
     }
-    for (int i = NUM_DATA_BLOCKS; i < NUM_DATA_BLOCKS
-        + NUM_PARITY_BLOCKS; i++) {
-      Preconditions.checkArgument(blockLengths[i] % CELL_SIZE == 0);
-      int numStripe = (blockLengths[i]) / CELL_SIZE;
-      posToKill[i] = numStripe * STRIPE_SIZE;
+    for (int i = dataBlocks; i < dataBlocks
+        + parityBlocks; i++) {
+      Preconditions.checkArgument(blockLengths[i] % cellSize == 0);
+      int numStripe = (blockLengths[i]) / cellSize;
+      posToKill[i] = numStripe * stripeSize;
     }
     return posToKill;
   }
@@ -244,13 +418,20 @@ public class TestLeaseRecoveryStriped {
         public Boolean get() {
           return s.bytesSent >= byteSent;
         }
-      }, 100, 3000);
+      }, 100, 30000);
     } catch (TimeoutException e) {
       throw new IOException("Timeout waiting for streamer " + s + ". Sent="
           + s.bytesSent + ", expected=" + byteSent);
     }
   }
 
+  /**
+   * Stop the block stream without immediately inducing a hard failure.
+   * Packets can continue to be queued until the streamer hits a socket timeout.
+   *
+   * @param s
+   * @throws Exception
+   */
   private void stopBlockStream(StripedDataStreamer s) throws Exception {
     IOUtils.NullOutputStream nullOutputStream = new IOUtils.NullOutputStream();
     Whitebox.setInternalState(s, "blockStream",
@@ -258,8 +439,8 @@ public class TestLeaseRecoveryStriped {
   }
 
   private void recoverLease() throws Exception {
-    final DistributedFileSystem dfs2 = (DistributedFileSystem) getFSAsAnotherUser(
-        conf);
+    final DistributedFileSystem dfs2 =
+        (DistributedFileSystem) getFSAsAnotherUser(conf);
     try {
       GenericTestUtils.waitFor(new Supplier<Boolean>() {
         @Override

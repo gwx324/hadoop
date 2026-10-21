@@ -17,13 +17,20 @@
  */
 package org.apache.hadoop.mapreduce.v2.app.webapp;
 
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.Iterator;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.JobACL;
 import org.apache.hadoop.mapreduce.v2.api.records.JobId;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskId;
@@ -36,9 +43,8 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.webapp.Controller.RequestContext;
 import org.apache.hadoop.yarn.webapp.MimeType;
 import org.apache.hadoop.yarn.webapp.ResponseInfo;
-import org.junit.Before;
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestAppController {
 
@@ -47,7 +53,7 @@ public class TestAppController {
   private Job job;
   private static final String taskId = "task_01_01_m_01";
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     AppContext context = mock(AppContext.class);
     when(context.getApplicationID()).thenReturn(
@@ -59,6 +65,8 @@ public class TestAppController {
     Task task = mock(Task.class);
 
     when(job.getTask(any(TaskId.class))).thenReturn(task);
+    when(job.loadConfFile()).thenReturn(new Configuration());
+    when(job.getConfFile()).thenReturn(new Path("/"));
 
     JobId jobID = MRApps.toJobID("job_01_01");
     when(context.getJob(jobID)).thenReturn(job);
@@ -266,6 +274,16 @@ public class TestAppController {
   }
 
   /**
+   * Test downloadConf request handling.
+   */
+  @Test
+  public void testDownloadConfiguration() {
+    appController.downloadConf();
+    String jobConfXml = appController.getData();
+    assertTrue(!jobConfXml.contains("Error"), "Error downloading the job configuration file.");
+  }
+
+  /**
    *   Test method 'conf'. Should set AttemptsPage class for rendering or print information about error
    */
   @Test
@@ -305,6 +323,8 @@ public class TestAppController {
     appController.attempts();
 
     assertEquals(AttemptsPage.class, appController.getClazz());
+
+    appController.getProperty().remove(AMParams.ATTEMPT_STATE);
   }
 
 }

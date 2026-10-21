@@ -21,7 +21,6 @@ package org.apache.hadoop.mapreduce.v2.hs.webapp;
 import static org.apache.hadoop.yarn.webapp.view.JQueryUI.ACCORDION;
 import static org.apache.hadoop.yarn.webapp.view.JQueryUI.initID;
 
-import org.apache.hadoop.mapreduce.v2.hs.JobHistoryServer;
 import org.apache.hadoop.mapreduce.v2.hs.webapp.dao.HistoryInfo;
 import org.apache.hadoop.yarn.util.Times;
 import org.apache.hadoop.yarn.webapp.SubView;
@@ -36,10 +35,11 @@ public class HsAboutPage extends HsView {
    * (non-Javadoc)
    * @see org.apache.hadoop.mapreduce.v2.hs.webapp.HsView#preHead(org.apache.hadoop.yarn.webapp.hamlet.Hamlet.HTML)
    */
-  @Override protected void preHead(Page.HTML<_> html) {
+  @Override protected void preHead(Page.HTML<__> html) {
     commonPreHead(html);
     //override the nav config from commonPReHead
     set(initID(ACCORDION, "nav"), "{autoHeight:false, active:0}");
+    setTitle("About History Server");
   }
 
   /**
@@ -49,9 +49,9 @@ public class HsAboutPage extends HsView {
   @Override protected Class<? extends SubView> content() {
     HistoryInfo info = new HistoryInfo();
     info("History Server").
-      _("BuildVersion", info.getHadoopBuildVersion()
+        __("BuildVersion", info.getHadoopBuildVersion()
         + " on " + info.getHadoopVersionBuiltOn()).
-      _("History Server started on", Times.format(info.getStartedOn()));
+        __("History Server started on", Times.format(info.getStartedOn()));
     return InfoBlock.class;
   }
 }

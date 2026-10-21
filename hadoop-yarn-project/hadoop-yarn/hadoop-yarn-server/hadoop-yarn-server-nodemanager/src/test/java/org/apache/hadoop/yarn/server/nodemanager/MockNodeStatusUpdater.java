@@ -19,11 +19,11 @@
 package org.apache.hadoop.yarn.server.nodemanager;
 
 import java.io.IOException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
@@ -38,6 +38,7 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.UnRegisterNodeManagerRe
 import org.apache.hadoop.yarn.server.api.records.MasterKey;
 import org.apache.hadoop.yarn.server.api.records.NodeStatus;
 import org.apache.hadoop.yarn.server.api.records.impl.pb.MasterKeyPBImpl;
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.metrics.NodeManagerMetrics;
 import org.apache.hadoop.yarn.server.utils.YarnServerBuilderUtils;
 
@@ -46,7 +47,8 @@ import org.apache.hadoop.yarn.server.utils.YarnServerBuilderUtils;
  * real RM.
  */
 public class MockNodeStatusUpdater extends NodeStatusUpdaterImpl {
-  static final Log LOG = LogFactory.getLog(MockNodeStatusUpdater.class);
+  static final Logger LOG =
+       LoggerFactory.getLogger(MockNodeStatusUpdater.class);
   
   private static final RecordFactory recordFactory = RecordFactoryProvider
       .getRecordFactory(null);

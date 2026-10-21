@@ -18,15 +18,14 @@
 
 package org.apache.hadoop.yarn.server.timelineservice.storage.flow;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.util.EnumSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -41,14 +40,15 @@ import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
-import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.HRegionServer;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.timelineservice.FlowRunEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntities;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntityType;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineMetric;
+import org.apache.hadoop.yarn.server.timelineservice.collector.TimelineCollectorContext;
 import org.apache.hadoop.yarn.server.timelineservice.reader.TimelineDataToRetrieve;
 import org.apache.hadoop.yarn.server.timelineservice.reader.TimelineEntityFilters;
 import org.apache.hadoop.yarn.server.timelineservice.reader.TimelineReaderContext;
@@ -57,16 +57,17 @@ import org.apache.hadoop.yarn.server.timelineservice.reader.filter.TimelineCompa
 import org.apache.hadoop.yarn.server.timelineservice.reader.filter.TimelineFilterList;
 import org.apache.hadoop.yarn.server.timelineservice.reader.filter.TimelineFilterList.Operator;
 import org.apache.hadoop.yarn.server.timelineservice.reader.filter.TimelinePrefixFilter;
+import org.apache.hadoop.yarn.server.timelineservice.storage.DataGeneratorForTest;
 import org.apache.hadoop.yarn.server.timelineservice.storage.HBaseTimelineReaderImpl;
 import org.apache.hadoop.yarn.server.timelineservice.storage.HBaseTimelineWriterImpl;
 import org.apache.hadoop.yarn.server.timelineservice.storage.TimelineReader.Field;
-import org.apache.hadoop.yarn.server.timelineservice.storage.TimelineSchemaCreator;
+import org.apache.hadoop.yarn.server.timelineservice.storage.common.BaseTableRW;
 import org.apache.hadoop.yarn.server.timelineservice.storage.common.ColumnHelper;
-import org.apache.hadoop.yarn.server.timelineservice.storage.common.TimelineStorageUtils;
-import org.apache.hadoop.yarn.server.timelineservice.storage.entity.EntityTable;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.yarn.server.timelineservice.storage.common.HBaseTimelineServerUtils;
+import org.apache.hadoop.yarn.server.timelineservice.storage.entity.EntityTableRW;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests the FlowRun and FlowActivity Tables.
@@ -78,24 +79,29 @@ public class TestHBaseStorageFlowRun {
   private static final String METRIC1 = "MAP_SLOT_MILLIS";
   private static final String METRIC2 = "HDFS_BYTES_READ";
 
-  @BeforeClass
+  @BeforeAll
   public static void setupBeforeClass() throws Exception {
     util = new HBaseTestingUtility();
     Configuration conf = util.getConfiguration();
     conf.setInt("hfile.format.version", 3);
-    util.startMiniCluster();
-    createSchema();
-  }
-
-  private static void createSchema() throws IOException {
-    TimelineSchemaCreator.createAllTables(util.getConfiguration(), false);
+    try {
+      util.startMiniCluster();
+    } catch (Exception e) {
+      // TODO catch InaccessibleObjectException directly once Java 8 support is dropped
+      if (e.getClass().getSimpleName().equals("InaccessibleObjectException")) {
+        assumeTrue(false, "Could not start HBase because of HBASE-29234");
+      } else {
+        throw e;
+      }
+    }
+    DataGeneratorForTest.createSchema(util.getConfiguration());
   }
 
   @Test
-  public void checkCoProcessorOff() throws IOException, InterruptedException {
+  public void checkCoProcessorOff() throws Exception, InterruptedException {
     Configuration hbaseConf = util.getConfiguration();
-    TableName table = TableName.valueOf(hbaseConf.get(
-        FlowRunTable.TABLE_NAME_CONF_NAME, FlowRunTable.DEFAULT_TABLE_NAME));
+    TableName table = BaseTableRW.getTableName(hbaseConf,
+        FlowRunTableRW.TABLE_NAME_CONF_NAME, FlowRunTableRW.DEFAULT_TABLE_NAME);
     Connection conn = null;
     conn = ConnectionFactory.createConnection(hbaseConf);
     Admin admin = conn.getAdmin();
@@ -106,43 +112,33 @@ public class TestHBaseStorageFlowRun {
       // check the regions.
       // check in flow run table
       util.waitUntilAllRegionsAssigned(table);
-      HRegionServer server = util.getRSForFirstRegionInTable(table);
-      List<Region> regions = server.getOnlineRegions(table);
-      for (Region region : regions) {
-        assertTrue(TimelineStorageUtils.isFlowRunTable(region.getRegionInfo(),
-            hbaseConf));
-      }
+      checkCoprocessorExists(table, true);
     }
 
-    table = TableName.valueOf(hbaseConf.get(
-        FlowActivityTable.TABLE_NAME_CONF_NAME,
-        FlowActivityTable.DEFAULT_TABLE_NAME));
+    table = BaseTableRW.getTableName(hbaseConf,
+        FlowActivityTableRW.TABLE_NAME_CONF_NAME,
+        FlowActivityTableRW.DEFAULT_TABLE_NAME);
     if (admin.tableExists(table)) {
       // check the regions.
       // check in flow activity table
       util.waitUntilAllRegionsAssigned(table);
-      HRegionServer server = util.getRSForFirstRegionInTable(table);
-      List<Region> regions = server.getOnlineRegions(table);
-      for (Region region : regions) {
-        assertFalse(TimelineStorageUtils.isFlowRunTable(region.getRegionInfo(),
-            hbaseConf));
-      }
+      checkCoprocessorExists(table, false);
     }
 
-    table = TableName.valueOf(hbaseConf.get(
-        EntityTable.TABLE_NAME_CONF_NAME,
-        EntityTable.DEFAULT_TABLE_NAME));
+    table = BaseTableRW.getTableName(hbaseConf,
+        EntityTableRW.TABLE_NAME_CONF_NAME, EntityTableRW.DEFAULT_TABLE_NAME);
     if (admin.tableExists(table)) {
       // check the regions.
       // check in entity run table
       util.waitUntilAllRegionsAssigned(table);
-      HRegionServer server = util.getRSForFirstRegionInTable(table);
-      List<Region> regions = server.getOnlineRegions(table);
-      for (Region region : regions) {
-        assertFalse(TimelineStorageUtils.isFlowRunTable(region.getRegionInfo(),
-            hbaseConf));
-      }
+      checkCoprocessorExists(table, false);
     }
+  }
+
+  private void checkCoprocessorExists(TableName table, boolean exists)
+      throws Exception {
+    HRegionServer server = util.getRSForFirstRegionInTable(table);
+    HBaseTimelineServerUtils.validateFlowRunCoprocessor(server, table, exists);
   }
 
   /**
@@ -184,15 +180,20 @@ public class TestHBaseStorageFlowRun {
         .getEntityMinStartTime(minStartTs);
 
     try {
-      hbi = new HBaseTimelineWriterImpl(c1);
+      hbi = new HBaseTimelineWriterImpl();
       hbi.init(c1);
-      hbi.write(cluster, user, flow, flowVersion, runid, appName, te);
+
+      UserGroupInformation remoteUser =
+          UserGroupInformation.createRemoteUser(user);
+      hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+          runid, appName), te, remoteUser);
 
       // write another entity with the right min start time
       te = new TimelineEntities();
       te.addEntity(entityMinStartTime);
       appName = "application_100000000000_3333";
-      hbi.write(cluster, user, flow, flowVersion, runid, appName, te);
+      hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+          runid, appName), te, remoteUser);
 
       // writer another entity for max end time
       TimelineEntity entityMaxEndTime = TestFlowDataGenerator
@@ -200,7 +201,8 @@ public class TestHBaseStorageFlowRun {
       te = new TimelineEntities();
       te.addEntity(entityMaxEndTime);
       appName = "application_100000000000_4444";
-      hbi.write(cluster, user, flow, flowVersion, runid, appName, te);
+      hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+          runid, appName), te, remoteUser);
 
       // writer another entity with greater start time
       TimelineEntity entityGreaterStartTime = TestFlowDataGenerator
@@ -208,7 +210,8 @@ public class TestHBaseStorageFlowRun {
       te = new TimelineEntities();
       te.addEntity(entityGreaterStartTime);
       appName = "application_1000000000000000_2222";
-      hbi.write(cluster, user, flow, flowVersion, runid, appName, te);
+      hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+          runid, appName), te, remoteUser);
 
       // flush everything to hbase
       hbi.flush();
@@ -220,8 +223,10 @@ public class TestHBaseStorageFlowRun {
 
     Connection conn = ConnectionFactory.createConnection(c1);
     // check in flow run table
-    Table table1 = conn.getTable(TableName
-        .valueOf(FlowRunTable.DEFAULT_TABLE_NAME));
+    Table table1 = conn.getTable(
+        BaseTableRW.getTableName(c1,
+            FlowRunTableRW.TABLE_NAME_CONF_NAME,
+            FlowRunTableRW.DEFAULT_TABLE_NAME));
     // scan the table and see that we get back the right min and max
     // timestamps
     byte[] startRow = new FlowRunRowKey(cluster, user, flow, runid).getRowKey();
@@ -256,7 +261,7 @@ public class TestHBaseStorageFlowRun {
           new TimelineDataToRetrieve());
       assertTrue(TimelineEntityType.YARN_FLOW_RUN.matches(entity.getType()));
       FlowRunEntity flowRun = (FlowRunEntity)entity;
-      assertEquals(minStartTs, flowRun.getStartTime());
+      assertEquals(minStartTs, flowRun.getStartTime().longValue());
       assertEquals(endTs, flowRun.getMaxEndTime());
     } finally {
       if (hbr != null) {
@@ -290,17 +295,21 @@ public class TestHBaseStorageFlowRun {
     HBaseTimelineWriterImpl hbi = null;
     Configuration c1 = util.getConfiguration();
     try {
-      hbi = new HBaseTimelineWriterImpl(c1);
+      hbi = new HBaseTimelineWriterImpl();
       hbi.init(c1);
+      UserGroupInformation remoteUser =
+          UserGroupInformation.createRemoteUser(user);
       String appName = "application_11111111111111_1111";
-      hbi.write(cluster, user, flow, flowVersion, runid, appName, te);
+      hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+          runid, appName), te, remoteUser);
       // write another application with same metric to this flow
       te = new TimelineEntities();
       TimelineEntity entityApp2 = TestFlowDataGenerator
           .getEntityMetricsApp2(System.currentTimeMillis());
       te.addEntity(entityApp2);
       appName = "application_11111111111111_2222";
-      hbi.write(cluster, user, flow, flowVersion, runid, appName, te);
+      hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+          runid, appName), te, remoteUser);
       hbi.flush();
     } finally {
       if (hbi != null) {
@@ -356,24 +365,26 @@ public class TestHBaseStorageFlowRun {
   /*
    * checks the batch limits on a scan
    */
-  void checkFlowRunTableBatchLimit(String cluster, String user,
-      String flow, long runid, Configuration c1) throws IOException {
+  void checkFlowRunTableBatchLimit(String cluster, String user, String flow,
+      long runid, Configuration c1) throws IOException {
 
     Scan s = new Scan();
     s.addFamily(FlowRunColumnFamily.INFO.getBytes());
-    byte[] startRow =
-        new FlowRunRowKey(cluster, user, flow, runid).getRowKey();
+    byte[] startRow = new FlowRunRowKey(cluster, user, flow, runid)
+        .getRowKey();
     s.setStartRow(startRow);
     // set a batch limit
     int batchLimit = 2;
     s.setBatch(batchLimit);
     String clusterStop = cluster + "1";
-    byte[] stopRow =
-        new FlowRunRowKey(clusterStop, user, flow, runid).getRowKey();
+    byte[] stopRow = new FlowRunRowKey(clusterStop, user, flow, runid)
+        .getRowKey();
     s.setStopRow(stopRow);
     Connection conn = ConnectionFactory.createConnection(c1);
-    Table table1 = conn
-        .getTable(TableName.valueOf(FlowRunTable.DEFAULT_TABLE_NAME));
+    Table table1 = conn.getTable(
+        BaseTableRW.getTableName(c1,
+            FlowRunTableRW.TABLE_NAME_CONF_NAME,
+            FlowRunTableRW.DEFAULT_TABLE_NAME));
     ResultScanner scanner = table1.getScanner(s);
 
     int loopCount = 0;
@@ -517,8 +528,10 @@ public class TestHBaseStorageFlowRun {
         new FlowRunRowKey(clusterStop, user, flow, runid).getRowKey();
     s.setStopRow(stopRow);
     Connection conn = ConnectionFactory.createConnection(c1);
-    Table table1 = conn.getTable(TableName
-        .valueOf(FlowRunTable.DEFAULT_TABLE_NAME));
+    Table table1 = conn.getTable(
+        BaseTableRW.getTableName(c1,
+            FlowRunTableRW.TABLE_NAME_CONF_NAME,
+            FlowRunTableRW.DEFAULT_TABLE_NAME));
     ResultScanner scanner = table1.getScanner(s);
 
     int rowCount = 0;
@@ -559,17 +572,24 @@ public class TestHBaseStorageFlowRun {
     HBaseTimelineWriterImpl hbi = null;
     Configuration c1 = util.getConfiguration();
     try {
-      hbi = new HBaseTimelineWriterImpl(c1);
+      hbi = new HBaseTimelineWriterImpl();
       hbi.init(c1);
+      UserGroupInformation remoteUser =
+          UserGroupInformation.createRemoteUser(user);
+
       String appName = "application_11111111111111_1111";
-      hbi.write(cluster, user, flow, flowVersion, 1002345678919L, appName, te);
+      hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+          1002345678919L, appName), te,
+          remoteUser);
       // write another application with same metric to this flow
       te = new TimelineEntities();
       TimelineEntity entityApp2 = TestFlowDataGenerator
           .getEntityMetricsApp2(System.currentTimeMillis());
       te.addEntity(entityApp2);
       appName = "application_11111111111111_2222";
-      hbi.write(cluster, user, flow, flowVersion, 1002345678918L, appName, te);
+      hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+          1002345678918L, appName), te,
+          remoteUser);
       hbi.flush();
     } finally {
       if (hbi != null) {
@@ -589,7 +609,8 @@ public class TestHBaseStorageFlowRun {
       TimelineEntity entity = hbr.getEntity(
           new TimelineReaderContext(cluster, user, flow, 1002345678919L, null,
           TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineDataToRetrieve(null, metricsToRetrieve, null, null));
+          new TimelineDataToRetrieve(null, metricsToRetrieve, null, null, null,
+          null));
       assertTrue(TimelineEntityType.YARN_FLOW_RUN.matches(entity.getType()));
       Set<TimelineMetric> metrics = entity.getMetrics();
       assertEquals(1, metrics.size());
@@ -613,8 +634,9 @@ public class TestHBaseStorageFlowRun {
       Set<TimelineEntity> entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow, null, null,
           TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(),
-          new TimelineDataToRetrieve(null, metricsToRetrieve, null, null));
+          new TimelineEntityFilters.Builder().build(),
+          new TimelineDataToRetrieve(null, metricsToRetrieve, null, null, null,
+          null));
       assertEquals(2, entities.size());
       int metricCnt = 0;
       for (TimelineEntity timelineEntity : entities) {
@@ -644,17 +666,22 @@ public class TestHBaseStorageFlowRun {
     HBaseTimelineWriterImpl hbi = null;
     Configuration c1 = util.getConfiguration();
     try {
-      hbi = new HBaseTimelineWriterImpl(c1);
+      hbi = new HBaseTimelineWriterImpl();
       hbi.init(c1);
+      UserGroupInformation remoteUser =
+          UserGroupInformation.createRemoteUser(user);
+
       String appName = "application_11111111111111_1111";
-      hbi.write(cluster, user, flow, flowVersion, runid, appName, te);
+      hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+          runid, appName), te, remoteUser);
       // write another application with same metric to this flow
       te = new TimelineEntities();
       TimelineEntity entityApp2 = TestFlowDataGenerator
           .getEntityMetricsApp2(System.currentTimeMillis());
       te.addEntity(entityApp2);
       appName = "application_11111111111111_2222";
-      hbi.write(cluster, user, flow, flowVersion, runid, appName, te);
+      hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+          runid, appName), te, remoteUser);
       hbi.flush();
     } finally {
       if (hbi != null) {
@@ -674,7 +701,7 @@ public class TestHBaseStorageFlowRun {
       Set<TimelineEntity> entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow, runid, null,
           TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(),
+          new TimelineEntityFilters.Builder().build(),
           new TimelineDataToRetrieve());
       assertEquals(1, entities.size());
       for (TimelineEntity timelineEntity : entities) {
@@ -684,8 +711,9 @@ public class TestHBaseStorageFlowRun {
       entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow, runid, null,
           TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(), new TimelineDataToRetrieve(null, null,
-          EnumSet.of(Field.METRICS), null));
+          new TimelineEntityFilters.Builder().build(),
+          new TimelineDataToRetrieve(null, null,
+              EnumSet.of(Field.METRICS), null, null, null));
       assertEquals(1, entities.size());
       for (TimelineEntity timelineEntity : entities) {
         Set<TimelineMetric> timelineMetrics = timelineEntity.getMetrics();
@@ -737,8 +765,10 @@ public class TestHBaseStorageFlowRun {
     TimelineEntity entityApp1 = null;
     TimelineEntity entityApp2 = null;
     try {
-      hbi = new HBaseTimelineWriterImpl(c1);
+      hbi = new HBaseTimelineWriterImpl();
       hbi.init(c1);
+      UserGroupInformation remoteUser =
+          UserGroupInformation.createRemoteUser(user);
 
       for (int i = start; i < count; i++) {
         String appName = "application_1060350000000_" + appIdSuffix;
@@ -748,7 +778,8 @@ public class TestHBaseStorageFlowRun {
         te1.addEntity(entityApp1);
         entityApp2 = TestFlowDataGenerator.getMaxFlushEntity(insertTs);
         te1.addEntity(entityApp2);
-        hbi.write(cluster, user, flow, flowVersion, runid, appName, te1);
+        hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+            runid, appName), te1, remoteUser);
         Thread.sleep(1);
 
         appName = "application_1001199480000_7" + appIdSuffix;
@@ -760,7 +791,9 @@ public class TestHBaseStorageFlowRun {
         entityApp2 = TestFlowDataGenerator.getMaxFlushEntity(insertTs);
         te1.addEntity(entityApp2);
 
-        hbi.write(cluster, user, flow, flowVersion, runid, appName, te1);
+        hbi.write(new TimelineCollectorContext(cluster, user, flow, flowVersion,
+            runid, appName), te1,
+            remoteUser);
         if (i % 1000 == 0) {
           hbi.flush();
           checkMinMaxFlush(c1, minTS, startTs, count, cluster, user, flow,
@@ -782,8 +815,10 @@ public class TestHBaseStorageFlowRun {
       boolean checkMax) throws IOException {
     Connection conn = ConnectionFactory.createConnection(c1);
     // check in flow run table
-    Table table1 = conn.getTable(TableName
-        .valueOf(FlowRunTable.DEFAULT_TABLE_NAME));
+    Table table1 = conn.getTable(
+        BaseTableRW.getTableName(c1,
+            FlowRunTableRW.TABLE_NAME_CONF_NAME,
+            FlowRunTableRW.DEFAULT_TABLE_NAME));
     // scan the table and see that we get back the right min and max
     // timestamps
     byte[] startRow = new FlowRunRowKey(cluster, user, flow, runid).getRowKey();
@@ -826,18 +861,25 @@ public class TestHBaseStorageFlowRun {
     HBaseTimelineWriterImpl hbi = null;
     Configuration c1 = util.getConfiguration();
     try {
-      hbi = new HBaseTimelineWriterImpl(c1);
+      hbi = new HBaseTimelineWriterImpl();
       hbi.init(c1);
-      hbi.write(cluster, user, flow, "CF7022C10F1354", 1002345678919L,
-          "application_11111111111111_1111", te);
+      UserGroupInformation remoteUser =
+          UserGroupInformation.createRemoteUser(user);
+
+      hbi.write(
+          new TimelineCollectorContext(cluster, user, flow, "CF7022C10F1354",
+              1002345678919L, "application_11111111111111_1111"),
+          te, remoteUser);
       // write another application with same metric to this flow
       te = new TimelineEntities();
       TimelineEntity entityApp2 = TestFlowDataGenerator.getEntityMetricsApp2(
           System.currentTimeMillis());
       entityApp2.setCreatedTime(1425016502000L);
       te.addEntity(entityApp2);
-      hbi.write(cluster, user, flow, "CF7022C10F1354", 1002345678918L,
-          "application_11111111111111_2222", te);
+      hbi.write(
+          new TimelineCollectorContext(cluster, user, flow, "CF7022C10F1354",
+              1002345678918L, "application_11111111111111_2222"),
+          te, remoteUser);
       hbi.flush();
     } finally {
       if (hbi != null) {
@@ -855,8 +897,9 @@ public class TestHBaseStorageFlowRun {
       Set<TimelineEntity> entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow,
           null, null, TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(null, 1425016501000L, 1425016502001L, null,
-          null, null, null, null, null), new TimelineDataToRetrieve());
+          new TimelineEntityFilters.Builder().createdTimeBegin(1425016501000L)
+              .createTimeEnd(1425016502001L).build(),
+          new TimelineDataToRetrieve());
       assertEquals(2, entities.size());
       for (TimelineEntity entity : entities) {
         if (!entity.getId().equals("user2@flow_name2/1002345678918") &&
@@ -868,8 +911,9 @@ public class TestHBaseStorageFlowRun {
       entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow, null, null,
           TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(null, 1425016501050L, null, null, null,
-          null, null, null, null), new TimelineDataToRetrieve());
+          new TimelineEntityFilters.Builder().createdTimeBegin(1425016501050L)
+              .build(),
+          new TimelineDataToRetrieve());
       assertEquals(1, entities.size());
       for (TimelineEntity entity : entities) {
         if (!entity.getId().equals("user2@flow_name2/1002345678918")) {
@@ -879,8 +923,9 @@ public class TestHBaseStorageFlowRun {
       entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow, null, null,
           TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(null, null, 1425016501050L, null, null,
-          null, null, null, null), new TimelineDataToRetrieve());
+          new TimelineEntityFilters.Builder().createTimeEnd(1425016501050L)
+              .build(),
+          new TimelineDataToRetrieve());
       assertEquals(1, entities.size());
       for (TimelineEntity entity : entities) {
         if (!entity.getId().equals("user2@flow_name2/1002345678919")) {
@@ -908,17 +953,24 @@ public class TestHBaseStorageFlowRun {
     HBaseTimelineWriterImpl hbi = null;
     Configuration c1 = util.getConfiguration();
     try {
-      hbi = new HBaseTimelineWriterImpl(c1);
+      hbi = new HBaseTimelineWriterImpl();
       hbi.init(c1);
-      hbi.write(cluster, user, flow, "CF7022C10F1354", 1002345678919L,
-          "application_11111111111111_1111", te);
+      UserGroupInformation remoteUser =
+          UserGroupInformation.createRemoteUser(user);
+
+      hbi.write(
+          new TimelineCollectorContext(cluster, user, flow, "CF7022C10F1354",
+              1002345678919L, "application_11111111111111_1111"),
+          te, remoteUser);
       // write another application with same metric to this flow
       te = new TimelineEntities();
       TimelineEntity entityApp2 = TestFlowDataGenerator.getEntityMetricsApp2(
           System.currentTimeMillis());
       te.addEntity(entityApp2);
-      hbi.write(cluster, user, flow, "CF7022C10F1354", 1002345678918L,
-          "application_11111111111111_2222", te);
+      hbi.write(
+          new TimelineCollectorContext(cluster, user, flow, "CF7022C10F1354",
+              1002345678918L, "application_11111111111111_2222"),
+          te, remoteUser);
       hbi.flush();
     } finally {
       if (hbi != null) {
@@ -946,9 +998,10 @@ public class TestHBaseStorageFlowRun {
       Set<TimelineEntity> entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow, null,
           null, TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(null, null, null, null, null, null, null,
-          metricFilterList, null), new TimelineDataToRetrieve(null, null,
-          EnumSet.of(Field.METRICS), null));
+          new TimelineEntityFilters.Builder().metricFilters(metricFilterList)
+              .build(),
+          new TimelineDataToRetrieve(null, null,
+          EnumSet.of(Field.METRICS), null, null, null));
       assertEquals(2, entities.size());
       int metricCnt = 0;
       for (TimelineEntity entity : entities) {
@@ -963,9 +1016,10 @@ public class TestHBaseStorageFlowRun {
       entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow, null, null,
           TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(null, null, null, null, null, null, null,
-          metricFilterList1, null), new TimelineDataToRetrieve(null, null,
-          EnumSet.of(Field.METRICS), null));
+          new TimelineEntityFilters.Builder().metricFilters(metricFilterList1)
+              .build(),
+          new TimelineDataToRetrieve(null, null,
+          EnumSet.of(Field.METRICS), null, null, null));
       assertEquals(1, entities.size());
       metricCnt = 0;
       for (TimelineEntity entity : entities) {
@@ -979,9 +1033,10 @@ public class TestHBaseStorageFlowRun {
       entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow, null, null,
           TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(null, null, null, null, null, null, null,
-          metricFilterList2, null), new TimelineDataToRetrieve(null, null,
-          EnumSet.of(Field.METRICS), null));
+          new TimelineEntityFilters.Builder().metricFilters(metricFilterList2)
+              .build(),
+          new TimelineDataToRetrieve(null, null,
+          EnumSet.of(Field.METRICS), null, null, null));
       assertEquals(0, entities.size());
 
       TimelineFilterList metricFilterList3 = new TimelineFilterList(
@@ -989,9 +1044,10 @@ public class TestHBaseStorageFlowRun {
       entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow, null, null,
           TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(null, null, null, null, null, null, null,
-          metricFilterList3, null), new TimelineDataToRetrieve(null, null,
-          EnumSet.of(Field.METRICS), null));
+          new TimelineEntityFilters.Builder().metricFilters(metricFilterList3)
+              .build(),
+          new TimelineDataToRetrieve(null, null,
+          EnumSet.of(Field.METRICS), null, null, null));
       assertEquals(0, entities.size());
 
       TimelineFilterList list3 = new TimelineFilterList();
@@ -1010,10 +1066,10 @@ public class TestHBaseStorageFlowRun {
       entities = hbr.getEntities(
           new TimelineReaderContext(cluster, user, flow, null, null,
           TimelineEntityType.YARN_FLOW_RUN.toString(), null),
-          new TimelineEntityFilters(null, null, null, null, null, null, null,
-          metricFilterList4, null),
+          new TimelineEntityFilters.Builder().metricFilters(metricFilterList4)
+              .build(),
           new TimelineDataToRetrieve(null, metricsToRetrieve,
-          EnumSet.of(Field.ALL), null));
+          EnumSet.of(Field.ALL), null, null, null));
       assertEquals(2, entities.size());
       metricCnt = 0;
       for (TimelineEntity entity : entities) {
@@ -1027,8 +1083,10 @@ public class TestHBaseStorageFlowRun {
     }
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDownAfterClass() throws Exception {
-    util.shutdownMiniCluster();
+    if (util != null) {
+      util.shutdownMiniCluster();
+    }
   }
 }

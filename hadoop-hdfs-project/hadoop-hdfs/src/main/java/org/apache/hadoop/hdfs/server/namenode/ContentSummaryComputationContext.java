@@ -17,10 +17,22 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockStoragePolicySuite;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.fs.XAttr;
+import org.apache.hadoop.io.WritableUtils;
+import org.apache.hadoop.security.AccessControlException;
+
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
+import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.XATTR_ERASURECODING_POLICY;
 
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
@@ -29,12 +41,18 @@ public class ContentSummaryComputationContext {
   private FSNamesystem fsn = null;
   private BlockStoragePolicySuite bsps = null;
   private ContentCounts counts = null;
+  private ContentCounts snapshotCounts = null;
   private long nextCountLimit = 0;
   private long limitPerRun = 0;
   private long yieldCount = 0;
   private long sleepMilliSec = 0;
   private int sleepNanoSec = 0;
 
+  public static final String REPLICATED = "Replicated";
+  public static final Logger LOG = LoggerFactory
+      .getLogger(ContentSummaryComputationContext.class);
+
+  private FSPermissionChecker pc;
   /**
    * Constructor
    *
@@ -46,13 +64,21 @@ public class ContentSummaryComputationContext {
    */
   public ContentSummaryComputationContext(FSDirectory dir,
       FSNamesystem fsn, long limitPerRun, long sleepMicroSec) {
+    this(dir, fsn, limitPerRun, sleepMicroSec, null);
+  }
+
+  public ContentSummaryComputationContext(FSDirectory dir,
+      FSNamesystem fsn, long limitPerRun, long sleepMicroSec,
+      FSPermissionChecker pc) {
     this.dir = dir;
     this.fsn = fsn;
     this.limitPerRun = limitPerRun;
     this.nextCountLimit = limitPerRun;
     this.counts = new ContentCounts.Builder().build();
+    this.snapshotCounts = new ContentCounts.Builder().build();
     this.sleepMilliSec = sleepMicroSec/1000;
     this.sleepNanoSec = (int)((sleepMicroSec%1000)*1000);
+    this.pc = pc;
   }
 
   /** Constructor for blocking computation. */
@@ -93,27 +119,26 @@ public class ContentSummaryComputationContext {
 
     boolean hadDirReadLock = dir.hasReadLock();
     boolean hadDirWriteLock = dir.hasWriteLock();
-    boolean hadFsnReadLock = fsn.hasReadLock();
-    boolean hadFsnWriteLock = fsn.hasWriteLock();
+    boolean hadFsnReadLock = fsn.hasReadLock(RwLockMode.GLOBAL);
+    boolean hadFsnWriteLock = fsn.hasWriteLock(RwLockMode.GLOBAL);
 
     // sanity check.
     if (!hadDirReadLock || !hadFsnReadLock || hadDirWriteLock ||
-        hadFsnWriteLock || dir.getReadHoldCount() != 1 ||
-        fsn.getReadHoldCount() != 1) {
+        hadFsnWriteLock || fsn.getReadHoldCount() != 1) {
       // cannot relinquish
       return false;
     }
 
     // unlock
     dir.readUnlock();
-    fsn.readUnlock();
+    fsn.readUnlock(RwLockMode.GLOBAL, "contentSummary");
 
     try {
       Thread.sleep(sleepMilliSec, sleepNanoSec);
     } catch (InterruptedException ie) {
     } finally {
       // reacquire
-      fsn.readLock();
+      fsn.readLock(RwLockMode.GLOBAL);
       dir.readLock();
     }
     yieldCount++;
@@ -125,11 +150,68 @@ public class ContentSummaryComputationContext {
     return counts;
   }
 
+  public ContentCounts getSnapshotCounts() {
+    return snapshotCounts;
+  }
+
   public BlockStoragePolicySuite getBlockStoragePolicySuite() {
     Preconditions.checkState((bsps != null || fsn != null),
         "BlockStoragePolicySuite must be either initialized or available via" +
             " FSNameSystem");
     return (bsps != null) ? bsps:
         fsn.getBlockManager().getStoragePolicySuite();
+  }
+
+  /** Get the erasure coding policy. */
+  public String getErasureCodingPolicyName(INode inode) {
+    if (inode.isFile()) {
+      INodeFile iNodeFile = inode.asFile();
+      if (iNodeFile.isStriped()) {
+        byte ecPolicyId = iNodeFile.getErasureCodingPolicyID();
+        return fsn.getErasureCodingPolicyManager()
+            .getByID(ecPolicyId).getName();
+      } else {
+        return REPLICATED;
+      }
+    }
+    if (inode.isSymlink()) {
+      return "";
+    }
+    try {
+      final XAttrFeature xaf = inode.getXAttrFeature();
+      if (xaf != null) {
+        XAttr xattr = xaf.getXAttr(XATTR_ERASURECODING_POLICY);
+        if (xattr != null) {
+          ByteArrayInputStream bins =
+              new ByteArrayInputStream(xattr.getValue());
+          DataInputStream din = new DataInputStream(bins);
+          String ecPolicyName = WritableUtils.readString(din);
+          return dir.getFSNamesystem()
+              .getErasureCodingPolicyManager()
+              .getErasureCodingPolicyByName(ecPolicyName)
+              .getName();
+        }
+      } else if (inode.getParent() != null) {
+          return getErasureCodingPolicyName(inode.getParent());
+      }
+    } catch (IOException ioe) {
+      LOG.warn("Encountered error getting ec policy for "
+          + inode.getFullPathName(), ioe);
+      return "";
+    }
+    return "";
+  }
+
+  void checkPermission(INodeDirectory inode, int snapshotId, FsAction access)
+      throws AccessControlException {
+    if (dir != null && dir.isPermissionEnabled()
+        && pc != null) {
+      if (pc.isSuperUser()) {
+        // call external enforcer for audit
+        pc.checkSuperuserPrivilege(inode.getFullPathName());
+      } else {
+        pc.checkPermission(inode, snapshotId, access);
+      }
+    }
   }
 }

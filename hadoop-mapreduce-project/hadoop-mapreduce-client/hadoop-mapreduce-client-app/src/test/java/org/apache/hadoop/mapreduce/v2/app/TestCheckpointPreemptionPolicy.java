@@ -22,8 +22,9 @@ import org.apache.hadoop.yarn.api.records.PreemptionMessage;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -53,12 +54,13 @@ import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Allocation;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestCheckpointPreemptionPolicy {
 
@@ -76,7 +78,7 @@ public class TestCheckpointPreemptionPolicy {
 
   private int minAlloc = 1024;
 
-  @Before
+  @BeforeEach
   @SuppressWarnings("rawtypes") // mocked generics
   public void setup() {
     ApplicationId appId = ApplicationId.newInstance(200, 1);
@@ -85,7 +87,8 @@ public class TestCheckpointPreemptionPolicy {
     jid = MRBuilderUtils.newJobId(appId, 1);
 
     mActxt = mock(RunningAppContext.class);
-    EventHandler ea = mock(EventHandler.class);
+    @SuppressWarnings("unchecked")
+    EventHandler<Event> ea = mock(EventHandler.class);
     when(mActxt.getEventHandler()).thenReturn(ea);
     for (int i = 0; i < 40; ++i) {
       ContainerId cId = ContainerId.newContainerId(appAttemptId, i);

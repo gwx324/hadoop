@@ -33,8 +33,11 @@ import org.apache.hadoop.mapred.JobStatus;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.v2.MiniMRYarnCluster;
 import org.apache.hadoop.net.StandardSocketFactory;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * This class checks that RPCs can use specialized socket factories.
@@ -55,13 +58,13 @@ public class TestMRCJCSocketFactory {
 
     // Get a reference to its DFS directly
     FileSystem fs = cluster.getFileSystem();
-    Assert.assertTrue(fs instanceof DistributedFileSystem);
+    assertTrue(fs instanceof DistributedFileSystem);
     DistributedFileSystem directDfs = (DistributedFileSystem) fs;
 
     Configuration cconf = getCustomSocketConfigs(nameNodePort);
 
     fs = FileSystem.get(cconf);
-    Assert.assertTrue(fs instanceof DistributedFileSystem);
+    assertTrue(fs instanceof DistributedFileSystem);
     DistributedFileSystem dfs = (DistributedFileSystem) fs;
 
     JobClient client = null;
@@ -71,12 +74,12 @@ public class TestMRCJCSocketFactory {
       // could we test Client-DataNode connections?
       Path filePath = new Path("/dir");
 
-      Assert.assertFalse(directDfs.exists(filePath));
-      Assert.assertFalse(dfs.exists(filePath));
+      assertFalse(directDfs.exists(filePath));
+      assertFalse(dfs.exists(filePath));
 
       directDfs.mkdirs(filePath);
-      Assert.assertTrue(directDfs.exists(filePath));
-      Assert.assertTrue(dfs.exists(filePath));
+      assertTrue(directDfs.exists(filePath));
+      assertTrue(dfs.exists(filePath));
 
       // This will test RPC to a Resource Manager
       fs = FileSystem.get(sconf);
@@ -87,14 +90,14 @@ public class TestMRCJCSocketFactory {
       jconf.set("hadoop.rpc.socket.factory.class.default",
                 "org.apache.hadoop.ipc.DummySocketFactory");
       jconf.set(MRConfig.FRAMEWORK_NAME, MRConfig.YARN_FRAMEWORK_NAME);
-      String rmAddress = jconf.get("yarn.resourcemanager.address");
+      String rmAddress = jconf.get(YarnConfiguration.RM_ADDRESS);
       String[] split = rmAddress.split(":");
-      jconf.set("yarn.resourcemanager.address", split[0] + ':'
+      jconf.set(YarnConfiguration.RM_ADDRESS, split[0] + ':'
           + (Integer.parseInt(split[1]) + 10));
       client = new JobClient(jconf);
 
       JobStatus[] jobs = client.jobsToComplete();
-      Assert.assertTrue(jobs.length == 0);
+      assertTrue(jobs.length == 0);
 
     } finally {
       closeClient(client);

@@ -21,10 +21,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.BooleanWritable;
 import org.apache.hadoop.io.ByteWritable;
@@ -40,10 +37,13 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.nativetask.testutil.BytesFactory;
 import org.apache.hadoop.mapred.nativetask.testutil.ScenarioConfiguration;
 import org.apache.hadoop.mapred.nativetask.testutil.TestConstants;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 public class TestInputFile {
-	private static Log LOG = LogFactory.getLog(TestInputFile.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestInputFile.class);
 
   public static class KVSizeScope {
     private static final int DefaultMinNum = 1;

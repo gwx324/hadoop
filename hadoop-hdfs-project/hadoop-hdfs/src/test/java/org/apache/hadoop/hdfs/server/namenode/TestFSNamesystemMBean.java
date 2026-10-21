@@ -17,8 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.lang.management.ManagementFactory;
 import java.util.HashSet;
@@ -30,12 +31,20 @@ import javax.management.MBeanInfo;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.junit.Test;
-import org.mortbay.util.ajax.JSON;
+import org.apache.hadoop.metrics2.impl.ConfigBuilder;
+import org.apache.hadoop.metrics2.impl.TestMetricsConfig;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.JsonUtils;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Class for testing {@link NameNodeMXBean} implementation
@@ -106,14 +115,14 @@ public class TestFSNamesystemMBean {
           "SnapshotStats"));
 
       @SuppressWarnings("unchecked")
-      Map<String, Object> stat = (Map<String, Object>) JSON
-          .parse(snapshotStats);
+      Map<String, Object> stat = JsonUtils.parse(snapshotStats,
+          new TypeReference<Map<String, Object>>() {});
 
       assertTrue(stat.containsKey("SnapshottableDirectories")
-          && (Long) stat.get("SnapshottableDirectories") == fsn
+          && (Integer) stat.get("SnapshottableDirectories") == fsn
               .getNumSnapshottableDirs());
       assertTrue(stat.containsKey("Snapshots")
-          && (Long) stat.get("Snapshots") == fsn.getNumSnapshots());
+          && (Integer) stat.get("Snapshots") == fsn.getNumSnapshots());
 
       Object pendingDeletionBlocks = mbs.getAttribute(mxbeanName,
         "PendingDeletionBlocks");
@@ -139,22 +148,26 @@ public class TestFSNamesystemMBean {
     MiniDFSCluster cluster = null;
     FSNamesystem fsn = null;
 
+    int jmxCachePeriod = 1;
+    new ConfigBuilder().add("namenode.period", jmxCachePeriod)
+        .save(TestMetricsConfig.getTestFilename("hadoop-metrics2-namenode"));
     try {
       cluster = new MiniDFSCluster.Builder(conf).build();
       cluster.waitActive();
 
       fsn = cluster.getNameNode().namesystem;
-      fsn.writeLock();
+      fsn.writeLock(RwLockMode.GLOBAL);
+      Thread.sleep(jmxCachePeriod * 1000);
 
       MBeanClient client = new MBeanClient();
       client.start();
       client.join(20000);
-      assertTrue("JMX calls are blocked when FSNamesystem's writerlock" +
-          "is owned by another thread", client.succeeded);
+      assertTrue(client.succeeded,
+          "JMX calls are blocked when FSNamesystem's writerlock" + "is owned by another thread");
       client.interrupt();
     } finally {
-      if (fsn != null && fsn.hasWriteLock()) {
-        fsn.writeUnlock();
+      if (fsn != null && fsn.hasWriteLock(RwLockMode.GLOBAL)) {
+        fsn.writeUnlock(RwLockMode.GLOBAL, "testWithFSNamesystemWriteLock");
       }
       if (cluster != null) {
         cluster.shutdown();
@@ -162,7 +175,36 @@ public class TestFSNamesystemMBean {
     }
   }
 
-  @Test(timeout = 120000)
+  // The test makes sure JMX request can be processed even if FSEditLog
+  // is synchronized.
+  @Test
+  public void testWithFSEditLogLock() throws Exception {
+    Configuration conf = new Configuration();
+    int jmxCachePeriod = 1;
+    new ConfigBuilder().add("namenode.period", jmxCachePeriod)
+        .save(TestMetricsConfig.getTestFilename("hadoop-metrics2-namenode"));
+    MiniDFSCluster cluster = null;
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).build();
+      cluster.waitActive();
+      synchronized (cluster.getNameNode().getFSImage().getEditLog()) {
+        Thread.sleep(jmxCachePeriod * 1000);
+        MBeanClient client = new MBeanClient();
+        client.start();
+        client.join(20000);
+        assertTrue(client.succeeded,
+            "JMX calls are blocked when FSEditLog" + " is synchronized by another thread");
+        client.interrupt();
+      }
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  @Test
+  @Timeout(value = 120)
   public void testFsEditLogMetrics() throws Exception {
     final Configuration conf = new Configuration();
     MiniDFSCluster cluster = null;
@@ -189,6 +231,46 @@ public class TestFSNamesystemMBean {
       if (cluster != null) {
         cluster.shutdown();
       }
+    }
+  }
+
+  /**
+   * Test metrics associated with reconstructionQueuesInitProgress.
+   */
+  @Test
+  public void testReconstructionQueuesInitProgressMetrics() throws Exception {
+    Configuration conf = new Configuration();
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build()) {
+      cluster.waitActive();
+      final FSNamesystem fsNamesystem = cluster.getNamesystem();
+      final DistributedFileSystem fs = cluster.getFileSystem();
+
+      // Validate init reconstructionQueuesInitProgress value.
+      assertEquals(0.0, fsNamesystem.getReconstructionQueuesInitProgress(), 0);
+      MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      ObjectName mxbeanName =
+          new ObjectName("Hadoop:service=NameNode,name=FSNamesystemState");
+      float reconstructionQueuesInitProgress =
+          (float) mbs.getAttribute(mxbeanName, "ReconstructionQueuesInitProgress");
+      assertEquals(0.0, reconstructionQueuesInitProgress, 0);
+
+      // Create file.
+      Path file = new Path("/test");
+      long fileLength = 1024 * 1024 * 3;
+      DFSTestUtil.createFile(fs, file, fileLength, (short) 1, 0L);
+      DFSTestUtil.waitReplication(fs, file, (short) 1);
+
+      // Restart nameNode to run processMisReplicatedBlocks.
+      cluster.restartNameNode(true);
+
+      // Validate reconstructionQueuesInitProgress value.
+      GenericTestUtils.waitFor(
+          () -> cluster.getNamesystem().getReconstructionQueuesInitProgress() == 1.0,
+          100, 5 * 1000);
+
+      reconstructionQueuesInitProgress =
+          (float) mbs.getAttribute(mxbeanName, "ReconstructionQueuesInitProgress");
+      assertEquals(1.0, reconstructionQueuesInitProgress, 0);
     }
   }
 }

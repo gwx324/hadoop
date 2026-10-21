@@ -18,11 +18,9 @@
 
 package org.apache.hadoop.mapreduce.lib.partition;
 
-import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
@@ -32,6 +30,8 @@ import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.lib.partition.KeyFieldHelper.KeyDescription;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
  /**   
   *  Defines a way to partition keys based on certain key fields (also see
@@ -51,7 +51,7 @@ import org.apache.hadoop.mapreduce.lib.partition.KeyFieldHelper.KeyDescription;
 public class KeyFieldBasedPartitioner<K2, V2> extends Partitioner<K2, V2> 
     implements Configurable {
 
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
                                    KeyFieldBasedPartitioner.class.getName());
   public static String PARTITIONER_OPTIONS = 
     "mapreduce.partition.keypartitioner.options";
@@ -65,7 +65,7 @@ public class KeyFieldBasedPartitioner<K2, V2> extends Partitioner<K2, V2>
     this.conf = conf;
     keyFieldHelper = new KeyFieldHelper();
     String keyFieldSeparator = 
-      conf.get(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPERATOR, "\t");
+      conf.get(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPARATOR, "\t");
     keyFieldHelper.setKeyFieldSeparator(keyFieldSeparator);
     if (conf.get("num.key.fields.for.partition") != null) {
       LOG.warn("Using deprecated num.key.fields.for.partition. " +
@@ -90,12 +90,7 @@ public class KeyFieldBasedPartitioner<K2, V2> extends Partitioner<K2, V2>
       return getPartition(key.toString().hashCode(), numReduceTasks);
     }
 
-    try {
-      keyBytes = key.toString().getBytes("UTF-8");
-    } catch (UnsupportedEncodingException e) {
-      throw new RuntimeException("The current system does not " +
-          "support UTF-8 encoding!", e);
-    }
+    keyBytes = key.toString().getBytes(StandardCharsets.UTF_8);
     // return 0 if the key is empty
     if (keyBytes.length == 0) {
       return 0;

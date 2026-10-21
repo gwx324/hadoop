@@ -21,22 +21,23 @@ package org.apache.hadoop.mapred.jobcontrol;
 import java.io.IOException;
 import java.util.ArrayList;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.HadoopTestCase;
 import org.apache.hadoop.mapred.JobConf;
-import org.junit.Test;
-import static org.junit.Assert.assertEquals;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * HadoopTestCase that tests the local job runner.
  */
 public class TestLocalJobControl extends HadoopTestCase {
 
-  public static final Log LOG = LogFactory.getLog(TestLocalJobControl.class
-      .getName());
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestLocalJobControl.class);
 
   /**
    * Initialises a new instance of this test case to use a Local MR cluster and
@@ -131,7 +132,7 @@ public class TestLocalJobControl extends HadoopTestCase {
       }
     }
 
-    assertEquals("Some jobs failed", 0, theControl.getFailedJobs().size());
+    assertEquals(0, theControl.getFailedJobs().size(), "Some jobs failed");
     theControl.stop();
   }
 

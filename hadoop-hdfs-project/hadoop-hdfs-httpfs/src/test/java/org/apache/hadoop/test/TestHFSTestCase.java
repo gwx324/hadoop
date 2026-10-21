@@ -18,9 +18,6 @@
 
 package org.apache.hadoop.test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -38,35 +35,49 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.util.Time;
-import org.junit.Test;
-import org.mortbay.jetty.Server;
-import org.mortbay.jetty.servlet.Context;
+import org.eclipse.jetty.servlet.ServletContextHandler;
+import org.junit.jupiter.api.Test;
+import org.eclipse.jetty.server.Server;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class TestHFSTestCase extends HFSTestCase {
 
-  @Test(expected = IllegalStateException.class)
+  @Test
   public void testDirNoAnnotation() throws Exception {
-    TestDirHelper.getTestDir();
+    assertThrows(IllegalStateException.class, () -> {
+      TestDirHelper.getTestDir();
+    });
   }
 
-  @Test(expected = IllegalStateException.class)
+  @Test
   public void testJettyNoAnnotation() throws Exception {
-    TestJettyHelper.getJettyServer();
+    assertThrows(IllegalStateException.class, () -> {
+      TestJettyHelper.getJettyServer();
+    });
   }
 
-  @Test(expected = IllegalStateException.class)
+  @Test
   public void testJettyNoAnnotation2() throws Exception {
-    TestJettyHelper.getJettyURL();
+    assertThrows(IllegalStateException.class, () -> {
+      TestJettyHelper.getJettyURL();
+    });
   }
 
-  @Test(expected = IllegalStateException.class)
+  @Test
   public void testHdfsNoAnnotation() throws Exception {
-    TestHdfsHelper.getHdfsConf();
+    assertThrows(IllegalStateException.class, () -> {
+      TestHdfsHelper.getHdfsConf();
+    });
   }
 
-  @Test(expected = IllegalStateException.class)
+  @Test
   public void testHdfsNoAnnotation2() throws Exception {
-    TestHdfsHelper.getHdfsTestDir();
+    assertThrows(IllegalStateException.class, () -> {
+      TestHdfsHelper.getHdfsTestDir();
+    });
   }
 
   @Test
@@ -165,11 +176,11 @@ public class TestHFSTestCase extends HFSTestCase {
   @Test
   @TestJetty
   public void testJetty() throws Exception {
-    Context context = new Context();
+    ServletContextHandler context = new ServletContextHandler();
     context.setContextPath("/");
     context.addServlet(MyServlet.class, "/bar");
     Server server = TestJettyHelper.getJettyServer();
-    server.addHandler(context);
+    server.setHandler(context);
     server.start();
     URL url = new URL(TestJettyHelper.getJettyURL(), "/bar");
     HttpURLConnection conn = (HttpURLConnection) url.openConnection();

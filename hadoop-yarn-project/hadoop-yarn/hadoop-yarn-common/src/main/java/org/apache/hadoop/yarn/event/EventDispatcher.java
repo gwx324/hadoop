@@ -18,9 +18,14 @@
 
 package org.apache.hadoop.yarn.event;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.yarn.metrics.EventTypeMetrics;
+import org.apache.hadoop.yarn.util.Clock;
+import org.apache.hadoop.yarn.util.MonotonicClock;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.Marker;
+import org.slf4j.MarkerFactory;
 import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
@@ -44,9 +49,15 @@ public class EventDispatcher<T extends Event> extends
       new LinkedBlockingDeque<>();
   private final Thread eventProcessor;
   private volatile boolean stopped = false;
-  private boolean shouldExitOnError = false;
+  private boolean shouldExitOnError = true;
+  private EventTypeMetrics metrics;
 
-  private static final Log LOG = LogFactory.getLog(EventDispatcher.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(EventDispatcher.class);
+  private static final Marker FATAL =
+      MarkerFactory.getMarker("FATAL");
+
+  private Clock clock = new MonotonicClock();
 
   private final class EventProcessor implements Runnable {
     @Override
@@ -63,7 +74,14 @@ public class EventDispatcher<T extends Event> extends
         }
 
         try {
-          handler.handle(event);
+          if (metrics != null) {
+            long startTime = clock.getTime();
+            handler.handle(event);
+            metrics.increment(event.getType(),
+                clock.getTime() - startTime);
+          } else {
+            handler.handle(event);
+          }
         } catch (Throwable t) {
           // An error occurred, but we are shutting down anyway.
           // If it was an InterruptedException, the very act of
@@ -72,7 +90,7 @@ public class EventDispatcher<T extends Event> extends
             LOG.warn("Exception during shutdown: ", t);
             break;
           }
-          LOG.fatal("Error in handling event type " + event.getType()
+          LOG.error(FATAL, "Error in handling event type " + event.getType()
               + " to the Event Dispatcher", t);
           if (shouldExitOnError
               && !ShutdownHookManager.get().isShutdownInProgress()) {
@@ -89,14 +107,6 @@ public class EventDispatcher<T extends Event> extends
     this.handler = handler;
     this.eventProcessor = new Thread(new EventProcessor());
     this.eventProcessor.setName(getName() + ":Event Processor");
-  }
-
-  @Override
-  protected void serviceInit(Configuration conf) throws Exception {
-    this.shouldExitOnError =
-        conf.getBoolean(Dispatcher.DISPATCHER_EXIT_ON_ERROR_KEY,
-            Dispatcher.DEFAULT_DISPATCHER_EXIT_ON_ERROR);
-    super.serviceInit(conf);
   }
 
   @Override
@@ -133,5 +143,26 @@ public class EventDispatcher<T extends Event> extends
     } catch (InterruptedException e) {
       LOG.info("Interrupted. Trying to exit gracefully.");
     }
+  }
+
+  @VisibleForTesting
+  public void disableExitOnError() {
+    shouldExitOnError = false;
+  }
+
+  public void setMetrics(EventTypeMetrics metrics) {
+    this.metrics = metrics;
+  }
+
+  protected long getEventProcessorId() {
+    return this.eventProcessor.getId();
+  }
+
+  protected boolean isStopped() {
+    return this.stopped;
+  }
+
+  public int getEventQueueSize() {
+    return eventQueue.size();
   }
 }

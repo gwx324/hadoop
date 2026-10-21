@@ -19,7 +19,7 @@
 
 package org.apache.hadoop.hdfs.server.diskbalancer.command;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.codec.digest.DigestUtils;
@@ -29,9 +29,10 @@ import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
 import org.apache.hadoop.hdfs.server.diskbalancer.DiskBalancerException;
 import org.apache.hadoop.hdfs.server.diskbalancer.planner.NodePlan;
-import org.apache.hadoop.hdfs.tools.DiskBalancer;
+import org.apache.hadoop.hdfs.tools.DiskBalancerCLI;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Cancels a running plan.
@@ -44,9 +45,10 @@ public class CancelCommand extends Command {
    */
   public CancelCommand(Configuration conf) {
     super(conf);
-    addValidCommandParameters(DiskBalancer.CANCEL, "Cancels a running plan.");
-    addValidCommandParameters(DiskBalancer.NODE, "Node to run the command " +
-        "against in node:port format.");
+    addValidCommandParameters(DiskBalancerCLI.CANCEL,
+        "Cancels a running plan.");
+    addValidCommandParameters(DiskBalancerCLI.NODE,
+        "Node to run the command against in node:port format.");
   }
 
   /**
@@ -57,25 +59,25 @@ public class CancelCommand extends Command {
   @Override
   public void execute(CommandLine cmd) throws Exception {
     LOG.info("Executing \"Cancel plan\" command.");
-    Preconditions.checkState(cmd.hasOption(DiskBalancer.CANCEL));
-    verifyCommandOptions(DiskBalancer.CANCEL, cmd);
+    Preconditions.checkState(cmd.hasOption(DiskBalancerCLI.CANCEL));
+    verifyCommandOptions(DiskBalancerCLI.CANCEL, cmd);
 
     // We can cancel a plan using datanode address and plan ID
     // that you can read from a datanode using queryStatus
-    if(cmd.hasOption(DiskBalancer.NODE)) {
-      String nodeAddress = cmd.getOptionValue(DiskBalancer.NODE);
-      String planHash = cmd.getOptionValue(DiskBalancer.CANCEL);
+    if(cmd.hasOption(DiskBalancerCLI.NODE)) {
+      String nodeAddress = cmd.getOptionValue(DiskBalancerCLI.NODE);
+      String planHash = cmd.getOptionValue(DiskBalancerCLI.CANCEL);
       cancelPlanUsingHash(nodeAddress, planHash);
     } else {
       // Or you can cancel a plan using the plan file. If the user
       // points us to the plan file, we can compute the hash as well as read
       // the address of the datanode from the plan file.
-      String planFile = cmd.getOptionValue(DiskBalancer.CANCEL);
+      String planFile = cmd.getOptionValue(DiskBalancerCLI.CANCEL);
       Preconditions.checkArgument(planFile != null && !planFile.isEmpty(),
           "Invalid plan file specified.");
       String planData = null;
       try (FSDataInputStream plan = open(planFile)) {
-        planData = IOUtils.toString(plan);
+        planData = IOUtils.toString(plan, StandardCharsets.UTF_8);
       }
       cancelPlan(planData);
     }
@@ -93,7 +95,7 @@ public class CancelCommand extends Command {
     String dataNodeAddress = plan.getNodeName() + ":" + plan.getPort();
     Preconditions.checkNotNull(dataNodeAddress);
     ClientDatanodeProtocol dataNode = getDataNodeProxy(dataNodeAddress);
-    String planHash = DigestUtils.sha512Hex(planData);
+    String planHash = DigestUtils.sha1Hex(planData);
     try {
       dataNode.cancelDiskBalancePlan(planHash);
     } catch (DiskBalancerException ex) {
@@ -142,6 +144,6 @@ public class CancelCommand extends Command {
     HelpFormatter helpFormatter = new HelpFormatter();
     helpFormatter.printHelp("hdfs diskbalancer -cancel <planFile> | -cancel " +
         "<planID> -node <hostname>",
-        header, DiskBalancer.getCancelOptions(), footer);
+        header, DiskBalancerCLI.getCancelOptions(), footer);
   }
 }

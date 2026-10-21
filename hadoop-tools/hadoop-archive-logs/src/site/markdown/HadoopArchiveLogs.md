@@ -21,7 +21,7 @@ Hadoop Archive Logs Guide
 Overview
 --------
 
-For clusters with a lot of Yarn aggregated logs, it can be helpful to combine
+For clusters with a lot of YARN aggregated logs, it can be helpful to combine
 them into hadoop archives in order to reduce the number of small files, and
 hence the stress on the NameNode.  This tool provides an easy way to do this.
 Aggregated logs in hadoop archives can still be read by the Job History Server
@@ -50,7 +50,7 @@ How to Archive Logs
                                    to be eligible (default: 20)
     -noProxy                       When specified, all processing will be
                                    done as the user running this command (or
-                                   the Yarn user if DefaultContainerExecutor
+                                   the YARN user if DefaultContainerExecutor
                                    is in use). When not specified, all
                                    processing will be done as the user who
                                    owns that application; if the user
@@ -59,7 +59,7 @@ How to Archive Logs
     -verbose                       Print more details.
 
 The tool only supports running one instance on a cluster at a time in order
-to prevent conflicts. It does this by checking for the existance of a
+to prevent conflicts. It does this by checking for the existence of a
 directory named ``archive-logs-work`` under
 ``yarn.nodemanager.remote-app-log-dir`` in HDFS
 (default: ``/tmp/logs/archive-logs-work``). If for some reason that
@@ -76,7 +76,7 @@ The tool works by performing the following procedure:
     - its aggregation status has successfully completed
     - has at least ``-minNumberLogFiles`` log files
     - the sum of its log files size is less than ``-maxTotalLogsSize`` megabytes
- 2. If there are are more than ``-maxEligibleApps`` applications found, the
+ 2. If there are more than ``-maxEligibleApps`` applications found, the
     newest applications are dropped. They can be processed next time.
  3. A shell script is generated based on the eligible applications
  4. The Distributed Shell program is run with the aformentioned script. It
@@ -86,7 +86,7 @@ The tool works by performing the following procedure:
     its aggregated log files with the resulting archive.
 
 The ``-noProxy`` option makes the tool process everything as the user who is
-currently running it, or the Yarn user if DefaultContainerExecutor is in use.
+currently running it, or the YARN user if DefaultContainerExecutor is in use.
 When not specified, all processing will be done by the user who owns that
 application; if the user running this command is not allowed to impersonate that
 user, it will fail.  This is useful if you want an admin user to handle all

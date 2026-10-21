@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.erasurecode;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
@@ -55,6 +55,7 @@ class StripedWriter {
   private final short[] targetIndices;
   private boolean hasValidTargets;
   private final StorageType[] targetStorageTypes;
+  private final String[] targetStorageIds;
 
   private StripedBlockWriter[] writers;
 
@@ -77,10 +78,14 @@ class StripedWriter {
     assert targets != null;
     this.targetStorageTypes = stripedReconInfo.getTargetStorageTypes();
     assert targetStorageTypes != null;
+    this.targetStorageIds = stripedReconInfo.getTargetStorageIds();
+    assert targetStorageIds != null;
 
     writers = new StripedBlockWriter[targets.length];
-
     targetIndices = new short[targets.length];
+    Preconditions.checkArgument(
+            targetIndices.length <= dataBlkNum + parityBlkNum - reconstructor.getNumLiveBlocks(),
+            "Reconstruction work gets too much targets.");
     Preconditions.checkArgument(targetIndices.length <= parityBlkNum,
         "Too much missed striped blocks.");
     initTargetIndices();
@@ -120,13 +125,14 @@ class StripedWriter {
 
   private void initTargetIndices() {
     BitSet bitset = reconstructor.getLiveBitSet();
+    BitSet excludebitset=reconstructor.getExcludeBitSet();
 
     int m = 0;
     hasValidTargets = false;
     for (int i = 0; i < dataBlkNum + parityBlkNum; i++) {
       if (!bitset.get(i)) {
         if (reconstructor.getBlockLen(i) > 0) {
-          if (m < targets.length) {
+          if (m < targets.length && !excludebitset.get(i)) {
             targetIndices[m++] = (short)i;
             hasValidTargets = true;
           }
@@ -192,7 +198,7 @@ class StripedWriter {
   private StripedBlockWriter createWriter(short index) throws IOException {
     return new StripedBlockWriter(this, datanode, conf,
         reconstructor.getBlock(targetIndices[index]), targets[index],
-        targetStorageTypes[index]);
+        targetStorageTypes[index], targetStorageIds[index]);
   }
 
   ByteBuffer allocateWriteBuffer() {
@@ -280,6 +286,10 @@ class StripedWriter {
     return reconstructor.getSocketAddress4Transfer(target);
   }
 
+  StripedReconstructor getReconstructor() {
+    return reconstructor;
+  }
+
   boolean hasValidTargets() {
     return hasValidTargets;
   }
@@ -289,7 +299,8 @@ class StripedWriter {
    */
   void clearBuffers() {
     for (StripedBlockWriter writer : writers) {
-      ByteBuffer targetBuffer = writer.getTargetBuffer();
+      ByteBuffer targetBuffer =
+          writer != null ? writer.getTargetBuffer() : null;
       if (targetBuffer != null) {
         targetBuffer.clear();
       }
@@ -298,15 +309,15 @@ class StripedWriter {
 
   void close() {
     for (StripedBlockWriter writer : writers) {
-      ByteBuffer targetBuffer = writer.getTargetBuffer();
-      if (targetBuffer != null) {
-        reconstructor.freeBuffer(targetBuffer);
+      if (writer != null) {
         writer.freeTargetBuffer();
       }
     }
 
     for (int i = 0; i < targets.length; i++) {
-      writers[i].close();
+      if (writers[i] != null) {
+        writers[i].close();
+      }
     }
   }
 }

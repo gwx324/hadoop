@@ -17,8 +17,10 @@
  */
 package org.apache.hadoop.hdfs.client.impl;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.File;
 import java.io.IOException;
@@ -48,13 +50,13 @@ import org.apache.hadoop.net.unix.DomainSocket;
 import org.apache.hadoop.net.unix.TemporarySocketDirectory;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
-import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestBlockReaderLocalLegacy {
-  @BeforeClass
+  @BeforeAll
   public static void setupCluster() throws IOException {
     DFSInputStream.tcpReadsDisabledForTesting = true;
     DomainSocket.disableBindPathValidation();
@@ -93,135 +95,147 @@ public class TestBlockReaderLocalLegacy {
     final long FILE_LENGTH = 512L;
 
     HdfsConfiguration conf = getConfiguration(null);
+    File basedir = new File(GenericTestUtils.getRandomizedTempPath());
     MiniDFSCluster cluster =
-        new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
-    cluster.waitActive();
-    FileSystem fs = cluster.getFileSystem();
-
-    Path path = new Path("/corrupted");
-
-    DFSTestUtil.createFile(fs, path, FILE_LENGTH, REPL_FACTOR, 12345L);
-    DFSTestUtil.waitReplication(fs, path, REPL_FACTOR);
-
-    ExtendedBlock block = DFSTestUtil.getFirstBlock(fs, path);
-    int blockFilesCorrupted = cluster.corruptBlockOnDataNodes(block);
-    assertEquals("All replicas not corrupted", REPL_FACTOR, blockFilesCorrupted);
-
-    FSDataInputStream dis = cluster.getFileSystem().open(path);
-    ByteBuffer buf = ByteBuffer.allocateDirect((int)FILE_LENGTH);
-    boolean sawException = false;
+        new MiniDFSCluster.Builder(conf, basedir).numDataNodes(1).build();
     try {
-      dis.read(buf);
-    } catch (ChecksumException ex) {
-      sawException = true;
+      cluster.waitActive();
+      FileSystem fs = cluster.getFileSystem();
+
+      Path path = new Path("/corrupted");
+
+      DFSTestUtil.createFile(fs, path, FILE_LENGTH, REPL_FACTOR, 12345L);
+      DFSTestUtil.waitReplication(fs, path, REPL_FACTOR);
+
+      ExtendedBlock block = DFSTestUtil.getFirstBlock(fs, path);
+      int blockFilesCorrupted = cluster.corruptBlockOnDataNodes(block);
+      assertEquals(REPL_FACTOR, blockFilesCorrupted, "All replicas not corrupted");
+
+      FSDataInputStream dis = cluster.getFileSystem().open(path);
+      ByteBuffer buf = ByteBuffer.allocateDirect((int)FILE_LENGTH);
+      boolean sawException = false;
+      try {
+        dis.read(buf);
+      } catch (ChecksumException ex) {
+        sawException = true;
+      }
+
+      assertTrue(sawException);
+      assertEquals(0, buf.position());
+      assertEquals(buf.capacity(), buf.limit());
+
+      dis = cluster.getFileSystem().open(path);
+      buf.position(3);
+      buf.limit(25);
+      sawException = false;
+      try {
+        dis.read(buf);
+      } catch (ChecksumException ex) {
+        sawException = true;
+      }
+
+      assertTrue(sawException);
+      assertEquals(3, buf.position());
+      assertEquals(25, buf.limit());
+    } finally {
+      cluster.shutdown();
     }
-
-    assertTrue(sawException);
-    assertEquals(0, buf.position());
-    assertEquals(buf.capacity(), buf.limit());
-
-    dis = cluster.getFileSystem().open(path);
-    buf.position(3);
-    buf.limit(25);
-    sawException = false;
-    try {
-      dis.read(buf);
-    } catch (ChecksumException ex) {
-      sawException = true;
-    }
-
-    assertTrue(sawException);
-    assertEquals(3, buf.position());
-    assertEquals(25, buf.limit());
-    cluster.shutdown();
   }
 
   @Test
   public void testBothOldAndNewShortCircuitConfigured() throws Exception {
     final short REPL_FACTOR = 1;
     final int FILE_LENGTH = 512;
-    Assume.assumeTrue(null == DomainSocket.getLoadingFailureReason());
+    assumeTrue(null == DomainSocket.getLoadingFailureReason());
     TemporarySocketDirectory socketDir = new TemporarySocketDirectory();
     HdfsConfiguration conf = getConfiguration(socketDir);
     MiniDFSCluster cluster =
         new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
-    cluster.waitActive();
-    socketDir.close();
-    FileSystem fs = cluster.getFileSystem();
+    try {
+      cluster.waitActive();
+      socketDir.close();
+      FileSystem fs = cluster.getFileSystem();
 
-    Path path = new Path("/foo");
-    byte orig[] = new byte[FILE_LENGTH];
-    for (int i = 0; i < orig.length; i++) {
-      orig[i] = (byte)(i%10);
+      Path path = new Path("/foo");
+      byte orig[] = new byte[FILE_LENGTH];
+      for (int i = 0; i < orig.length; i++) {
+        orig[i] = (byte)(i%10);
+      }
+      FSDataOutputStream fos = fs.create(path, (short)1);
+      fos.write(orig);
+      fos.close();
+      DFSTestUtil.waitReplication(fs, path, REPL_FACTOR);
+      FSDataInputStream fis = cluster.getFileSystem().open(path);
+      byte buf[] = new byte[FILE_LENGTH];
+      IOUtils.readFully(fis, buf, 0, FILE_LENGTH);
+      fis.close();
+      assertArrayEquals(orig, buf);
+      Arrays.equals(orig, buf);
+    } finally {
+      cluster.shutdown();
     }
-    FSDataOutputStream fos = fs.create(path, (short)1);
-    fos.write(orig);
-    fos.close();
-    DFSTestUtil.waitReplication(fs, path, REPL_FACTOR);
-    FSDataInputStream fis = cluster.getFileSystem().open(path);
-    byte buf[] = new byte[FILE_LENGTH];
-    IOUtils.readFully(fis, buf, 0, FILE_LENGTH);
-    fis.close();
-    Assert.assertArrayEquals(orig, buf);
-    Arrays.equals(orig, buf);
-    cluster.shutdown();
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testBlockReaderLocalLegacyWithAppend() throws Exception {
     final short REPL_FACTOR = 1;
     final HdfsConfiguration conf = getConfiguration(null);
     conf.setBoolean(HdfsClientConfigKeys.DFS_CLIENT_USE_LEGACY_BLOCKREADERLOCAL, true);
 
+    File basedir = new File(GenericTestUtils.getRandomizedTempPath());
     final MiniDFSCluster cluster =
-        new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
-    cluster.waitActive();
+        new MiniDFSCluster.Builder(conf, basedir).numDataNodes(1).build();
+    try {
+      cluster.waitActive();
 
-    final DistributedFileSystem dfs = cluster.getFileSystem();
-    final Path path = new Path("/testBlockReaderLocalLegacy");
-    DFSTestUtil.createFile(dfs, path, 10, REPL_FACTOR, 0);
-    DFSTestUtil.waitReplication(dfs, path, REPL_FACTOR);
+      final DistributedFileSystem dfs = cluster.getFileSystem();
+      final Path path = new Path("/testBlockReaderLocalLegacy");
+      DFSTestUtil.createFile(dfs, path, 10, REPL_FACTOR, 0);
+      DFSTestUtil.waitReplication(dfs, path, REPL_FACTOR);
 
-    final ClientDatanodeProtocol proxy;
-    final Token<BlockTokenIdentifier> token;
-    final ExtendedBlock originalBlock;
-    final long originalGS;
-    {
-      final LocatedBlock lb = cluster.getNameNode().getRpcServer()
-          .getBlockLocations(path.toString(), 0, 1).get(0);
-      proxy = DFSUtilClient.createClientDatanodeProtocolProxy(
-          lb.getLocations()[0], conf, 60000, false);
-      token = lb.getBlockToken();
+      final ClientDatanodeProtocol proxy;
+      final Token<BlockTokenIdentifier> token;
+      final ExtendedBlock originalBlock;
+      final long originalGS;
+      {
+        final LocatedBlock lb = cluster.getNameNode().getRpcServer()
+            .getBlockLocations(path.toString(), 0, 1).get(0);
+        proxy = DFSUtilClient.createClientDatanodeProtocolProxy(
+            lb.getLocations()[0], conf, 60000, false);
+        token = lb.getBlockToken();
 
-      // get block and generation stamp
-      final ExtendedBlock blk = new ExtendedBlock(lb.getBlock());
-      originalBlock = new ExtendedBlock(blk);
-      originalGS = originalBlock.getGenerationStamp();
+        // get block and generation stamp
+        final ExtendedBlock blk = new ExtendedBlock(lb.getBlock());
+        originalBlock = new ExtendedBlock(blk);
+        originalGS = originalBlock.getGenerationStamp();
 
-      // test getBlockLocalPathInfo
-      final BlockLocalPathInfo info = proxy.getBlockLocalPathInfo(blk, token);
-      Assert.assertEquals(originalGS, info.getBlock().getGenerationStamp());
+        // test getBlockLocalPathInfo
+        final BlockLocalPathInfo info = proxy.getBlockLocalPathInfo(blk, token);
+        assertEquals(originalGS, info.getBlock().getGenerationStamp());
+      }
+
+      { // append one byte
+        FSDataOutputStream out = dfs.append(path);
+        out.write(1);
+        out.close();
+      }
+
+      {
+        // get new generation stamp
+        final LocatedBlock lb = cluster.getNameNode().getRpcServer()
+            .getBlockLocations(path.toString(), 0, 1).get(0);
+        final long newGS = lb.getBlock().getGenerationStamp();
+        assertTrue(newGS > originalGS);
+
+        // getBlockLocalPathInfo using the original block.
+        assertEquals(originalGS, originalBlock.getGenerationStamp());
+        final BlockLocalPathInfo info = proxy.getBlockLocalPathInfo(
+            originalBlock, token);
+        assertEquals(newGS, info.getBlock().getGenerationStamp());
+      }
+    } finally {
+      cluster.shutdown();
     }
-
-    { // append one byte
-      FSDataOutputStream out = dfs.append(path);
-      out.write(1);
-      out.close();
-    }
-
-    {
-      // get new generation stamp
-      final LocatedBlock lb = cluster.getNameNode().getRpcServer()
-          .getBlockLocations(path.toString(), 0, 1).get(0);
-      final long newGS = lb.getBlock().getGenerationStamp();
-      Assert.assertTrue(newGS > originalGS);
-
-      // getBlockLocalPathInfo using the original block.
-      Assert.assertEquals(originalGS, originalBlock.getGenerationStamp());
-      final BlockLocalPathInfo info = proxy.getBlockLocalPathInfo(
-          originalBlock, token);
-      Assert.assertEquals(newGS, info.getBlock().getGenerationStamp());
-    }
-    cluster.shutdown();
   }
 }

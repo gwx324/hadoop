@@ -24,22 +24,20 @@ import java.io.DataOutput;
 import java.io.IOException;
 
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
-import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationAttemptIdPBImpl;
-import org.apache.hadoop.yarn.api.records.impl.pb.NodeIdPBImpl;
 import org.apache.hadoop.yarn.proto.YarnSecurityTestAMRMTokenProtos.AMRMTokenIdentifierForTestProto;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class AMRMTokenIdentifierForTest extends AMRMTokenIdentifier {
 
-  private static Log LOG = LogFactory.getLog(AMRMTokenIdentifierForTest.class);
+  private static Logger LOG =
+          LoggerFactory.getLogger(AMRMTokenIdentifierForTest.class);
 
   public static final Text KIND = new Text("YARN_AM_RM_TOKEN");
   

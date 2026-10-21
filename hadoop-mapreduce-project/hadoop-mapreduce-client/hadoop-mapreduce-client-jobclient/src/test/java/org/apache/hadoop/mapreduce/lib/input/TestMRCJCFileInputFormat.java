@@ -23,11 +23,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import org.junit.Test;
-import static org.junit.Assert.*;
-
-import static org.mockito.Mockito.*;
-import static org.apache.hadoop.test.MockitoMaker.*;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
@@ -80,12 +83,14 @@ public class TestMRCJCFileInputFormat {
   @Test
   public void testNumInputFiles() throws Exception {
     Configuration conf = spy(new Configuration());
-    Job job = make(stub(Job.class).returning(conf).from.getConfiguration());
-    FileStatus stat = make(stub(FileStatus.class).returning(0L).from.getLen());
+    Job mockedJob = mock(Job.class);
+    when(mockedJob.getConfiguration()).thenReturn(conf);
+    FileStatus stat = mock(FileStatus.class);
+    when(stat.getLen()).thenReturn(0L);
     TextInputFormat ispy = spy(new TextInputFormat());
-    doReturn(Arrays.asList(stat)).when(ispy).listStatus(job);
+    doReturn(Arrays.asList(stat)).when(ispy).listStatus(mockedJob);
 
-    ispy.getSplits(job);
+    ispy.getSplits(mockedJob);
     verify(conf).setLong(FileInputFormat.NUM_INPUT_FILES, 1);
   }
   

@@ -17,19 +17,20 @@
  */
 package org.apache.hadoop.util;
 
-import junit.framework.TestCase;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.util.AsyncDiskService;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.fail;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A test for AsyncDiskService.
  */
-public class TestAsyncDiskService extends TestCase {
+public class TestAsyncDiskService {
   
-  public static final Log LOG = LogFactory.getLog(TestAsyncDiskService.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestAsyncDiskService.class);
   
   // Access by multiple threads from the ThreadPools in AsyncDiskService.
   volatile int count;
@@ -71,8 +72,8 @@ public class TestAsyncDiskService extends TestCase {
     } catch (RuntimeException ex) {
       e = ex;
     }
-    assertNotNull("Executing a task on a non-existing volume should throw an "
-        + "Exception.", e);
+    assertNotNull(e, "Executing a task on a non-existing volume should throw an "
+        + "Exception.");
     
     service.shutdown();
     if (!service.awaitTermination(5000)) {

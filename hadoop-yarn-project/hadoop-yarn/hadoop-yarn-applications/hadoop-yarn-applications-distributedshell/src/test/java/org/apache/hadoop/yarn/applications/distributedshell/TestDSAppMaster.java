@@ -20,6 +20,8 @@ package org.apache.hadoop.yarn.applications.distributedshell;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerExitStatus;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -33,16 +35,23 @@ import org.apache.hadoop.yarn.client.api.async.AMRMClientAsync;
 import org.apache.hadoop.yarn.client.api.impl.TimelineClientImpl;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.server.timelineservice.storage.FileSystemTimelineWriterImpl;
+import org.apache.hadoop.yarn.server.timelineservice.storage.TimelineWriter;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
-import org.junit.Assert;
-import org.junit.Test;
-import org.mockito.Matchers;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A bunch of tests to make sure that the container allocations
@@ -88,7 +97,8 @@ public class TestDSAppMaster {
     master.setAmRMClient(mockClient);
     master.setNumTotalContainers(targetContainers);
     Mockito.doNothing().when(mockClient)
-        .addContainerRequest(Matchers.any(AMRMClient.ContainerRequest.class));
+        .addContainerRequest(ArgumentMatchers.any(
+            AMRMClient.ContainerRequest.class));
 
     ApplicationMaster.RMCallbackHandler handler = master.getRMCallbackHandler();
 
@@ -100,13 +110,12 @@ public class TestDSAppMaster {
 
     // first allocate a single container, everything should be fine
     handler.onContainersAllocated(containers);
-    Assert.assertEquals("Wrong container allocation count", 1,
-        master.getAllocatedContainers());
-    Mockito.verifyZeroInteractions(mockClient);
-    Assert.assertEquals("Incorrect number of threads launched", 1,
-        master.threadsLaunched);
-    Assert.assertEquals("Incorrect YARN Shell IDs",
-        Arrays.asList("1"), master.yarnShellIds);
+    assertEquals(1, master.getAllocatedContainers(),
+        "Wrong container allocation count");
+    assertEquals(1, master.threadsLaunched,
+        "Incorrect number of threads launched");
+    assertEquals(Arrays.asList("1"), master.yarnShellIds,
+        "Incorrect YARN Shell IDs");
 
     // now send 3 extra containers
     containers.clear();
@@ -117,15 +126,12 @@ public class TestDSAppMaster {
     ContainerId id4 = BuilderUtils.newContainerId(1, 1, 1, 4);
     containers.add(generateContainer(id4));
     handler.onContainersAllocated(containers);
-    Assert.assertEquals("Wrong final container allocation count", 4,
-        master.getAllocatedContainers());
-
-    Assert.assertEquals("Incorrect number of threads launched", 4,
-        master.threadsLaunched);
-
-    Assert.assertEquals("Incorrect YARN Shell IDs",
-        Arrays.asList("1", "2", "3", "4"), master.yarnShellIds);
-
+    assertEquals(2, master.getAllocatedContainers(),
+        "Wrong final container allocation count");
+    assertEquals(2, master.threadsLaunched,
+        "Incorrect number of threads launched");
+    assertEquals(Arrays.asList("1", "2"), master.yarnShellIds,
+        "Incorrect YARN Shell IDs");
     // make sure we handle completion events correctly
     List<ContainerStatus> status = new ArrayList<>();
     status.add(generateContainerStatus(id1, ContainerExitStatus.SUCCESS));
@@ -134,30 +140,28 @@ public class TestDSAppMaster {
     status.add(generateContainerStatus(id4, ContainerExitStatus.ABORTED));
     handler.onContainersCompleted(status);
 
-    Assert.assertEquals("Unexpected number of completed containers",
-        targetContainers, master.getNumCompletedContainers());
-    Assert.assertTrue("Master didn't finish containers as expected",
-        master.getDone());
+    assertEquals(targetContainers, master.getNumCompletedContainers(),
+        "Unexpected number of completed containers");
+    assertTrue(master.getDone(), "Master didn't finish containers as expected");
 
     // test for events from containers we know nothing about
     // these events should be ignored
     status = new ArrayList<>();
     ContainerId id5 = BuilderUtils.newContainerId(1, 1, 1, 5);
     status.add(generateContainerStatus(id5, ContainerExitStatus.ABORTED));
-    Assert.assertEquals("Unexpected number of completed containers",
-        targetContainers, master.getNumCompletedContainers());
-    Assert.assertTrue("Master didn't finish containers as expected",
-        master.getDone());
+    assertEquals(targetContainers, master.getNumCompletedContainers(),
+        "Unexpected number of completed containers");
+    assertTrue(master.getDone(), "Master didn't finish containers as expected");
     status.add(generateContainerStatus(id5, ContainerExitStatus.SUCCESS));
-    Assert.assertEquals("Unexpected number of completed containers",
-        targetContainers, master.getNumCompletedContainers());
-    Assert.assertTrue("Master didn't finish containers as expected",
-        master.getDone());
+    assertEquals(targetContainers, master.getNumCompletedContainers(),
+        "Unexpected number of completed containers");
+    assertTrue(master.getDone(), "Master didn't finish containers as expected");
   }
 
   private Container generateContainer(ContainerId cid) {
     return Container.newInstance(cid, NodeId.newInstance("host", 5000),
-      "host:80", Resource.newInstance(1024, 1), Priority.newInstance(0), null);
+      "host:80", Resource.newInstance(1024, 1), Priority.newInstance(0),
+      null);
   }
 
   private ContainerStatus
@@ -167,14 +171,82 @@ public class TestDSAppMaster {
   }
 
   @Test
-  public void testTimelineClientInDSAppMaster() throws Exception {
+  public void testTimelineClientInDSAppMasterV1() throws Exception {
+    runTimelineClientInDSAppMaster(true, false);
+  }
+
+  @Test
+  public void testTimelineClientInDSAppMasterV2() throws Exception {
+    runTimelineClientInDSAppMaster(false, true);
+  }
+
+  @Test
+  public void testTimelineClientInDSAppMasterV1V2() throws Exception {
+    runTimelineClientInDSAppMaster(true, true);
+  }
+
+  @Test
+  public void testTimelineClientInDSAppMasterDisabled() throws Exception {
+    runTimelineClientInDSAppMaster(false, false);
+  }
+
+  private void runTimelineClientInDSAppMaster(boolean v1Enabled,
+      boolean v2Enabled) throws Exception {
+    ApplicationMaster appMaster = createAppMasterWithStartedTimelineService(
+        v1Enabled, v2Enabled);
+    validateAppMasterTimelineService(v1Enabled, v2Enabled, appMaster);
+  }
+
+  private void validateAppMasterTimelineService(boolean v1Enabled,
+      boolean v2Enabled, ApplicationMaster appMaster) {
+    if (v1Enabled) {
+      assertEquals(appMaster.appSubmitterUgi,
+          ((TimelineClientImpl) appMaster.timelineClient).getUgi());
+    } else {
+      assertNull(appMaster.timelineClient);
+    }
+    if (v2Enabled) {
+      assertNotNull(appMaster.timelineV2Client);
+    } else {
+      assertNull(appMaster.timelineV2Client);
+    }
+  }
+
+  private ApplicationMaster createAppMasterWithStartedTimelineService(
+      boolean v1Enabled, boolean v2Enabled) throws Exception {
     ApplicationMaster appMaster = new ApplicationMaster();
-    appMaster.appSubmitterUgi =
-        UserGroupInformation.createUserForTesting("foo", new String[]{"bar"});
-    Configuration conf = new YarnConfiguration();
-    conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
+    appMaster.appSubmitterUgi = UserGroupInformation
+        .createUserForTesting("foo", new String[] {"bar"});
+    Configuration conf = this.getTimelineServiceConf(v1Enabled, v2Enabled);
+    ApplicationId appId = ApplicationId.newInstance(1L, 1);
+    appMaster.appAttemptID = ApplicationAttemptId.newInstance(appId, 1);
     appMaster.startTimelineClient(conf);
-    Assert.assertEquals(appMaster.appSubmitterUgi,
-        ((TimelineClientImpl)appMaster.timelineClient).getUgi());
+    return appMaster;
+  }
+
+  private Configuration getTimelineServiceConf(boolean v1Enabled,
+      boolean v2Enabled) {
+    Configuration conf = new YarnConfiguration(new Configuration(false));
+    assertFalse(YarnConfiguration.timelineServiceEnabled(conf));
+
+    if (v1Enabled || v2Enabled) {
+      conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
+    }
+
+    if (v1Enabled) {
+      conf.setFloat(YarnConfiguration.TIMELINE_SERVICE_VERSION, 1.0f);
+    }
+
+    if (v2Enabled) {
+      conf.setFloat(YarnConfiguration.TIMELINE_SERVICE_VERSION, 2.0f);
+      conf.setClass(YarnConfiguration.TIMELINE_SERVICE_WRITER_CLASS,
+          FileSystemTimelineWriterImpl.class, TimelineWriter.class);
+    }
+
+    if (v1Enabled && v2Enabled) {
+      conf.set(YarnConfiguration.TIMELINE_SERVICE_VERSION, "1.0");
+      conf.set(YarnConfiguration.TIMELINE_SERVICE_VERSIONS, "1.0,2.0f");
+    }
+    return conf;
   }
 }

@@ -19,26 +19,35 @@
 package org.apache.hadoop.yarn.server.resourcemanager;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.Map;
-import java.util.Iterator;
+import java.util.stream.Collectors;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.collections4.CollectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.service.CompositeService;
 import org.apache.hadoop.util.HostsFileReader;
+import org.apache.hadoop.util.HostsFileReader.HostDetails;
 import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.exceptions.YarnException;
@@ -47,23 +56,30 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppNodeUpdateEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppNodeUpdateEvent.RMAppNodeUpdateType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeDecommissioningEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeImpl;
-
-import com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.SystemClock;
+
+import org.apache.hadoop.classification.VisibleForTesting;
 
 @SuppressWarnings("unchecked")
 public class NodesListManager extends CompositeService implements
     EventHandler<NodesListManagerEvent> {
 
-  private static final Log LOG = LogFactory.getLog(NodesListManager.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(NodesListManager.class);
 
   private HostsFileReader hostsReader;
   private Configuration conf;
   private final RMContext rmContext;
+
+  // Default decommissioning timeout value in seconds.
+  // Negative value indicates no timeout. 0 means immediate.
+  private int defaultDecTimeoutSecs =
+      YarnConfiguration.DEFAULT_RM_NODE_GRACEFUL_DECOMMISSION_TIMEOUT;
 
   private String includesFile;
   private String excludesFile;
@@ -71,10 +87,13 @@ public class NodesListManager extends CompositeService implements
   private Resolver resolver;
   private Timer removalTimer;
   private int nodeRemovalCheckInterval;
+  private Set<RMNode> gracefulDecommissionableNodes;
+  private boolean enableNodeUntrackedWithoutIncludePath;
 
   public NodesListManager(RMContext rmContext) {
     super(NodesListManager.class.getName());
     this.rmContext = rmContext;
+    this.gracefulDecommissionableNodes = ConcurrentHashMap.newKeySet();
   }
 
   @Override
@@ -101,14 +120,21 @@ public class NodesListManager extends CompositeService implements
           YarnConfiguration.DEFAULT_RM_NODES_EXCLUDE_FILE_PATH);
       this.hostsReader =
           createHostsFileReader(this.includesFile, this.excludesFile);
-      setDecomissionedNMs();
-      printConfiguredHosts();
+      setDecommissionedNMs();
+      printConfiguredHosts(false);
     } catch (YarnException ex) {
       disableHostsFileReader(ex);
     } catch (IOException ioe) {
       disableHostsFileReader(ioe);
     }
 
+    enableNodeUntrackedWithoutIncludePath = conf.getBoolean(
+        YarnConfiguration.RM_ENABLE_NODE_UNTRACKED_WITHOUT_INCLUDE_PATH,
+        YarnConfiguration.DEFAULT_RM_ENABLE_NODE_UNTRACKED_WITHOUT_INCLUDE_PATH);
+    final Set<String> untrackedSelectiveStatesToRemove = Arrays.stream(conf.getStrings(
+        YarnConfiguration.RM_NODEMANAGER_UNTRACKED_NODE_SELECTIVE_STATES_TO_REMOVE,
+        YarnConfiguration.DEFAULT_RM_NODEMANAGER_UNTRACKED_NODE_SELECTIVE_STATES_TO_REMOVE))
+            .collect(Collectors.toSet());
     final int nodeRemovalTimeout =
         conf.getInt(
             YarnConfiguration.RM_NODEMANAGER_UNTRACKED_REMOVAL_TIMEOUT_MSEC,
@@ -127,6 +153,13 @@ public class NodesListManager extends CompositeService implements
           NodeId nodeId = entry.getKey();
           RMNode rmNode = entry.getValue();
           if (isUntrackedNode(rmNode.getHostName())) {
+            if(CollectionUtils.isNotEmpty(untrackedSelectiveStatesToRemove) &&
+                !untrackedSelectiveStatesToRemove.contains(rmNode.getState().toString())) {
+              LOG.warn("Untracked node {}, with node state {} is not part of " +
+                  "node-removal-untracked.node-selective-states-to-remove config",
+                  rmNode.getHostName(), rmNode.getState().toString());
+              continue;
+            }
             if (rmNode.getUntrackedTimeStamp() == 0) {
               rmNode.setUntrackedTimeStamp(now);
             } else
@@ -174,45 +207,53 @@ public class NodesListManager extends CompositeService implements
     removalTimer.cancel();
   }
 
-  private void printConfiguredHosts() {
+  private void printConfiguredHosts(boolean graceful) {
     if (!LOG.isDebugEnabled()) {
       return;
     }
-    
-    LOG.debug("hostsReader: in=" + conf.get(YarnConfiguration.RM_NODES_INCLUDE_FILE_PATH, 
+
+    LOG.debug("hostsReader: in=" +
+        conf.get(YarnConfiguration.RM_NODES_INCLUDE_FILE_PATH,
         YarnConfiguration.DEFAULT_RM_NODES_INCLUDE_FILE_PATH) + " out=" +
-        conf.get(YarnConfiguration.RM_NODES_EXCLUDE_FILE_PATH, 
+        conf.get(YarnConfiguration.RM_NODES_EXCLUDE_FILE_PATH,
             YarnConfiguration.DEFAULT_RM_NODES_EXCLUDE_FILE_PATH));
 
-    Set<String> hostsList = new HashSet<String>();
-    Set<String> excludeList = new HashSet<String>();
-    hostsReader.getHostDetails(hostsList, excludeList);
-
-    for (String include : hostsList) {
+    HostDetails hostDetails;
+    if (graceful) {
+      hostDetails = hostsReader.getLazyLoadedHostDetails();
+    } else {
+      hostDetails = hostsReader.getHostDetails();
+    }
+    for (String include : hostDetails.getIncludedHosts()) {
       LOG.debug("include: " + include);
     }
-    for (String exclude : excludeList) {
+    for (String exclude : hostDetails.getExcludedHosts()) {
       LOG.debug("exclude: " + exclude);
     }
   }
 
-  public void refreshNodes(Configuration yarnConf) throws IOException,
-      YarnException {
-    refreshHostsReader(yarnConf);
-
-    for (NodeId nodeId: rmContext.getRMNodes().keySet()) {
-      if (!isValidNode(nodeId.getHost())) {
-        RMNodeEventType nodeEventType = isUntrackedNode(nodeId.getHost()) ?
-            RMNodeEventType.SHUTDOWN : RMNodeEventType.DECOMMISSION;
-        this.rmContext.getDispatcher().getEventHandler().handle(
-            new RMNodeEvent(nodeId, nodeEventType));
-      }
+  public void refreshNodes(Configuration yarnConf)
+      throws IOException, YarnException {
+    try {
+      refreshNodes(yarnConf, false);
+    } catch (YarnException | IOException ex) {
+      disableHostsFileReader(ex);
     }
-    updateInactiveNodes();
   }
 
-  private void refreshHostsReader(Configuration yarnConf) throws IOException,
-      YarnException {
+  public void refreshNodes(Configuration yarnConf, boolean graceful)
+      throws IOException, YarnException {
+    refreshHostsReader(yarnConf, graceful, null);
+  }
+
+  private void refreshHostsReader(
+      Configuration yarnConf, boolean graceful, Integer timeout)
+          throws IOException, YarnException {
+    // resolve the default timeout to the decommission timeout that is
+    // configured at this moment
+    if (null == timeout) {
+      timeout = readDecommissioningTimeout(yarnConf);
+    }
     if (null == yarnConf) {
       yarnConf = new YarnConfiguration();
     }
@@ -222,18 +263,237 @@ public class NodesListManager extends CompositeService implements
     excludesFile =
         yarnConf.get(YarnConfiguration.RM_NODES_EXCLUDE_FILE_PATH,
             YarnConfiguration.DEFAULT_RM_NODES_EXCLUDE_FILE_PATH);
-    hostsReader.refresh(includesFile, excludesFile);
-    printConfiguredHosts();
+    LOG.info("refreshNodes excludesFile " + excludesFile);
+
+    if (graceful) {
+      // update hosts, but don't make it visible just yet
+      hostsReader.lazyRefresh(includesFile, excludesFile);
+    } else {
+      hostsReader.refresh(includesFile, excludesFile);
+    }
+
+    printConfiguredHosts(graceful);
+
+    LOG.info("hostsReader include:{" +
+        StringUtils.join(",", hostsReader.getHosts()) +
+        "} exclude:{" +
+        StringUtils.join(",", hostsReader.getExcludedHosts()) + "}");
+
+    handleExcludeNodeList(graceful, timeout);
+    markUnregisteredNodesAsLost(yarnConf);
   }
 
-  private void setDecomissionedNMs() {
+  private void setDecommissionedNMs() {
     Set<String> excludeList = hostsReader.getExcludedHosts();
     for (final String host : excludeList) {
       NodeId nodeId = createUnknownNodeId(host);
       RMNodeImpl rmNode = new RMNodeImpl(nodeId,
-          rmContext, host, -1, -1, new UnknownNode(host), null, null);
+          rmContext, host, -1, -1, new UnknownNode(host),
+          Resource.newInstance(0, 0), "unknown");
       rmContext.getInactiveRMNodes().put(nodeId, rmNode);
       rmNode.handle(new RMNodeEvent(nodeId, RMNodeEventType.DECOMMISSION));
+    }
+  }
+
+  // Handle excluded nodes based on following rules:
+  // Recommission DECOMMISSIONED or DECOMMISSIONING nodes no longer excluded;
+  // Gracefully decommission excluded nodes that are not already
+  // DECOMMISSIONED nor DECOMMISSIONING; Take no action for excluded nodes
+  // that are already DECOMMISSIONED or DECOMMISSIONING.
+  private void handleExcludeNodeList(boolean graceful, int timeout) {
+    // DECOMMISSIONED/DECOMMISSIONING nodes need to be re-commissioned.
+    List<RMNode> nodesToRecom = new ArrayList<RMNode>();
+
+    // Nodes need to be decommissioned (graceful or forceful);
+    List<RMNode> nodesToDecom = new ArrayList<RMNode>();
+
+    HostDetails hostDetails;
+    gracefulDecommissionableNodes.clear();
+    if (graceful) {
+      hostDetails = hostsReader.getLazyLoadedHostDetails();
+    } else {
+      hostDetails = hostsReader.getHostDetails();
+    }
+
+    Set<String> includes = hostDetails.getIncludedHosts();
+    Map<String, Integer> excludes = hostDetails.getExcludedMap();
+
+    for (RMNode n : this.rmContext.getRMNodes().values()) {
+      NodeState s = n.getState();
+      // An invalid node (either due to explicit exclude or not include)
+      // should be excluded.
+      boolean isExcluded = !isValidNode(
+          n.getHostName(), includes, excludes.keySet());
+      String nodeStr = "node " + n.getNodeID() + " with state " + s;
+      if (!isExcluded) {
+        // Note that no action is needed for DECOMMISSIONED node.
+        if (s == NodeState.DECOMMISSIONING) {
+          LOG.info("Recommission " + nodeStr);
+          nodesToRecom.add(n);
+        }
+        // Otherwise no-action needed.
+      } else {
+        // exclude is true.
+        if (graceful) {
+          // Use per node timeout if exist otherwise the request timeout.
+          Integer timeoutToUse = (excludes.get(n.getHostName()) != null)?
+              excludes.get(n.getHostName()) : timeout;
+          if (s != NodeState.DECOMMISSIONED &&
+              s != NodeState.DECOMMISSIONING) {
+            LOG.info("Gracefully decommission " + nodeStr);
+            nodesToDecom.add(n);
+            gracefulDecommissionableNodes.add(n);
+          } else if (s == NodeState.DECOMMISSIONING &&
+                     !Objects.equals(n.getDecommissioningTimeout(),
+                         timeoutToUse)) {
+            LOG.info("Update " + nodeStr + " timeout to be " + timeoutToUse);
+            nodesToDecom.add(n);
+            gracefulDecommissionableNodes.add(n);
+          } else {
+            LOG.info("No action for " + nodeStr);
+          }
+        } else {
+          if (s != NodeState.DECOMMISSIONED) {
+            LOG.info("Forcefully decommission " + nodeStr);
+            nodesToDecom.add(n);
+          }
+        }
+      }
+    }
+
+    if (graceful) {
+      hostsReader.finishRefresh();
+    }
+
+    for (RMNode n : nodesToRecom) {
+      RMNodeEvent e = new RMNodeEvent(
+          n.getNodeID(), RMNodeEventType.RECOMMISSION);
+      this.rmContext.getDispatcher().getEventHandler().handle(e);
+    }
+
+    for (RMNode n : nodesToDecom) {
+      RMNodeEvent e;
+      if (graceful) {
+        Integer timeoutToUse = (excludes.get(n.getHostName()) != null)?
+            excludes.get(n.getHostName()) : timeout;
+        e = new RMNodeDecommissioningEvent(n.getNodeID(), timeoutToUse);
+      } else {
+        RMNodeEventType eventType = isUntrackedNode(n.getHostName())?
+            RMNodeEventType.SHUTDOWN : RMNodeEventType.DECOMMISSION;
+        e = new RMNodeEvent(n.getNodeID(), eventType);
+      }
+      this.rmContext.getDispatcher().getEventHandler().handle(e);
+    }
+
+    updateInactiveNodes();
+  }
+
+  /**
+   * Marks the unregistered nodes as LOST
+   * if the feature is enabled via a configuration flag.
+   *
+   * This method finds nodes that are present in the include list but are not
+   * registered with the ResourceManager. Such nodes are then marked as LOST.
+   *
+   * The steps are as follows:
+   * 1. Retrieve all hostnames of registered nodes from RM.
+   * 2. Identify the nodes present in the include list but are not registered
+   * 3. Remove nodes from the exclude list
+   * 4. Dispatch LOST events for filtered nodes to mark them as LOST.
+   *
+   * @param yarnConf Configuration object that holds the YARN configurations.
+   */
+  private void markUnregisteredNodesAsLost(Configuration yarnConf) {
+    // Check if tracking unregistered nodes is enabled in the configuration
+    if (!yarnConf.getBoolean(YarnConfiguration.ENABLE_TRACKING_FOR_UNREGISTERED_NODES,
+        YarnConfiguration.DEFAULT_ENABLE_TRACKING_FOR_UNREGISTERED_NODES)) {
+      LOG.debug("Unregistered node tracking is disabled. " +
+          "Skipping marking unregistered nodes as LOST.");
+      return;
+    }
+
+    // Set to store all registered hostnames from both active and inactive lists
+    Set<String> registeredHostNames = gatherRegisteredHostNames();
+    // Event handler to dispatch LOST events
+    EventHandler eventHandler = this.rmContext.getDispatcher().getEventHandler();
+
+    // Identify nodes that are in the include list but are not registered
+    // and are not in the exclude list
+    List<String> nodesToMarkLost = new ArrayList<>();
+    HostDetails hostDetails = hostsReader.getHostDetails();
+    Set<String> includes = hostDetails.getIncludedHosts();
+    Set<String> excludes = hostDetails.getExcludedHosts();
+
+    for (String includedNode : includes) {
+      if (!registeredHostNames.contains(includedNode) && !excludes.contains(includedNode)) {
+        LOG.info("Lost node: {}", includedNode);
+        nodesToMarkLost.add(includedNode);
+      }
+    }
+
+    // Dispatch LOST events for the identified lost nodes
+    for (String lostNode : nodesToMarkLost) {
+      dispatchLostEvent(eventHandler, lostNode);
+    }
+
+    // Log successful completion of marking unregistered nodes as LOST
+    LOG.info("Successfully marked unregistered nodes as LOST");
+  }
+
+  /**
+   * Gathers all registered hostnames from both active and inactive RMNodes.
+   *
+   * @return A set of registered hostnames.
+   */
+  private Set<String> gatherRegisteredHostNames() {
+    Set<String> registeredHostNames = new HashSet<>();
+    LOG.info("Getting all the registered hostnames");
+
+    // Gather all registered nodes (active) from RM into the set
+    for (RMNode node : this.rmContext.getRMNodes().values()) {
+      registeredHostNames.add(node.getHostName());
+    }
+
+    // Gather all inactive nodes from RM into the set
+    for (RMNode node : this.rmContext.getInactiveRMNodes().values()) {
+      registeredHostNames.add(node.getHostName());
+    }
+
+    return registeredHostNames;
+  }
+
+  /**
+   * Dispatches a LOST event for a specified lost node.
+   *
+   * @param eventHandler The EventHandler used to dispatch the LOST event.
+   * @param lostNode     The hostname of the lost node for which the event is
+   *                     being dispatched.
+   */
+  private void dispatchLostEvent(EventHandler eventHandler, String lostNode) {
+    // Generate a NodeId for the lost node with a special port -2
+    NodeId nodeId = createLostNodeId(lostNode);
+    RMNodeEvent lostEvent = new RMNodeEvent(nodeId, RMNodeEventType.EXPIRE);
+    RMNodeImpl rmNode = new RMNodeImpl(nodeId, this.rmContext, lostNode, -2, -2,
+        new UnknownNode(lostNode), Resource.newInstance(0, 0), "unknown");
+
+    try {
+      // Dispatch the LOST event to signal the node is no longer active
+      eventHandler.handle(lostEvent);
+
+      // After successful dispatch, update the node status in RMContext
+      // Set the node's timestamp for when it became untracked
+      rmNode.setUntrackedTimeStamp(Time.monotonicNow());
+
+      // Add the node to the active and inactive node maps in RMContext
+      this.rmContext.getRMNodes().put(nodeId, rmNode);
+      this.rmContext.getInactiveRMNodes().put(nodeId, rmNode);
+
+      LOG.info("Successfully dispatched LOST event and deactivated node: {}, Node ID: {}",
+          lostNode, nodeId);
+    } catch (Exception e) {
+      // Log any exception encountered during event dispatch
+      LOG.error("Error dispatching LOST event for node: {}, Node ID: {} - {}",
+          lostNode, nodeId, e.getMessage());
     }
   }
 
@@ -360,14 +620,31 @@ public class NodesListManager extends CompositeService implements
   }
 
   public boolean isValidNode(String hostName) {
-    String ip = resolver.resolve(hostName);
-    Set<String> hostsList = new HashSet<String>();
-    Set<String> excludeList = new HashSet<String>();
-    hostsReader.getHostDetails(hostsList, excludeList);
+    HostDetails hostDetails = hostsReader.getHostDetails();
+    return isValidNode(hostName, hostDetails.getIncludedHosts(),
+        hostDetails.getExcludedHosts());
+  }
 
+  boolean isGracefullyDecommissionableNode(RMNode node) {
+    return gracefulDecommissionableNodes.contains(node);
+  }
+
+  private boolean isValidNode(
+      String hostName, Set<String> hostsList, Set<String> excludeList) {
+    String ip = resolver.resolve(hostName);
     return (hostsList.isEmpty() || hostsList.contains(hostName) || hostsList
         .contains(ip))
         && !(excludeList.contains(hostName) || excludeList.contains(ip));
+  }
+
+  private void sendRMAppNodeUpdateEventToNonFinalizedApps(
+      RMNode eventNode, RMAppNodeUpdateType appNodeUpdateType) {
+    for(RMApp app : rmContext.getRMApps().values()) {
+      if (!app.isAppFinalStateStored()) {
+        app.handle(new RMAppNodeUpdateEvent(app.getApplicationId(), eventNode,
+            appNodeUpdateType));
+      }
+    }
   }
 
   @Override
@@ -375,31 +652,21 @@ public class NodesListManager extends CompositeService implements
     RMNode eventNode = event.getNode();
     switch (event.getType()) {
     case NODE_UNUSABLE:
-      LOG.debug(eventNode + " reported unusable");
-      for(RMApp app: rmContext.getRMApps().values()) {
-        if (!app.isAppFinalStateStored()) {
-          this.rmContext
-              .getDispatcher()
-              .getEventHandler()
-              .handle(
-                  new RMAppNodeUpdateEvent(app.getApplicationId(), eventNode,
-                      RMAppNodeUpdateType.NODE_UNUSABLE));
-        }
-      }
+      LOG.debug("{} reported unusable", eventNode);
+      sendRMAppNodeUpdateEventToNonFinalizedApps(eventNode,
+          RMAppNodeUpdateType.NODE_UNUSABLE);
       break;
     case NODE_USABLE:
-      LOG.debug(eventNode + " reported usable");
-      for (RMApp app : rmContext.getRMApps().values()) {
-        if (!app.isAppFinalStateStored()) {
-          this.rmContext
-              .getDispatcher()
-              .getEventHandler()
-              .handle(
-                  new RMAppNodeUpdateEvent(app.getApplicationId(), eventNode,
-                      RMAppNodeUpdateType.NODE_USABLE));
-        }
-      }
+      LOG.debug("{} reported usable", eventNode);
+      sendRMAppNodeUpdateEventToNonFinalizedApps(eventNode,
+          RMAppNodeUpdateType.NODE_USABLE);
       break;
+    case NODE_DECOMMISSIONING:
+      LOG.debug("{} reported decommissioning", eventNode);
+      sendRMAppNodeUpdateEventToNonFinalizedApps(
+          eventNode, RMAppNodeUpdateType.NODE_DECOMMISSIONING);
+      break;
+
     default:
       LOG.error("Ignoring invalid eventtype " + event.getType());
     }
@@ -419,7 +686,7 @@ public class NodesListManager extends CompositeService implements
           conf.get(YarnConfiguration.DEFAULT_RM_NODES_EXCLUDE_FILE_PATH);
       this.hostsReader =
           createHostsFileReader(this.includesFile, this.excludesFile);
-      setDecomissionedNMs();
+      setDecommissionedNMs();
     } catch (IOException ioe2) {
       // Should *never* happen
       this.hostsReader = null;
@@ -466,41 +733,29 @@ public class NodesListManager extends CompositeService implements
   public boolean isUntrackedNode(String hostName) {
     String ip = resolver.resolve(hostName);
 
-    Set<String> hostsList = new HashSet<String>();
-    Set<String> excludeList = new HashSet<String>();
-    hostsReader.getHostDetails(hostsList, excludeList);
+    HostDetails hostDetails = hostsReader.getHostDetails();
+    Set<String> hostsList = hostDetails.getIncludedHosts();
+    Set<String> excludeList = hostDetails.getExcludedHosts();
 
-    return !hostsList.isEmpty() && !hostsList.contains(hostName)
+    return (!hostsList.isEmpty() || (enableNodeUntrackedWithoutIncludePath
+          && (hostDetails.getIncludesFile() == null
+              || hostDetails.getIncludesFile().isEmpty())))
+        && !hostsList.contains(hostName)
         && !hostsList.contains(ip) && !excludeList.contains(hostName)
         && !excludeList.contains(ip);
   }
 
   /**
-   * Refresh the nodes gracefully
+   * Refresh the nodes gracefully.
    *
-   * @param conf
-   * @throws IOException
-   * @throws YarnException
+   * @param yarnConf yarn configuration.
+   * @param timeout decommission timeout, null means default timeout.
+   * @throws IOException io error occur.
+   * @throws YarnException exceptions from yarn servers.
    */
-  public void refreshNodesGracefully(Configuration conf) throws IOException,
-      YarnException {
-    refreshHostsReader(conf);
-    for (Entry<NodeId, RMNode> entry : rmContext.getRMNodes().entrySet()) {
-      NodeId nodeId = entry.getKey();
-      if (!isValidNode(nodeId.getHost())) {
-        RMNodeEventType nodeEventType = isUntrackedNode(nodeId.getHost()) ?
-            RMNodeEventType.SHUTDOWN : RMNodeEventType.GRACEFUL_DECOMMISSION;
-        this.rmContext.getDispatcher().getEventHandler().handle(
-            new RMNodeEvent(nodeId, nodeEventType));
-      } else {
-        // Recommissioning the nodes
-        if (entry.getValue().getState() == NodeState.DECOMMISSIONING) {
-          this.rmContext.getDispatcher().getEventHandler()
-              .handle(new RMNodeEvent(nodeId, RMNodeEventType.RECOMMISSION));
-        }
-      }
-    }
-    updateInactiveNodes();
+  public void refreshNodesGracefully(Configuration yarnConf, Integer timeout)
+      throws IOException, YarnException {
+    refreshHostsReader(yarnConf, true, timeout);
   }
 
   /**
@@ -533,12 +788,51 @@ public class NodesListManager extends CompositeService implements
     }
   }
 
+  // Read possible new DECOMMISSIONING_TIMEOUT_KEY from yarn-site.xml.
+  // This enables NodesListManager to pick up new value without
+  // ResourceManager restart.
+  private int readDecommissioningTimeout(Configuration pConf) {
+    try {
+      if (pConf == null) {
+        pConf = new YarnConfiguration();
+      }
+      int configuredDefaultDecTimeoutSecs =
+          pConf.getInt(YarnConfiguration.RM_NODE_GRACEFUL_DECOMMISSION_TIMEOUT,
+              YarnConfiguration.DEFAULT_RM_NODE_GRACEFUL_DECOMMISSION_TIMEOUT);
+      if (defaultDecTimeoutSecs != configuredDefaultDecTimeoutSecs) {
+        defaultDecTimeoutSecs = configuredDefaultDecTimeoutSecs;
+        LOG.info("Use new decommissioningTimeoutSecs: "
+            + defaultDecTimeoutSecs);
+      }
+    } catch (Exception e) {
+      LOG.warn("Error readDecommissioningTimeout " + e.getMessage());
+    }
+    return defaultDecTimeoutSecs;
+  }
+
   /**
    * A NodeId instance needed upon startup for populating inactive nodes Map.
    * It only knows the hostname/ip and marks the port to -1 or invalid.
+   *
+   * @param host host name.
+   * @return node id.
    */
   public static NodeId createUnknownNodeId(String host) {
     return NodeId.newInstance(host, -1);
+  }
+
+  /**
+   * Creates a NodeId for a node marked as LOST.
+   *
+   * The NodeId combines the hostname with a special port value of -2, indicating
+   * that the node is lost in the cluster.
+   *
+   * @param host The hostname of the lost node.
+   * @return NodeId Unique identifier for the lost node, with the port set to -2.
+   */
+  public static NodeId createLostNodeId(String host) {
+    // Create a NodeId with the given host and port -2 to signify the node is lost.
+    return NodeId.newInstance(host, -2);
   }
 
   /**

@@ -143,7 +143,7 @@ public interface ClientDatanodeProtocol {
 
   /**
    * Get the status of the previously issued reconfig task.
-   * @see {@link org.apache.hadoop.conf.ReconfigurationTaskStatus}.
+   * @see org.apache.hadoop.conf.ReconfigurationTaskStatus
    */
   ReconfigurationTaskStatus getReconfigurationStatus() throws IOException;
 
@@ -166,6 +166,11 @@ public interface ClientDatanodeProtocol {
   long getBalancerBandwidth() throws IOException;
 
   /**
+   * Get volume report of datanode.
+   */
+  List<DatanodeVolumeInfo> getVolumeReport() throws IOException;
+
+  /**
    * Submit a disk balancer plan for execution.
    */
   void submitDiskBalancerPlan(String planID, long planVersion, String planFile,
@@ -175,7 +180,7 @@ public interface ClientDatanodeProtocol {
   /**
    * Cancel an executing plan.
    *
-   * @param planID - A SHA512 hash of the plan string.
+   * @param planID - A SHA-1 hash of the plan string.
    */
   void cancelDiskBalancePlan(String planID) throws IOException;
 

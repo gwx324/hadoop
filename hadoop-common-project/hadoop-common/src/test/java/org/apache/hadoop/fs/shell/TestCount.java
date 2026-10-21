@@ -17,8 +17,16 @@
  */
 package org.apache.hadoop.fs.shell;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.reset;
 
 import java.io.PrintStream;
 import java.io.IOException;
@@ -35,9 +43,9 @@ import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.FilterFileSystem;
 import org.apache.hadoop.fs.shell.CommandFormat.NotEnoughArgumentsException;
-import org.junit.Test;
-import org.junit.Before;
-import org.junit.BeforeClass;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
 
 /**
  * JUnit test class for {@link org.apache.hadoop.fs.shell.Count}
@@ -53,7 +61,7 @@ public class TestCount {
   private static FileSystem mockFs;
   private static FileStatus fileStat;
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() {
     conf = new Configuration();
     conf.setClass("fs.mockfs.impl", MockFileSystem.class, FileSystem.class);
@@ -62,7 +70,7 @@ public class TestCount {
     when(fileStat.isFile()).thenReturn(true);
   }
 
-  @Before
+  @BeforeEach
   public void resetMock() {
     reset(mockFs);
   }
@@ -282,10 +290,10 @@ public class TestCount {
     options.add("dummy");
     count.processOptions(options);
     String withStorageTypeHeader =
-        // <----13---> <-------17------> <----13-----> <------17------->
-        "    SSD_QUOTA     REM_SSD_QUOTA    DISK_QUOTA    REM_DISK_QUOTA " +
-        // <----13---> <-------17------>
-        "ARCHIVE_QUOTA REM_ARCHIVE_QUOTA " +
+        // <----14----> <-------18-------> <-----14-----> <-------18------->
+        "     SSD_QUOTA      REM_SSD_QUOTA     DISK_QUOTA     REM_DISK_QUOTA " +
+        " ARCHIVE_QUOTA  REM_ARCHIVE_QUOTA PROVIDED_QUOTA REM_PROVIDED_QUOTA " +
+        "  NVDIMM_QUOTA   REM_NVDIMM_QUOTA " +
         "PATHNAME";
     verify(out).println(withStorageTypeHeader);
     verifyNoMoreInteractions(out);
@@ -310,8 +318,8 @@ public class TestCount {
     options.add("dummy");
     count.processOptions(options);
     String withStorageTypeHeader =
-        // <----13---> <-------17------>
-        "    SSD_QUOTA     REM_SSD_QUOTA " +
+        // <----14----> <-------18------->
+        "     SSD_QUOTA      REM_SSD_QUOTA " +
         "PATHNAME";
     verify(out).println(withStorageTypeHeader);
     verifyNoMoreInteractions(out);
@@ -336,10 +344,12 @@ public class TestCount {
     options.add("dummy");
     count.processOptions(options);
     String withStorageTypeHeader =
-        // <----13---> <-------17------>
-        "    SSD_QUOTA     REM_SSD_QUOTA " +
-        "   DISK_QUOTA    REM_DISK_QUOTA " +
-        "ARCHIVE_QUOTA REM_ARCHIVE_QUOTA " +
+        // <----14----> <-------18------->
+        "     SSD_QUOTA      REM_SSD_QUOTA " +
+        "    DISK_QUOTA     REM_DISK_QUOTA " +
+        " ARCHIVE_QUOTA  REM_ARCHIVE_QUOTA " +
+        "PROVIDED_QUOTA REM_PROVIDED_QUOTA " +
+        "  NVDIMM_QUOTA   REM_NVDIMM_QUOTA " +
         "PATHNAME";
     verify(out).println(withStorageTypeHeader);
     verifyNoMoreInteractions(out);
@@ -402,11 +412,30 @@ public class TestCount {
     options.add("dummy");
     count.processOptions(options);
     String withStorageTypeHeader =
-        // <----13---> <------17------->
-        "    SSD_QUOTA     REM_SSD_QUOTA " +
-        "   DISK_QUOTA    REM_DISK_QUOTA " +
+        // <----14----> <------18-------->
+        "     SSD_QUOTA      REM_SSD_QUOTA " +
+        "    DISK_QUOTA     REM_DISK_QUOTA " +
         "PATHNAME";
     verify(out).println(withStorageTypeHeader);
+    verifyNoMoreInteractions(out);
+  }
+
+  @Test
+  public void processPathWithSnapshotHeader() throws Exception {
+    Path path = new Path("mockfs:/test");
+    when(mockFs.getFileStatus(eq(path))).thenReturn(fileStat);
+    PrintStream out = mock(PrintStream.class);
+    Count count = new Count();
+    count.out = out;
+    LinkedList<String> options = new LinkedList<String>();
+    options.add("-s");
+    options.add("-v");
+    options.add("dummy");
+    count.processOptions(options);
+    String withSnapshotHeader = "   DIR_COUNT   FILE_COUNT       CONTENT_SIZE "
+        + "   SNAPSHOT_LENGTH      SNAPSHOT_FILE_COUNT      "
+        + " SNAPSHOT_DIR_COUNT      SNAPSHOT_SPACE_CONSUMED PATHNAME";
+    verify(out).println(withSnapshotHeader);
     verifyNoMoreInteractions(out);
   }
 
@@ -415,7 +444,7 @@ public class TestCount {
     Count count = new Count();
     String actual = count.getCommandName();
     String expected = "count";
-    assertEquals("Count.getCommandName", expected, actual);
+    assertEquals(expected, actual, "Count.getCommandName");
   }
 
   @Test
@@ -423,7 +452,7 @@ public class TestCount {
     Count count = new Count();
     boolean actual = count.isDeprecated();
     boolean expected = false;
-    assertEquals("Count.isDeprecated", expected, actual);
+    assertEquals(expected, actual, "Count.isDeprecated");
   }
 
   @Test
@@ -431,7 +460,7 @@ public class TestCount {
     Count count = new Count();
     String actual = count.getReplacementCommand();
     String expected = null;
-    assertEquals("Count.getReplacementCommand", expected, actual);
+    assertEquals(expected, actual, "Count.getReplacementCommand");
   }
 
   @Test
@@ -439,7 +468,7 @@ public class TestCount {
     Count count = new Count();
     String actual = count.getName();
     String expected = "count";
-    assertEquals("Count.getName", expected, actual);
+    assertEquals(expected, actual, "Count.getName");
   }
 
   @Test
@@ -447,8 +476,9 @@ public class TestCount {
     Count count = new Count();
     String actual = count.getUsage();
     String expected =
-        "-count [-q] [-h] [-v] [-t [<storage type>]] [-u] <path> ...";
-    assertEquals("Count.getUsage", expected, actual);
+        "-count [-q] [-h] [-v] [-t [<storage type>]]"
+        + " [-u] [-x] [-e] [-s] <path> ...";
+    assertEquals(expected, actual, "Count.getUsage");
   }
 
   // check the correct description is returned
@@ -465,16 +495,24 @@ public class TestCount {
         + "      DIR_COUNT FILE_COUNT CONTENT_SIZE PATHNAME\n"
         + "The -h option shows file sizes in human readable format.\n"
         + "The -v option displays a header line.\n"
+        + "The -x option excludes snapshots from being calculated. \n"
         + "The -t option displays quota by storage types.\n"
-        + "It must be used with -q option.\n"
+        + "It should be used with -q or -u option, "
+        + "otherwise it will be ignored.\n"
         + "If a comma-separated list of storage types is given after the -t option, \n"
         + "it displays the quota and usage for the specified types. \n"
         + "Otherwise, it displays the quota and usage for all the storage \n"
-        + "types that support quota \n"
+        + "types that support quota. The list of possible storage "
+        + "types(case insensitive):\n"
+        + "ram_disk, ssd, disk, archive and nvdimm.\n"
+        + "It can also pass the value '', 'all' or 'ALL' to specify all the "
+        + "storage types.\n"
         + "The -u option shows the quota and \n"
-        + "the usage against the quota without the detailed content summary.";
+        + "the usage against the quota without the detailed content summary."
+        + "The -e option shows the erasure coding policy."
+        + "The -s option shows snapshot counts.";
 
-    assertEquals("Count.getDescription", expected, actual);
+    assertEquals(expected, actual, "Count.getDescription");
   }
 
   @Test
@@ -521,7 +559,7 @@ public class TestCount {
     }
 
     @Override
-    public String toString(boolean qOption, boolean hOption) {
+    public String toString(boolean qOption, boolean hOption, boolean xOption) {
       if (qOption) {
         if (hOption) {
           return (HUMAN + WITH_QUOTAS);
@@ -550,7 +588,7 @@ public class TestCount {
     public String toString(boolean hOption,
         boolean tOption, List<StorageType> types) {
       if (tOption) {
-        StringBuffer result = new StringBuffer();
+        StringBuilder result = new StringBuilder();
         result.append(hOption ? HUMAN : BYTES);
 
         for (StorageType type : types) {

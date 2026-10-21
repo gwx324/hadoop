@@ -18,7 +18,18 @@
 
 package org.apache.hadoop.test;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.function.Supplier;
+import org.slf4j.event.Level;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestGenericTestUtils extends GenericTestUtils {
 
@@ -75,4 +86,79 @@ public class TestGenericTestUtils extends GenericTestUtils {
     }
   }
 
+  @Test
+  @Timeout(value = 10)
+  public void testLogCapturer() {
+    final Logger log = LoggerFactory.getLogger(TestGenericTestUtils.class);
+    LogCapturer logCapturer = LogCapturer.captureLogs(log);
+    final String infoMessage = "info message";
+    // test get output message
+    log.info(infoMessage);
+    assertTrue(logCapturer.getOutput().endsWith(
+        String.format(infoMessage + "%n")));
+    // test clear output
+    logCapturer.clearOutput();
+    assertTrue(logCapturer.getOutput().isEmpty());
+    // test stop capturing
+    logCapturer.stopCapturing();
+    log.info(infoMessage);
+    assertTrue(logCapturer.getOutput().isEmpty());
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testLogCapturerSlf4jLogger() {
+    final Logger logger = LoggerFactory.getLogger(TestGenericTestUtils.class);
+    LogCapturer logCapturer = LogCapturer.captureLogs(logger);
+    final String infoMessage = "info message";
+    // test get output message
+    logger.info(infoMessage);
+    assertTrue(logCapturer.getOutput().endsWith(
+        String.format(infoMessage + "%n")));
+    // test clear output
+    logCapturer.clearOutput();
+    assertTrue(logCapturer.getOutput().isEmpty());
+    // test stop capturing
+    logCapturer.stopCapturing();
+    logger.info(infoMessage);
+    assertTrue(logCapturer.getOutput().isEmpty());
+  }
+
+  @Test
+  public void testWaitingForConditionWithInvalidParams() throws Throwable {
+    // test waitFor method with null supplier interface
+    try {
+      waitFor(null, 0, 0);
+    } catch (NullPointerException e) {
+      assertExceptionContains(GenericTestUtils.ERROR_MISSING_ARGUMENT, e);
+    }
+
+    Supplier<Boolean> simpleSupplier = new Supplier<Boolean>() {
+
+      @Override
+      public Boolean get() {
+        return true;
+      }
+    };
+
+    // test waitFor method with waitForMillis greater than checkEveryMillis
+    waitFor(simpleSupplier, 5, 10);
+    try {
+      // test waitFor method with waitForMillis smaller than checkEveryMillis
+      waitFor(simpleSupplier, 10, 5);
+      fail(
+          "Excepted a failure when the param value of"
+          + " waitForMillis is smaller than checkEveryMillis.");
+    } catch (IllegalArgumentException e) {
+      assertExceptionContains(GenericTestUtils.ERROR_INVALID_ARGUMENT, e);
+    }
+  }
+
+  @Test
+  public void testToLevel() throws Throwable {
+    assertEquals(Level.INFO, toLevel("INFO"));
+    assertEquals(Level.DEBUG, toLevel("NonExistLevel"));
+    assertEquals(Level.INFO, toLevel("INFO", Level.TRACE));
+    assertEquals(Level.TRACE, toLevel("NonExistLevel", Level.TRACE));
+  }
 }

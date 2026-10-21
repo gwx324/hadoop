@@ -18,14 +18,17 @@
 package org.apache.hadoop.hdfs.server.namenode;
 
 import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
-import org.junit.After;
-import org.junit.Test;
+import org.apache.hadoop.util.ExitUtil;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -41,7 +44,7 @@ public class TestMetadataVersionOutput {
   private MiniDFSCluster dfsCluster = null;
   private final Configuration conf = new Configuration();
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (dfsCluster != null) {
       dfsCluster.shutdown();
@@ -58,7 +61,8 @@ public class TestMetadataVersionOutput {
     conf.unset(DFS_NAMENODE_NAME_DIR_KEY);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testMetadataVersionOutput() throws IOException {
 
     initConfig();
@@ -78,7 +82,7 @@ public class TestMetadataVersionOutput {
       try {
         NameNode.createNameNode(new String[] { "-metadataVersion" }, conf);
       } catch (Exception e) {
-        assertExceptionContains("ExitException", e);
+        assertExceptionContains(ExitUtil.EXIT_EXCEPTION_MESSAGE, e);
       }
     /* Check if meta data version is printed correctly. */
       final String verNumStr = HdfsServerConstants.NAMENODE_LAYOUT_VERSION + "";

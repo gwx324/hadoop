@@ -17,11 +17,14 @@
 
 package org.apache.hadoop.hdfs.server.diskbalancer.datamodel;
 
-import com.google.common.base.Preconditions;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
 
-import org.codehaus.jackson.annotate.JsonIgnore;
-import org.codehaus.jackson.annotate.JsonIgnoreProperties;
-import org.codehaus.jackson.map.ObjectMapper;
+import org.apache.hadoop.hdfs.web.JsonUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 
@@ -30,6 +33,12 @@ import java.io.IOException;
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class DiskBalancerVolume {
+  private static final ObjectReader READER =
+      new ObjectMapper().readerFor(DiskBalancerVolume.class);
+
+  private static final Logger LOG =
+      LoggerFactory.getLogger(DiskBalancerVolume.class);
+
   private String path;
   private long capacity;
   private String storageType;
@@ -58,8 +67,7 @@ public class DiskBalancerVolume {
    * @throws IOException
    */
   public static DiskBalancerVolume parseJson(String json) throws IOException {
-    ObjectMapper mapper = new ObjectMapper();
-    return mapper.readValue(json, DiskBalancerVolume.class);
+    return READER.readValue(json);
   }
 
   /**
@@ -265,8 +273,13 @@ public class DiskBalancerVolume {
    * @param dfsUsedSpace - dfsUsedSpace for this volume.
    */
   public void setUsed(long dfsUsedSpace) {
-    Preconditions.checkArgument(dfsUsedSpace < this.getCapacity());
-    this.used = dfsUsedSpace;
+    if (dfsUsedSpace > this.getCapacity()) {
+      LOG.warn("Volume usage ("+dfsUsedSpace+") is greater than capacity ("+
+        this.getCapacity()+"). Setting volume usage to the capacity");
+      this.used = this.getCapacity();
+    } else {
+      this.used = dfsUsedSpace;
+    }
   }
 
   /**
@@ -305,8 +318,7 @@ public class DiskBalancerVolume {
    * @throws IOException
    */
   public String toJson() throws IOException {
-    ObjectMapper mapper = new ObjectMapper();
-    return mapper.writeValueAsString(this);
+    return JsonUtil.toJsonString(this);
   }
 
   /**

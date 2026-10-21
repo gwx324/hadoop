@@ -35,7 +35,6 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.CacheDirective;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor.CachedBlocksList.Type;
@@ -44,19 +43,20 @@ import org.apache.hadoop.hdfs.server.namenode.CacheManager;
 import org.apache.hadoop.hdfs.server.namenode.CachePool;
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.INode;
 import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
 import org.apache.hadoop.hdfs.util.ReadOnlyList;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.util.GSet;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Preconditions;
-;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * Scans the namesystem, scheduling blocks to be cached as appropriate.
@@ -141,6 +141,11 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
    */
   private long scannedBlocks;
 
+  /**
+   * Avoid to hold global lock for long times.
+   */
+  private long lastScanTimeMs;
+
   public CacheReplicationMonitor(FSNamesystem namesystem,
       CacheManager cacheManager, long intervalMs, ReentrantLock lock) {
     this.namesystem = namesystem;
@@ -219,7 +224,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
    * after are not atomic.
    */
   public void waitForRescanIfNeeded() {
-    Preconditions.checkArgument(!namesystem.hasWriteLock(),
+    Preconditions.checkArgument(!namesystem.hasWriteLock(RwLockMode.FS),
         "Must not hold the FSN write lock when waiting for a rescan.");
     Preconditions.checkArgument(lock.isHeldByCurrentThread(),
         "Must hold the CRM lock when waiting for a rescan.");
@@ -264,7 +269,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
    */
   @Override
   public void close() throws IOException {
-    Preconditions.checkArgument(namesystem.hasWriteLock());
+    Preconditions.checkArgument(namesystem.hasWriteLock(RwLockMode.GLOBAL));
     lock.lock();
     try {
       if (shutdown) return;
@@ -285,8 +290,9 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
   private void rescan() throws InterruptedException {
     scannedDirectives = 0;
     scannedBlocks = 0;
+    lastScanTimeMs = Time.monotonicNow();
     try {
-      namesystem.writeLock();
+      namesystem.writeLock(RwLockMode.GLOBAL);
       try {
         lock.lock();
         if (shutdown) {
@@ -303,7 +309,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
       rescanCachedBlockMap();
       blockManager.getDatanodeManager().resetLastCachingDirectiveSentTime();
     } finally {
-      namesystem.writeUnlock();
+      namesystem.writeUnlock(RwLockMode.GLOBAL, "cacheReplicationMonitorRescan");
     }
   }
 
@@ -313,6 +319,19 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
     }
     for (CacheDirective directive: cacheManager.getCacheDirectives()) {
       directive.resetStatistics();
+    }
+  }
+
+  private void reacquireLock(long last) {
+    long now = Time.monotonicNow();
+    if (now - last > cacheManager.getMaxLockTimeMs()) {
+      try {
+        namesystem.writeUnlock(RwLockMode.GLOBAL, "cacheReplicationMonitorRescan");
+        Thread.sleep(cacheManager.getSleepTimeMs());
+      } catch (InterruptedException e) {
+      } finally {
+        namesystem.writeLock(RwLockMode.GLOBAL);
+      }
     }
   }
 
@@ -334,12 +353,11 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
       String path = directive.getPath();
       INode node;
       try {
-        node = fsDir.getINode(path);
-      } catch (UnresolvedLinkException e) {
-        // We don't cache through symlinks
-        LOG.debug("Directive {}: got UnresolvedLinkException while resolving "
-                + "path {}", directive.getId(), path
-        );
+        node = fsDir.getINode(path, DirOp.READ);
+      } catch (IOException e) {
+        // We don't cache through symlinks or invalid paths
+        LOG.debug("Directive {}: Failed to resolve path {} ({})",
+            directive.getId(), path, e.getMessage());
         continue;
       }
       if (node == null)  {
@@ -449,6 +467,10 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
     if (cachedTotal == neededTotal) {
       directive.addFilesCached(1);
     }
+    if (cacheManager.isCheckLockTimeEnable()) {
+      reacquireLock(lastScanTimeMs);
+      lastScanTimeMs = Time.monotonicNow();
+    }
     LOG.debug("Directive {}: caching {}: {}/{} bytes", directive.getId(),
         file.getFullPathName(), cachedTotal, neededTotal);
   }
@@ -519,6 +541,10 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
           remaining -= blockInfo.getNumBytes();
         }
       }
+    }
+    if (cacheManager.isCheckLockTimeEnable()) {
+      reacquireLock(lastScanTimeMs);
+      lastScanTimeMs = Time.monotonicNow();
     }
     for (Iterator<CachedBlock> cbIter = cachedBlocks.iterator();
         cbIter.hasNext(); ) {
@@ -605,6 +631,10 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
         );
         cbIter.remove();
       }
+      if (cacheManager.isCheckLockTimeEnable()) {
+        reacquireLock(lastScanTimeMs);
+        lastScanTimeMs = Time.monotonicNow();
+      }
     }
   }
 
@@ -682,7 +712,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
       if (datanode == null) {
         continue;
       }
-      if (datanode.isDecommissioned() || datanode.isDecommissionInProgress()) {
+      if (!datanode.isInService()) {
         continue;
       }
       if (corrupt != null && corrupt.contains(datanode)) {

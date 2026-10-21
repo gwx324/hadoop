@@ -17,38 +17,41 @@
  */
 package org.apache.hadoop.hdfs;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.junit.jupiter.api.Disabled;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.event.Level;
 
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.apache.hadoop.hdfs.StripedFileTestUtil.blockSize;
-import static org.apache.hadoop.hdfs.StripedFileTestUtil.numDNs;
-
 public class TestWriteStripedFileWithFailure {
-  public static final Log LOG = LogFactory
-      .getLog(TestWriteStripedFileWithFailure.class);
+  public static final Logger LOG = LoggerFactory
+      .getLogger(TestWriteStripedFileWithFailure.class);
   private MiniDFSCluster cluster;
   private FileSystem fs;
   private Configuration conf = new HdfsConfiguration();
 
   static {
-    GenericTestUtils.setLogLevel(DFSOutputStream.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(DataStreamer.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(DFSOutputStream.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(DataStreamer.LOG, Level.TRACE);
   }
 
-  private final short dataBlocks = StripedFileTestUtil.NUM_DATA_BLOCKS;
-  private final short parityBlocks = StripedFileTestUtil.NUM_PARITY_BLOCKS;
+  private final ErasureCodingPolicy ecPolicy =
+      StripedFileTestUtil.getDefaultECPolicy();
+  private final short dataBlocks = (short) ecPolicy.getNumDataUnits();
+  private final short parityBlocks = (short) ecPolicy.getNumParityUnits();
+  private final int numDNs = dataBlocks + parityBlocks;
+  private final int blockSize = 4 * ecPolicy.getCellSize();
   private final int smallFileLength = blockSize * dataBlocks - 123;
   private final int largeFileLength = blockSize * dataBlocks + 123;
   private final int[] fileLengths = {smallFileLength, largeFileLength};
@@ -56,7 +59,8 @@ public class TestWriteStripedFileWithFailure {
   public void setup() throws IOException {
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDNs).build();
-    cluster.getFileSystem().getClient().setErasureCodingPolicy("/", null);
+    cluster.getFileSystem().getClient().setErasureCodingPolicy("/",
+        StripedFileTestUtil.getDefaultECPolicy().getName());
     fs = cluster.getFileSystem();
   }
 
@@ -68,8 +72,9 @@ public class TestWriteStripedFileWithFailure {
 
   // Test writing file with some Datanodes failure
   // TODO: enable this test after HDFS-8704 and HDFS-9040
-  @Ignore
-  @Test(timeout = 300000)
+  @Disabled
+  @Test
+  @Timeout(value = 300)
   public void testWriteStripedFileWithDNFailure() throws IOException {
     for (int fileLength : fileLengths) {
       for (int dataDelNum = 1; dataDelNum <= parityBlocks; dataDelNum++) {
@@ -122,10 +127,10 @@ public class TestWriteStripedFileWithFailure {
 
     int[] dataDNFailureIndices = StripedFileTestUtil.randomArray(0, dataBlocks,
         dataDNFailureNum);
-    Assert.assertNotNull(dataDNFailureIndices);
+    Assertions.assertNotNull(dataDNFailureIndices);
     int[] parityDNFailureIndices = StripedFileTestUtil.randomArray(dataBlocks,
         dataBlocks + parityBlocks, parityDNFailureNum);
-    Assert.assertNotNull(parityDNFailureIndices);
+    Assertions.assertNotNull(parityDNFailureIndices);
 
     int[] failedDataNodes = new int[dataDNFailureNum + parityDNFailureNum];
     System.arraycopy(dataDNFailureIndices, 0, failedDataNodes,
@@ -147,16 +152,18 @@ public class TestWriteStripedFileWithFailure {
 
     // make sure the expected number of Datanode have been killed
     int dnFailureNum = dataDNFailureNum + parityDNFailureNum;
-    Assert.assertEquals(cluster.getDataNodes().size(), numDNs - dnFailureNum);
+    Assertions.assertEquals(cluster.getDataNodes().size(), numDNs - dnFailureNum);
 
     byte[] smallBuf = new byte[1024];
     byte[] largeBuf = new byte[fileLength + 100];
     final byte[] expected = StripedFileTestUtil.generateBytes(fileLength);
     StripedFileTestUtil.verifyLength(fs, srcPath, fileLength);
-    StripedFileTestUtil.verifySeek(fs, srcPath, fileLength);
+    StripedFileTestUtil.verifySeek(fs, srcPath, fileLength, ecPolicy,
+        blockSize * dataBlocks);
     StripedFileTestUtil.verifyStatefulRead(fs, srcPath, fileLength, expected,
         smallBuf);
-    StripedFileTestUtil.verifyPread(fs, srcPath, fileLength, expected, largeBuf);
+    StripedFileTestUtil.verifyPread((DistributedFileSystem)fs, srcPath,
+        fileLength, expected, largeBuf);
 
     // delete the file
     fs.delete(srcPath, true);

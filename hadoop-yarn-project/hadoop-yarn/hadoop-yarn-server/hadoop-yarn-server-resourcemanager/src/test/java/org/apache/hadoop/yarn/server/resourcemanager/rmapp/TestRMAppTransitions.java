@@ -18,43 +18,40 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.rmapp;
 
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyLong;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Map;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileContext;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.UnsupportedFileSystemException;
 import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.yarn.MockApps;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+import org.apache.hadoop.yarn.api.ApplicationConstants.Environment;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
+import org.apache.hadoop.yarn.api.records.ContainerRetryContext;
+import org.apache.hadoop.yarn.api.records.ContainerRetryPolicy;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
+import org.apache.hadoop.yarn.api.records.LocalResource;
+import org.apache.hadoop.yarn.api.records.LocalResourceType;
+import org.apache.hadoop.yarn.api.records.LocalResourceVisibility;
+import org.apache.hadoop.yarn.api.records.LogAggregationContext;
+import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.api.records.URL;
 import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationSubmissionContextPBImpl;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.DrainDispatcher;
 import org.apache.hadoop.yarn.event.EventHandler;
+import org.apache.hadoop.yarn.server.api.protocolrecords.LogAggregationReport;
 import org.apache.hadoop.yarn.server.resourcemanager.ApplicationMasterService;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAppManagerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.RMAppManagerEventType;
@@ -71,7 +68,12 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptImpl;
+
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt
+    .RMAppAttemptState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.ContainerAllocationExpirer;
+
+
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppRemovedSchedulerEvent;
@@ -85,18 +87,47 @@ import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSe
 import org.apache.hadoop.yarn.server.resourcemanager.timelineservice.RMTimelineCollectorManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.Records;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Matchers;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 
-@RunWith(value = Parameterized.class)
 public class TestRMAppTransitions {
-  static final Log LOG = LogFactory.getLog(TestRMAppTransitions.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(TestRMAppTransitions.class);
 
   private boolean isSecurityEnabled;
   private Configuration conf;
@@ -110,6 +141,8 @@ public class TestRMAppTransitions {
   private SystemMetricsPublisher publisher;
   private YarnScheduler scheduler;
   private TestSchedulerEventDispatcher schedulerDispatcher;
+  private TestApplicationManagerEventDispatcher appManagerDispatcher;
+  private long testCaseStartTime;
 
   // ignore all the RM application attempt events
   private static final class TestApplicationAttemptEventDispatcher implements
@@ -163,8 +196,11 @@ public class TestRMAppTransitions {
   // ResourceManager.java
   private static final class TestApplicationManagerEventDispatcher implements
       EventHandler<RMAppManagerEvent> {
+    List<RMAppManagerEvent> events = Lists.newArrayList();
     @Override
     public void handle(RMAppManagerEvent event) {
+      LOG.info("Handling app manager event: " + event);
+      events.add(event);
     }
   }
 
@@ -179,7 +215,6 @@ public class TestRMAppTransitions {
     }
   }  
 
-  @Parameterized.Parameters
   public static Collection<Object[]> getTestParameters() {
     return Arrays.asList(new Object[][] {
         { Boolean.FALSE },
@@ -187,11 +222,12 @@ public class TestRMAppTransitions {
     });
   }
 
-  public TestRMAppTransitions(boolean isSecurityEnabled) {
-    this.isSecurityEnabled = isSecurityEnabled;
+  private void initTestRMAppTransitions(boolean pIsSecurityEnabled)
+      throws Exception {
+    this.isSecurityEnabled = pIsSecurityEnabled;
+    setUp();
   }
-  
-  @Before
+
   public void setUp() throws Exception {
     conf = new YarnConfiguration();
     AuthenticationMethod authMethod = AuthenticationMethod.SIMPLE;
@@ -225,7 +261,7 @@ public class TestRMAppTransitions {
 
     ResourceScheduler resourceScheduler = mock(ResourceScheduler.class);
     doReturn(null).when(resourceScheduler)
-              .getAppResourceUsageReport((ApplicationAttemptId)Matchers.any());
+         .getAppResourceUsageReport(any());
     doReturn(resourceScheduler).when(rmContext).getScheduler();
 
     doReturn(mock(RMTimelineCollectorManager.class)).when(rmContext)
@@ -236,9 +272,11 @@ public class TestRMAppTransitions {
 
     rmDispatcher.register(RMAppEventType.class,
         new TestApplicationEventDispatcher(rmContext));
-    
+
+    appManagerDispatcher = new
+        TestApplicationManagerEventDispatcher();
     rmDispatcher.register(RMAppManagerEventType.class,
-        new TestApplicationManagerEventDispatcher());
+        appManagerDispatcher);
     
     schedulerDispatcher = new TestSchedulerEventDispatcher();
     rmDispatcher.register(SchedulerEventType.class,
@@ -246,9 +284,116 @@ public class TestRMAppTransitions {
     
     rmDispatcher.init(conf);
     rmDispatcher.start();
+    testCaseStartTime = System.currentTimeMillis();
   }
 
-  protected RMApp createNewTestApp(ApplicationSubmissionContext submissionContext) {
+  private ByteBuffer getTokens() throws IOException {
+    Credentials ts = new Credentials();
+    DataOutputBuffer dob = new DataOutputBuffer();
+    ts.writeTokenStorageToStream(dob);
+    ByteBuffer securityTokens =
+        ByteBuffer.wrap(dob.getData(), 0, dob.getLength());
+    return securityTokens;
+  }
+
+  private ByteBuffer getTokensConf() throws IOException {
+
+    DataOutputBuffer dob = new DataOutputBuffer();
+    Configuration appConf = new Configuration(false);
+    appConf.clear();
+    appConf.set("dfs.nameservices", "mycluster1,mycluster2");
+    appConf.set("dfs.namenode.rpc-address.mycluster2.nn1",
+        "123.0.0.1");
+    appConf.set("dfs.namenode.rpc-address.mycluster3.nn2",
+        "123.0.0.2");
+    appConf.write(dob);
+    ByteBuffer tokenConf =
+        ByteBuffer.wrap(dob.getData(), 0, dob.getLength());
+    return tokenConf;
+  }
+
+  private Map<String, LocalResource> getLocalResources()
+      throws UnsupportedFileSystemException {
+    FileContext localFS = FileContext.getLocalFSFileContext();
+    File tmpDir = new File("target");
+    File scriptFile = new File(tmpDir, "scriptFile.sh");
+    URL resourceURL =
+        URL.fromPath(localFS
+            .makeQualified(new Path(scriptFile.getAbsolutePath())));
+    LocalResource localRes =
+        Records.newRecord(LocalResource.class);
+    localRes.setResource(resourceURL);
+    localRes.setSize(-1);
+    localRes.setVisibility(LocalResourceVisibility.APPLICATION);
+    localRes.setType(LocalResourceType.FILE);
+    localRes.setTimestamp(scriptFile.lastModified());
+    String destinationFile = "dest_file";
+    Map<String, LocalResource> localResources =
+        new HashMap<String, LocalResource>();
+    localResources.put(destinationFile, localRes);
+    return localResources;
+  }
+
+  private Map<String, String> getEnvironment() {
+    Map<String, String> userSetEnv = new HashMap<String, String>();
+    userSetEnv.put(Environment.CONTAINER_ID.name(), "user_set_container_id");
+    userSetEnv.put(Environment.NM_HOST.name(), "user_set_NM_HOST");
+    userSetEnv.put(Environment.NM_PORT.name(), "user_set_NM_PORT");
+    userSetEnv.put(Environment.NM_HTTP_PORT.name(), "user_set_NM_HTTP_PORT");
+    userSetEnv.put(Environment.LOCAL_DIRS.name(), "user_set_LOCAL_DIR");
+    userSetEnv.put(Environment.USER.key(), "user_set_" +
+        Environment.USER.key());
+    userSetEnv.put(Environment.LOGNAME.name(), "user_set_LOGNAME");
+    userSetEnv.put(Environment.PWD.name(), "user_set_PWD");
+    userSetEnv.put(Environment.HOME.name(), "user_set_HOME");
+    return userSetEnv;
+  }
+
+  private ContainerRetryContext getContainerRetryContext() {
+    ContainerRetryContext containerRetryContext = ContainerRetryContext
+        .newInstance(
+            ContainerRetryPolicy.RETRY_ON_SPECIFIC_ERROR_CODES,
+            new HashSet<>(Arrays.asList(111)), 0, 0);
+    return containerRetryContext;
+  }
+
+  private Map<String, ByteBuffer> getServiceData() {
+    Map<String, ByteBuffer> serviceData = new HashMap<String, ByteBuffer>();
+    String serviceName = "non_exist_auxService";
+    serviceData.put(serviceName, ByteBuffer.wrap(serviceName.getBytes()));
+    return serviceData;
+  }
+
+  private ContainerLaunchContext prepareContainerLaunchContext()
+      throws IOException {
+
+    ContainerLaunchContext clc =
+        Records.newRecord(ContainerLaunchContext.class);
+    clc.setCommands(Arrays.asList("/bin/sleep 5"));
+    if (UserGroupInformation.isSecurityEnabled()) {
+      clc.setTokens(getTokens());
+      clc.setTokensConf(getTokensConf());
+    }
+    clc.setLocalResources(getLocalResources());
+    clc.setEnvironment(getEnvironment());
+    clc.setContainerRetryContext(getContainerRetryContext());
+    clc.setServiceData(getServiceData());
+    return clc;
+  }
+
+  private LogAggregationContext getLogAggregationContext() {
+    LogAggregationContext logAggregationContext =
+        LogAggregationContext.newInstance(
+          "includePattern", "excludePattern",
+          "rolledLogsIncludePattern",
+          "rolledLogsExcludePattern",
+          "policyClass",
+          "policyParameters");
+    return logAggregationContext;
+  }
+
+  protected RMApp createNewTestApp(ApplicationSubmissionContext
+      submissionContext) throws IOException {
     ApplicationId applicationId = MockApps.newAppID(appId++);
     String user = MockApps.newUserName();
     String name = MockApps.newAppName();
@@ -266,10 +411,14 @@ public class TestRMAppTransitions {
     // applicationId will not be used because RMStateStore is mocked,
     // but applicationId is still set for safety
     submissionContext.setApplicationId(applicationId);
+    submissionContext.setPriority(Priority.newInstance(0));
+    submissionContext.setAMContainerSpec(prepareContainerLaunchContext());
+    submissionContext.setLogAggregationContext(getLogAggregationContext());
 
     RMApp application = new RMAppImpl(applicationId, rmContext, conf, name,
         user, queue, submissionContext, scheduler, masterService,
-        System.currentTimeMillis(), "YARN", null, mock(ResourceRequest.class));
+        System.currentTimeMillis(), "YARN", null,
+        new ArrayList<ResourceRequest>());
 
     testAppStartState(applicationId, user, name, queue, application);
     this.rmContext.getRMApps().putIfAbsent(application.getApplicationId(),
@@ -280,54 +429,49 @@ public class TestRMAppTransitions {
   // Test expected newly created app state
   private static void testAppStartState(ApplicationId applicationId, 
       String user, String name, String queue, RMApp application) {
-    Assert.assertTrue("application start time is not greater than 0",
-        application.getStartTime() > 0);
-    Assert.assertTrue("application start time is before currentTime", 
-        application.getStartTime() <= System.currentTimeMillis());
-    Assert.assertEquals("application user is not correct",
-        user, application.getUser());
-    Assert.assertEquals("application id is not correct",
-        applicationId, application.getApplicationId());
-    Assert.assertEquals("application progress is not correct",
-        (float)0.0, application.getProgress(), (float)0.0);
-    Assert.assertEquals("application queue is not correct",
-        queue, application.getQueue());
-    Assert.assertEquals("application name is not correct",
-        name, application.getName());
-    Assert.assertEquals("application finish time is not 0 and should be",
-        0, application.getFinishTime());
-    Assert.assertEquals("application tracking url is not correct",
-        null, application.getTrackingUrl());
+    assertTrue(application.getStartTime() > 0,
+        "application start time is not greater than 0");
+    assertTrue(application.getStartTime() <= System.currentTimeMillis(),
+        "application start time is before currentTime");
+    assertEquals(user, application.getUser(), "application user is not correct");
+    assertEquals(applicationId, application.getApplicationId(),
+        "application id is not correct");
+    assertEquals((float) 0.0, application.getProgress(),
+        (float) 0.0, "application progress is not correct");
+    assertEquals(queue, application.getQueue(),
+        "application queue is not correct");
+    assertEquals(name, application.getName(), "application name is not correct");
+    assertEquals(0, application.getFinishTime(),
+        "application finish time is not 0 and should be");
+    assertNull(application.getTrackingUrl(),
+        "application tracking url is not correct");
     StringBuilder diag = application.getDiagnostics();
-    Assert.assertEquals("application diagnostics is not correct",
-        0, diag.length());
+    assertEquals(0, diag.length(), "application diagnostics is not correct");
   }
 
   // test to make sure times are set when app finishes
-  private static void assertStartTimeSet(RMApp application) {
-    Assert.assertTrue("application start time is not greater than 0",
-        application.getStartTime() > 0);
-    Assert.assertTrue("application start time is before currentTime",
-        application.getStartTime() <= System.currentTimeMillis());
+  private void assertStartTimeSet(RMApp application) {
+    assertTrue(application.getStartTime() >= testCaseStartTime,
+        "application start time is before test case start time");
+    assertTrue(application.getStartTime() <= System.currentTimeMillis(),
+        "application start time is before currentTime");
   }
 
   private static void assertAppState(RMAppState state, RMApp application) {
-    Assert.assertEquals("application state should have been " + state, 
-        state, application.getState());
+    assertEquals(state, application.getState(),
+        "application state should have been " + state);
   }
 
   private static void assertFinalAppStatus(FinalApplicationStatus status, RMApp application) {
-    Assert.assertEquals("Final application status should have been " + status, 
-        status, application.getFinalApplicationStatus());
+    assertEquals(status, application.getFinalApplicationStatus(),
+        "Final application status should have been " + status);
   }
   
   // test to make sure times are set when app finishes
   private void assertTimesAtFinish(RMApp application) {
     assertStartTimeSet(application);
-    Assert.assertTrue("application finish time is not greater than 0",
-        (application.getFinishTime() > 0));
-    Assert.assertTrue("application finish time is not >= start time",
-        (application.getFinishTime() >= application.getStartTime()));
+    assertTrue((application.getFinishTime() >= application.getStartTime()),
+        "application finish time is not >= start time");
   }
 
   private void assertAppFinalStateSaved(RMApp application){
@@ -340,13 +484,24 @@ public class TestRMAppTransitions {
         any(ApplicationStateData.class));
   }
 
+  private void assertAppStateLaunchTimeSaved(long expectedLaunchTime) {
+    ArgumentCaptor<ApplicationStateData> state =
+        ArgumentCaptor.forClass(ApplicationStateData.class);
+    ArgumentCaptor<Boolean> notifyApp =
+        ArgumentCaptor.forClass(Boolean.class);
+    verify(store, times(1)).updateApplicationState(state.capture(),
+        notifyApp.capture());
+    assertEquals(expectedLaunchTime, state.getValue().getLaunchTime());
+    assertFalse(notifyApp.getValue());
+  }
+
   private void assertKilled(RMApp application) {
     assertTimesAtFinish(application);
     assertAppState(RMAppState.KILLED, application);
     assertFinalAppStatus(FinalApplicationStatus.KILLED, application);
     StringBuilder diag = application.getDiagnostics();
-    Assert.assertEquals("application diagnostics is not correct",
-        "Application killed by user.", diag.toString());
+    assertEquals("Application killed by user.", diag.toString(),
+        "application diagnostics is not correct");
   }
 
   private void assertFailed(RMApp application, String regex) {
@@ -354,8 +509,8 @@ public class TestRMAppTransitions {
     assertAppState(RMAppState.FAILED, application);
     assertFinalAppStatus(FinalApplicationStatus.FAILED, application);
     StringBuilder diag = application.getDiagnostics();
-    Assert.assertTrue("application diagnostics is not correct",
-        diag.toString().matches(regex));
+    assertTrue(diag.toString().matches(regex),
+        "application diagnostics is not correct");
   }
 
   private void sendAppUpdateSavedEvent(RMApp application) {
@@ -400,6 +555,7 @@ public class TestRMAppTransitions {
     // verify sendATSCreateEvent() is get called during
     // AddApplicationToSchedulerTransition.
     verify(publisher).appCreated(eq(application), anyLong());
+    verifyRMAppFieldsForNonFinalTransitions(application);
     return application;
   }
 
@@ -408,8 +564,10 @@ public class TestRMAppTransitions {
     RMApp application = createNewTestApp(submissionContext);
     // NEW => SUBMITTED event RMAppEventType.RECOVER
     RMState state = new RMState();
+    long startTime = testCaseStartTime + 1;
     ApplicationStateData appState =
-        ApplicationStateData.newInstance(123, 123, null, "user", null);
+        ApplicationStateData.newInstance(testCaseStartTime, startTime, null,
+            "user", null);
     state.getApplicationState().put(application.getApplicationId(), appState);
     RMAppEvent event =
         new RMAppRecoverEvent(application.getApplicationId(), state);
@@ -417,12 +575,14 @@ public class TestRMAppTransitions {
     application.handle(event);
     assertStartTimeSet(application);
     assertAppState(RMAppState.SUBMITTED, application);
+    verifyRMAppFieldsForNonFinalTransitions(application);
     return application;
   }
 
   protected RMApp testCreateAppAccepted(
       ApplicationSubmissionContext submissionContext) throws IOException {
     RMApp application = testCreateAppSubmittedNoRecovery(submissionContext);
+    NodeId nodeId = NodeId.newInstance("host", 1234);
     // SUBMITTED => ACCEPTED event RMAppEventType.APP_ACCEPTED
     RMAppEvent event = 
         new RMAppEvent(application.getApplicationId(), 
@@ -430,6 +590,8 @@ public class TestRMAppTransitions {
     application.handle(event);
     assertStartTimeSet(application);
     assertAppState(RMAppState.ACCEPTED, application);
+    application.handle(
+        new RMAppRunningOnNodeEvent(application.getApplicationId(), nodeId));
     return application;
   }
 
@@ -460,14 +622,21 @@ public class TestRMAppTransitions {
   }
 
   protected RMApp testCreateAppFinishing(
-      ApplicationSubmissionContext submissionContext) throws IOException {
+      ApplicationSubmissionContext submissionContext) throws Exception {
     // unmanaged AMs don't use the FINISHING state
     assert submissionContext == null || !submissionContext.getUnmanagedAM();
     RMApp application = testCreateAppFinalSaving(submissionContext);
+    assertNotNull(application, "app shouldn't be null");
     // FINAL_SAVING => FINISHING event RMAppEventType.APP_UPDATED
     RMAppEvent appUpdated =
         new RMAppEvent(application.getApplicationId(), RMAppEventType.APP_UPDATE_SAVED);
     application.handle(appUpdated);
+
+    GenericTestUtils.waitFor(() -> {
+      RMAppAttempt appAttempt = application.getCurrentAppAttempt();
+      return appAttempt != null &&
+          RMAppAttemptState.SUBMITTED.equals(appAttempt.getState());
+    }, 10, 80 * 1000);
     assertAppState(RMAppState.FINISHING, application);
     assertTimesAtFinish(application);
     return application;
@@ -475,7 +644,7 @@ public class TestRMAppTransitions {
 
   protected RMApp testCreateAppFinished(
       ApplicationSubmissionContext submissionContext,
-      String diagnostics) throws IOException {
+      String diagnostics) throws Exception {
     // unmanaged AMs don't use the FINISHING state
     RMApp application = null;
     if (submissionContext != null && submissionContext.getUnmanagedAM()) {
@@ -483,21 +652,31 @@ public class TestRMAppTransitions {
     } else {
       application = testCreateAppFinishing(submissionContext);
     }
+
+    verifyAppBeforeFinishEvent(application);
     // RUNNING/FINISHING => FINISHED event RMAppEventType.ATTEMPT_FINISHED
     RMAppEvent finishedEvent = new RMAppEvent(application.getApplicationId(),
         RMAppEventType.ATTEMPT_FINISHED, diagnostics);
     application.handle(finishedEvent);
+    rmDispatcher.await();
+
+    //only run this verification if we created a finishing app
+    if (submissionContext == null) {
+      verifyAppAfterFinishEvent(application);
+    }
     assertAppState(RMAppState.FINISHED, application);
     assertTimesAtFinish(application);
     // finished without a proper unregister implies failed
     assertFinalAppStatus(FinalApplicationStatus.FAILED, application);
-    Assert.assertTrue("Finished app missing diagnostics",
-        application.getDiagnostics().indexOf(diagnostics) != -1);
+    assertTrue(application.getDiagnostics().indexOf(diagnostics) != -1,
+        "Finished app missing diagnostics");
     return application;
   }
 
-  @Test
-  public void testUnmanagedApp() throws IOException {
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testUnmanagedApp(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     ApplicationSubmissionContext subContext = new ApplicationSubmissionContextPBImpl();
     subContext.setUnmanagedAM(true);
 
@@ -505,8 +684,8 @@ public class TestRMAppTransitions {
     LOG.info("--- START: testUnmanagedAppSuccessPath ---");
     final String diagMsg = "some diagnostics";
     RMApp application = testCreateAppFinished(subContext, diagMsg);
-    Assert.assertTrue("Finished app missing diagnostics",
-        application.getDiagnostics().indexOf(diagMsg) != -1);
+    assertTrue(application.getDiagnostics().indexOf(diagMsg) != -1,
+        "Finished app missing diagnostics");
 
     // reset the counter of Mockito.verify
     reset(writer);
@@ -520,41 +699,43 @@ public class TestRMAppTransitions {
     application.handle(event);
     rmDispatcher.await();
     RMAppAttempt appAttempt = application.getCurrentAppAttempt();
-    Assert.assertEquals(1, appAttempt.getAppAttemptId().getAttemptId());
+    assertEquals(1, appAttempt.getAppAttemptId().getAttemptId());
     sendAppUpdateSavedEvent(application);
     assertFailed(application,
         ".*Unmanaged application.*Failing the application.*");
     assertAppFinalStateSaved(application);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
-  
-  @Test
-  public void testAppSuccessPath() throws IOException {
+
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppSuccessPath(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppSuccessPath ---");
     final String diagMsg = "some diagnostics";
     RMApp application = testCreateAppFinished(null, diagMsg);
-    Assert.assertTrue("Finished application missing diagnostics",
-        application.getDiagnostics().indexOf(diagMsg) != -1);
+    assertTrue(application.getDiagnostics().indexOf(diagMsg) != -1,
+        "Finished application missing diagnostics");
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test (timeout = 30000)
-  public void testAppRecoverPath() throws IOException {
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppRecoverPath(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppRecoverPath ---");
     ApplicationSubmissionContext sub =
         Records.newRecord(ApplicationSubmissionContext.class);
-    ContainerLaunchContext clc =
-        Records.newRecord(ContainerLaunchContext.class);
-    Credentials credentials = new Credentials();
-    DataOutputBuffer dob = new DataOutputBuffer();
-    credentials.writeTokenStorageToStream(dob);
-    ByteBuffer securityTokens =
-        ByteBuffer.wrap(dob.getData(), 0, dob.getLength());
-    clc.setTokens(securityTokens);
-    sub.setAMContainerSpec(clc);
+    sub.setAMContainerSpec(prepareContainerLaunchContext());
     testCreateAppSubmittedRecovery(sub);
   }
 
-  @Test (timeout = 30000)
-  public void testAppNewKill() throws IOException {
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppNewKill(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppNewKill ---");
 
     UserGroupInformation fooUser = UserGroupInformation.createUserForTesting(
@@ -571,11 +752,14 @@ public class TestRMAppTransitions {
     assertKilled(application);
     assertAppFinalStateNotSaved(application);
     verifyApplicationFinished(RMAppState.KILLED);
-    verifyAppRemovedSchedulerEvent(RMAppState.KILLED);
+    verifyAppRemovedSchedulerEvent(application, RMAppState.KILLED);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test
-  public void testAppNewReject() throws IOException {
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppNewReject(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppNewReject ---");
 
     RMApp application = createNewTestApp(null);
@@ -589,10 +773,14 @@ public class TestRMAppTransitions {
     assertFailed(application, rejectedText);
     assertAppFinalStateSaved(application);
     verifyApplicationFinished(RMAppState.FAILED);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test (timeout = 30000)
-  public void testAppNewRejectAddToStore() throws IOException {
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppNewRejectAddToStore(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppNewRejectAddToStore ---");
 
     RMApp application = createNewTestApp(null);
@@ -606,11 +794,15 @@ public class TestRMAppTransitions {
     assertFailed(application, rejectedText);
     assertAppFinalStateSaved(application);
     verifyApplicationFinished(RMAppState.FAILED);
+    verifyRMAppFieldsForFinalTransitions(application);
     rmContext.getStateStore().removeApplication(application);
   }
 
-  @Test (timeout = 30000)
-  public void testAppNewSavingKill() throws IOException {
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppNewSavingKill(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppNewSavingKill ---");
 
     RMApp application = testCreateAppNewSaving(null);
@@ -627,11 +819,15 @@ public class TestRMAppTransitions {
     sendAppUpdateSavedEvent(application);
     assertKilled(application);
     verifyApplicationFinished(RMAppState.KILLED);
-    verifyAppRemovedSchedulerEvent(RMAppState.KILLED);
+    verifyAppRemovedSchedulerEvent(application, RMAppState.KILLED);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test (timeout = 30000)
-  public void testAppNewSavingReject() throws IOException {
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppNewSavingReject(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppNewSavingReject ---");
 
     RMApp application = testCreateAppNewSaving(null);
@@ -645,10 +841,34 @@ public class TestRMAppTransitions {
     assertFailed(application, rejectedText);
     assertAppFinalStateSaved(application);
     verifyApplicationFinished(RMAppState.FAILED);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test (timeout = 30000)
-  public void testAppSubmittedRejected() throws IOException {
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppNewSavingSaveReject(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
+    LOG.info("--- START: testAppNewSavingSaveReject ---");
+    RMApp application = testCreateAppNewSaving(null);
+    // NEW_SAVING => FAILED event RMAppEventType.APP_SAVE_FAILED
+    String rejectedText = "Test Application Rejected";
+    RMAppEvent event = new RMAppEvent(application.getApplicationId(),
+        RMAppEventType.APP_SAVE_FAILED, rejectedText);
+    application.handle(event);
+    rmDispatcher.await();
+    assertFailed(application, rejectedText);
+    verify(store, times(0)).updateApplicationState(
+        any(ApplicationStateData.class));
+    verifyApplicationFinished(RMAppState.FAILED);
+    assertTimesAtFinish(application);
+  }
+
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppSubmittedRejected(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppSubmittedRejected ---");
 
     RMApp application = testCreateAppSubmittedNoRecovery(null);
@@ -662,10 +882,14 @@ public class TestRMAppTransitions {
     assertFailed(application, rejectedText);
     assertAppFinalStateSaved(application);
     verifyApplicationFinished(RMAppState.FAILED);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test
-  public void testAppSubmittedKill() throws IOException, InterruptedException {
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppSubmittedKill(boolean pIsSecurityEnabled)
+      throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppSubmittedKill---");
     RMApp application = testCreateAppSubmittedNoRecovery(null);
 
@@ -683,16 +907,19 @@ public class TestRMAppTransitions {
     assertKilled(application);
     assertAppFinalStateSaved(application);
     verifyApplicationFinished(RMAppState.KILLED);
-    verifyAppRemovedSchedulerEvent(RMAppState.KILLED);
+    verifyAppRemovedSchedulerEvent(application, RMAppState.KILLED);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test
-  public void testAppAcceptedFailed() throws IOException {
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppAcceptedFailed(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppAcceptedFailed ---");
 
     RMApp application = testCreateAppAccepted(null);
     // ACCEPTED => ACCEPTED event RMAppEventType.RMAppEventType.ATTEMPT_FAILED
-    Assert.assertTrue(maxAppAttempts > 1);
+    assertTrue(maxAppAttempts > 1);
     for (int i=1; i < maxAppAttempts; i++) {
       RMAppEvent event = 
           new RMAppFailedAttemptEvent(application.getApplicationId(), 
@@ -721,8 +948,11 @@ public class TestRMAppTransitions {
     verifyApplicationFinished(RMAppState.FAILED);
   }
 
-  @Test
-  public void testAppAcceptedKill() throws IOException, InterruptedException {
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppAcceptedKill(boolean pIsSecurityEnabled)
+      throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppAcceptedKill ---");
     RMApp application = testCreateAppAccepted(null);
     // ACCEPTED => KILLED event RMAppEventType.KILL
@@ -746,12 +976,45 @@ public class TestRMAppTransitions {
     assertKilled(application);
     assertAppFinalStateSaved(application);
     verifyApplicationFinished(RMAppState.KILLED);
-    verifyAppRemovedSchedulerEvent(RMAppState.KILLED);
+    verifyAppRemovedSchedulerEvent(application, RMAppState.KILLED);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
-  
-  @Test
-  public void testAppAcceptedAttemptKilled() throws IOException,
-      InterruptedException {
+
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppAcceptedAccepted(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
+    LOG.info("--- START: testAppAcceptedAccepted ---");
+
+    RMApp application = testCreateAppAccepted(null);
+    // ACCEPTED => ACCEPTED event RMAppEventType.ATTEMPT_LAUNCHED
+    RMAppEvent appAttemptLaunched =
+        new RMAppEvent(application.getApplicationId(),
+            RMAppEventType.ATTEMPT_LAUNCHED, 1234L);
+    application.handle(appAttemptLaunched);
+    rmDispatcher.await();
+    assertAppState(RMAppState.ACCEPTED, application);
+    assertAppStateLaunchTimeSaved(1234L);
+  }
+
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAcquiredReleased(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
+    RMApp application = testCreateAppSubmittedNoRecovery(null);
+    NodeId nodeId = NodeId.newInstance("host", 1234);
+    application.handle(
+        new RMAppRunningOnNodeEvent(application.getApplicationId(), nodeId, true));
+    Map<NodeId, LogAggregationReport> logAggregationReportsForApp =
+        application.getLogAggregationReportsForApp();
+    assertEquals(0, logAggregationReportsForApp.size());
+  }
+
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppAcceptedAttemptKilled(boolean pIsSecurityEnabled)
+      throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppAcceptedAttemptKilled ---");
     RMApp application = testCreateAppAccepted(null);
 
@@ -769,11 +1032,13 @@ public class TestRMAppTransitions {
     assertKilled(application);
     assertAppFinalStateSaved(application);
     verifyApplicationFinished(RMAppState.KILLED);
-    verifyAppRemovedSchedulerEvent(RMAppState.KILLED);
+    verifyAppRemovedSchedulerEvent(application, RMAppState.KILLED);
   }
 
-  @Test
-  public void testAppRunningKill() throws IOException {
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppRunningKill(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppRunningKill ---");
 
     RMApp application = testCreateAppRunning(null);
@@ -793,20 +1058,23 @@ public class TestRMAppTransitions {
     sendAppUpdateSavedEvent(application);
     assertKilled(application);
     verifyApplicationFinished(RMAppState.KILLED);
-    verifyAppRemovedSchedulerEvent(RMAppState.KILLED);
+    verifyAppRemovedSchedulerEvent(application, RMAppState.KILLED);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test
-  public void testAppRunningFailed() throws IOException {
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppRunningFailed(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppRunningFailed ---");
 
     RMApp application = testCreateAppRunning(null);
     RMAppAttempt appAttempt = application.getCurrentAppAttempt();
     int expectedAttemptId = 1;
-    Assert.assertEquals(expectedAttemptId, 
+    assertEquals(expectedAttemptId,
         appAttempt.getAppAttemptId().getAttemptId());
     // RUNNING => FAILED/RESTARTING event RMAppEventType.ATTEMPT_FAILED
-    Assert.assertTrue(maxAppAttempts > 1);
+    assertTrue(maxAppAttempts > 1);
     for (int i=1; i<maxAppAttempts; i++) {
       RMAppEvent event = 
           new RMAppFailedAttemptEvent(application.getApplicationId(), 
@@ -815,7 +1083,7 @@ public class TestRMAppTransitions {
       rmDispatcher.await();
       assertAppState(RMAppState.ACCEPTED, application);
       appAttempt = application.getCurrentAppAttempt();
-      Assert.assertEquals(++expectedAttemptId, 
+      assertEquals(++expectedAttemptId,
           appAttempt.getAppAttemptId().getAttemptId());
       event = 
           new RMAppEvent(application.getApplicationId(), 
@@ -851,10 +1119,13 @@ public class TestRMAppTransitions {
     assertFailed(application, ".*Failing the application.*");
     assertAppFinalStateSaved(application);
     verifyApplicationFinished(RMAppState.FAILED);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test
-  public void testAppAtFinishingIgnoreKill() throws IOException {
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppAtFinishingIgnoreKill(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppAtFinishingIgnoreKill ---");
 
     RMApp application = testCreateAppFinishing(null);
@@ -871,8 +1142,10 @@ public class TestRMAppTransitions {
   // App_Saved event, we stay on FINAL_SAVING on Attempt_Finished event
   // and then directly jump from FINAL_SAVING to FINISHED state on App_Saved
   // event
-  @Test
-  public void testAppFinalSavingToFinished() throws IOException {
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppFinalSavingToFinished(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppFinalSavingToFinished ---");
 
     RMApp application = testCreateAppFinalSaving(null);
@@ -890,12 +1163,15 @@ public class TestRMAppTransitions {
     assertTimesAtFinish(application);
     // finished without a proper unregister implies failed
     assertFinalAppStatus(FinalApplicationStatus.FAILED, application);
-    Assert.assertTrue("Finished app missing diagnostics", application
-      .getDiagnostics().indexOf(diagMsg) != -1);
+    assertTrue(application.getDiagnostics().indexOf(diagMsg) != -1,
+        "Finished app missing diagnostics");
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test
-  public void testAppFinishedFinished() throws IOException {
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppFinishedFinished(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppFinishedFinished ---");
 
     RMApp application = testCreateAppFinished(null, "");
@@ -907,14 +1183,20 @@ public class TestRMAppTransitions {
     rmDispatcher.await();
     assertTimesAtFinish(application);
     assertAppState(RMAppState.FINISHED, application);
+    assertEquals(0, application.getRanNodes().size());
     StringBuilder diag = application.getDiagnostics();
-    Assert.assertEquals("application diagnostics is not correct",
-        "", diag.toString());
+    assertEquals("", diag.toString(),
+        "application diagnostics is not correct");
     verifyApplicationFinished(RMAppState.FINISHED);
+    verifyAppRemovedSchedulerEvent(application, RMAppState.FINISHED);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test (timeout = 30000)
-  public void testAppFailedFailed() throws IOException {
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppFailedFailed(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppFailedFailed ---");
 
     RMApp application = testCreateAppNewSaving(null);
@@ -940,10 +1222,14 @@ public class TestRMAppTransitions {
 
     assertTimesAtFinish(application);
     assertAppState(RMAppState.FAILED, application);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
 
-  @Test (timeout = 30000)
-  public void testAppKilledKilled() throws IOException {
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppKilledKilled(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     LOG.info("--- START: testAppKilledKilled ---");
 
     RMApp application = testCreateAppRunning(null);
@@ -994,10 +1280,52 @@ public class TestRMAppTransitions {
 
     assertTimesAtFinish(application);
     assertAppState(RMAppState.KILLED, application);
+    verifyRMAppFieldsForFinalTransitions(application);
   }
-  
-  @Test(timeout = 30000)
-  public void testAppsRecoveringStates() throws Exception {
+
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppStartAfterKilled(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
+    LOG.info("--- START: testAppStartAfterKilled ---");
+
+    ApplicationId applicationId = MockApps.newAppID(appId++);
+    RMApp application = new RMAppImpl(applicationId, rmContext, conf, null,
+            null, null, new ApplicationSubmissionContextPBImpl(), null, null,
+              System.currentTimeMillis(), "YARN", null, null) {
+          @Override
+          protected void onInvalidStateTransition(RMAppEventType rmAppEventType,
+                  RMAppState state) {
+            fail("RMAppImpl: can't handle " + rmAppEventType
+                                 + " at state " + state);
+          }
+      };
+
+    // NEW => KILLED event RMAppEventType.KILL
+    UserGroupInformation fooUser = UserGroupInformation.createUserForTesting(
+            "testAppStartAfterKilled", new String[] {"foo_group"});
+    RMAppEvent event = new RMAppKillByClientEvent(
+             applicationId, "Application killed by user.",
+             fooUser, Server.getRemoteIp());
+    application.handle(event);
+    rmDispatcher.await();
+    assertKilled(application);
+
+    // KILLED => KILLED event RMAppEventType.START
+    event = new RMAppFailedAttemptEvent(application.getApplicationId(),
+                            RMAppEventType.START, "", false);
+    application.handle(event);
+    rmDispatcher.await();
+    assertTimesAtFinish(application);
+    assertAppState(RMAppState.KILLED, application);
+  }
+
+  @Timeout(value = 30)
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testAppsRecoveringStates(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     RMState state = new RMState();
     Map<ApplicationId, ApplicationStateData> applicationState =
         state.getApplicationState();
@@ -1010,8 +1338,7 @@ public class TestRMAppTransitions {
   }
   
   public void testRecoverApplication(ApplicationStateData appState,
-      RMState rmState)
-      throws Exception {
+      RMState rmState) {
     ApplicationSubmissionContext submissionContext =
         appState.getApplicationSubmissionContext();
     RMAppImpl application =
@@ -1022,69 +1349,135 @@ public class TestRMAppTransitions {
             submissionContext.getQueue(), submissionContext, scheduler, null,
             appState.getSubmitTime(), submissionContext.getApplicationType(),
             submissionContext.getApplicationTags(),
-            BuilderUtils.newResourceRequest(
+            Collections.singletonList(BuilderUtils.newResourceRequest(
                 RMAppAttemptImpl.AM_CONTAINER_PRIORITY, ResourceRequest.ANY,
-                submissionContext.getResource(), 1));
-    Assert.assertEquals(RMAppState.NEW, application.getState());
+                submissionContext.getResource(), 1)));
+    assertEquals(RMAppState.NEW, application.getState());
 
     RMAppEvent recoverEvent =
         new RMAppRecoverEvent(application.getApplicationId(), rmState);
     // Trigger RECOVER event.
     application.handle(recoverEvent);
     // Application final status looked from recoveredFinalStatus
-    Assert.assertTrue("Application is not in recoveredFinalStatus.",
-        RMAppImpl.isAppInFinalState(application));
+    assertTrue(RMAppImpl.isAppInFinalState(application),
+        "Application is not in recoveredFinalStatus.");
 
     rmDispatcher.await();
     RMAppState finalState = appState.getState();
-    Assert.assertEquals("Application is not in finalState.", finalState,
-        application.getState());
+    assertEquals(finalState, application.getState(),
+        "Application is not in finalState.");
+    verifyRMAppFieldsForFinalTransitions(application);
   }
   
   public void createRMStateForApplications(
       Map<ApplicationId, ApplicationStateData> applicationState,
-      RMAppState rmAppState) {
+      RMAppState rmAppState) throws IOException {
     RMApp app = createNewTestApp(null);
     ApplicationStateData appState =
         ApplicationStateData.newInstance(app.getSubmitTime(), app.getStartTime(),
             app.getUser(), app.getApplicationSubmissionContext(), rmAppState,
-            null, app.getFinishTime(), null);
+            null, app.getLaunchTime(), app.getFinishTime(), null);
     applicationState.put(app.getApplicationId(), appState);
   }
-  
-  @Test
-  public void testGetAppReport() {
+
+  @ParameterizedTest
+  @MethodSource("getTestParameters")
+  public void testGetAppReport(boolean pIsSecurityEnabled) throws Exception {
+    initTestRMAppTransitions(pIsSecurityEnabled);
     RMApp app = createNewTestApp(null);
     assertAppState(RMAppState.NEW, app);
     ApplicationReport report = app.createAndGetApplicationReport(null, true);
-    Assert.assertNotNull(report.getApplicationResourceUsageReport());
-    Assert.assertEquals(report.getApplicationResourceUsageReport(),RMServerUtils.DUMMY_APPLICATION_RESOURCE_USAGE_REPORT);
+    assertNotNull(report.getApplicationResourceUsageReport());
+    assertThat(report.getApplicationResourceUsageReport()).
+        isEqualTo(RMServerUtils.DUMMY_APPLICATION_RESOURCE_USAGE_REPORT);
     report = app.createAndGetApplicationReport("clientuser", true);
-    Assert.assertNotNull(report.getApplicationResourceUsageReport());
-    Assert.assertTrue("bad proxy url for app",
-        report.getTrackingUrl().endsWith("/proxy/" + app.getApplicationId()
-            + "/"));
+    assertNotNull(report.getApplicationResourceUsageReport());
+    assertTrue(report.getTrackingUrl().endsWith("/proxy/" + app.getApplicationId()
+        + "/"), "bad proxy url for app");
+  }
+
+  private void verifyAppBeforeFinishEvent(RMApp app) {
+    assertEquals(0L, ((RMAppImpl) app).getLogAggregationStartTime());
+    //RMAppEventType.APP_UPDATE_SAVED sets the finish time
+    assertTrue(appManagerDispatcher.events.isEmpty(),
+        "App manager events should not be received!");
+  }
+
+  private void verifyAppAfterFinishEvent(RMApp app) {
+    assertTrue(
+            testCaseStartTime < ((RMAppImpl) app).getLogAggregationStartTime());
+    assertAppState(RMAppState.FINISHED, app);
+    verifyAppCompletedEvent(app);
+    verifyAppRemovedSchedulerEvent(app, RMAppState.FINISHED);
+  }
+
+  private void verifyAppCompletedEvent(RMApp app) {
+    assertEquals(1, appManagerDispatcher.events.size());
+    RMAppManagerEvent rmAppManagerEvent = appManagerDispatcher.events.get(0);
+    assertEquals(RMAppManagerEventType.APP_COMPLETED,
+        rmAppManagerEvent.getType());
+    assertEquals(app.getApplicationId().getId(),
+        rmAppManagerEvent.getApplicationId().getId());
   }
 
   private void verifyApplicationFinished(RMAppState state) {
     ArgumentCaptor<RMAppState> finalState =
         ArgumentCaptor.forClass(RMAppState.class);
     verify(writer).applicationFinished(any(RMApp.class), finalState.capture());
-    Assert.assertEquals(state, finalState.getValue());
+    assertEquals(state, finalState.getValue());
     finalState = ArgumentCaptor.forClass(RMAppState.class);
     verify(publisher).appFinished(any(RMApp.class), finalState.capture(),
         anyLong());
-    Assert.assertEquals(state, finalState.getValue());
+    assertEquals(state, finalState.getValue());
   }
   
-  private void verifyAppRemovedSchedulerEvent(RMAppState finalState) {
-    Assert.assertEquals(SchedulerEventType.APP_REMOVED,
-      schedulerDispatcher.lastSchedulerEvent.getType());
-    if(schedulerDispatcher.lastSchedulerEvent instanceof 
-        AppRemovedSchedulerEvent) {
+  private void verifyAppRemovedSchedulerEvent(RMApp app,
+      RMAppState finalState) {
+    SchedulerEvent lastEvent = schedulerDispatcher.lastSchedulerEvent;
+    assertEquals(SchedulerEventType.APP_REMOVED, lastEvent.getType());
+    if (lastEvent instanceof AppRemovedSchedulerEvent) {
       AppRemovedSchedulerEvent appRemovedEvent =
-          (AppRemovedSchedulerEvent) schedulerDispatcher.lastSchedulerEvent;
-      Assert.assertEquals(finalState, appRemovedEvent.getFinalState());
+          (AppRemovedSchedulerEvent) lastEvent;
+      assertEquals(finalState, appRemovedEvent.getFinalState());
+      assertEquals(app.getApplicationId().getId(),
+          appRemovedEvent.getApplicationID().getId());
     }
+  }
+
+  private void verifyRMAppFieldsForNonFinalTransitions(RMApp application)
+      throws IOException {
+    assertEquals(Arrays.asList("/bin/sleep 5"),
+        application.getApplicationSubmissionContext().
+        getAMContainerSpec().getCommands());
+    assertEquals(getLocalResources(),
+        application.getApplicationSubmissionContext().
+        getAMContainerSpec().getLocalResources());
+    if(UserGroupInformation.isSecurityEnabled()) {
+      assertEquals(getTokens(),
+          application.getApplicationSubmissionContext().
+          getAMContainerSpec().getTokens());
+      assertEquals(getTokensConf(),
+          application.getApplicationSubmissionContext().
+          getAMContainerSpec().getTokensConf());
+    }
+    assertEquals(getEnvironment(),
+        application.getApplicationSubmissionContext().
+        getAMContainerSpec().getEnvironment());
+    assertEquals(getContainerRetryContext(),
+        application.getApplicationSubmissionContext().
+        getAMContainerSpec().getContainerRetryContext());
+    assertEquals(getServiceData(),
+        application.getApplicationSubmissionContext().
+        getAMContainerSpec().getServiceData());
+    assertEquals(getLogAggregationContext(),
+        application.getApplicationSubmissionContext().
+        getLogAggregationContext());
+  }
+
+  private void verifyRMAppFieldsForFinalTransitions(RMApp application) {
+    assertEquals(null, application.getApplicationSubmissionContext().
+        getAMContainerSpec());
+    assertEquals(null, application.getApplicationSubmissionContext().
+        getLogAggregationContext());
   }
 }

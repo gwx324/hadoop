@@ -21,6 +21,7 @@ package org.apache.hadoop.mapreduce.lib.output;
 import java.io.IOException;
 import java.text.NumberFormat;
 
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -38,11 +39,15 @@ import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.TaskID;
 import org.apache.hadoop.mapreduce.TaskInputOutputContext;
 import org.apache.hadoop.mapreduce.security.TokenCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** A base class for {@link OutputFormat}s that read from {@link FileSystem}s.*/
 @InterfaceAudience.Public
 @InterfaceStability.Stable
 public abstract class FileOutputFormat<K, V> extends OutputFormat<K, V> {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(FileOutputFormat.class);
 
   /** Construct output file names so that, when an output directory listing is
    * sorted lexicographically, positions correspond to output partitions.*/
@@ -53,15 +58,28 @@ public abstract class FileOutputFormat<K, V> extends OutputFormat<K, V> {
     NUMBER_FORMAT.setMinimumIntegerDigits(5);
     NUMBER_FORMAT.setGroupingUsed(false);
   }
-  private FileOutputCommitter committer = null;
-public static final String COMPRESS ="mapreduce.output.fileoutputformat.compress";
-public static final String COMPRESS_CODEC = 
-"mapreduce.output.fileoutputformat.compress.codec";
-public static final String COMPRESS_TYPE = "mapreduce.output.fileoutputformat.compress.type";
-public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir";
+  private PathOutputCommitter committer = null;
+
+  /** Configuration option: should output be compressed? {@value}. */
+  public static final String COMPRESS =
+      "mapreduce.output.fileoutputformat.compress";
+
+  /** If compression is enabled, name of codec: {@value}. */
+  public static final String COMPRESS_CODEC =
+      "mapreduce.output.fileoutputformat.compress.codec";
+  /**
+   * Type of compression {@value}: NONE, RECORD, BLOCK.
+   * Generally only used in {@code SequenceFileOutputFormat}.
+   */
+  public static final String COMPRESS_TYPE =
+      "mapreduce.output.fileoutputformat.compress.type";
+
+  /** Destination directory of work: {@value}. */
+  public static final String OUTDIR =
+      "mapreduce.output.fileoutputformat.outputdir";
 
   @Deprecated
-  public static enum Counter {
+  public enum Counter {
     BYTES_WRITTEN
   }
 
@@ -110,14 +128,14 @@ public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir
    */
   public static Class<? extends CompressionCodec> 
   getOutputCompressorClass(JobContext job, 
-		                       Class<? extends CompressionCodec> defaultValue) {
+                       Class<? extends CompressionCodec> defaultValue) {
     Class<? extends CompressionCodec> codecClass = defaultValue;
     Configuration conf = job.getConfiguration();
     String name = conf.get(FileOutputFormat.COMPRESS_CODEC);
     if (name != null) {
       try {
-        codecClass = 
-        	conf.getClassByName(name).asSubclass(CompressionCodec.class);
+        codecClass =
+            conf.getClassByName(name).asSubclass(CompressionCodec.class);
       } catch (ClassNotFoundException e) {
         throw new IllegalArgumentException("Compression codec " + name + 
                                            " was not found.", e);
@@ -190,15 +208,15 @@ public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir
    * (running simultaneously e.g. speculative tasks) trying to open/write-to the
    * same file (path) on HDFS. Hence the application-writer will have to pick 
    * unique names per task-attempt (e.g. using the attemptid, say 
-   * <tt>attempt_200709221812_0001_m_000000_0</tt>), not just per TIP.</p> 
+   * <code>attempt_200709221812_0001_m_000000_0</code>), not just per TIP.</p>
    * 
    * <p>To get around this the Map-Reduce framework helps the application-writer 
    * out by maintaining a special 
-   * <tt>${mapreduce.output.fileoutputformat.outputdir}/_temporary/_${taskid}</tt> 
+   * <code>${mapreduce.output.fileoutputformat.outputdir}/_temporary/_${taskid}</code>
    * sub-directory for each task-attempt on HDFS where the output of the 
    * task-attempt goes. On successful completion of the task-attempt the files 
-   * in the <tt>${mapreduce.output.fileoutputformat.outputdir}/_temporary/_${taskid}</tt> (only) 
-   * are <i>promoted</i> to <tt>${mapreduce.output.fileoutputformat.outputdir}</tt>. Of course, the 
+   * in the <code>${mapreduce.output.fileoutputformat.outputdir}/_temporary/_${taskid}</code> (only)
+   * are <i>promoted</i> to <code>${mapreduce.output.fileoutputformat.outputdir}</code>. Of course, the
    * framework discards the sub-directory of unsuccessful task-attempts. This 
    * is completely transparent to the application.</p>
    * 
@@ -219,9 +237,11 @@ public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir
   public static Path getWorkOutputPath(TaskInputOutputContext<?,?,?,?> context
                                        ) throws IOException, 
                                                 InterruptedException {
-    FileOutputCommitter committer = (FileOutputCommitter) 
+    PathOutputCommitter committer = (PathOutputCommitter)
       context.getOutputCommitter();
-    return committer.getWorkPath();
+    Path workPath = committer.getWorkPath();
+    LOG.debug("Work path is {}", workPath);
+    return workPath;
   }
 
   /**
@@ -281,10 +301,17 @@ public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir
    */
   public Path getDefaultWorkFile(TaskAttemptContext context,
                                  String extension) throws IOException{
-    FileOutputCommitter committer = 
-      (FileOutputCommitter) getOutputCommitter(context);
-    return new Path(committer.getWorkPath(), getUniqueFile(context, 
-      getOutputName(context), extension));
+    OutputCommitter c = getOutputCommitter(context);
+    Preconditions.checkState(c instanceof PathOutputCommitter,
+        "Committer %s is not a PathOutputCommitter", c);
+    Path workPath = ((PathOutputCommitter) c).getWorkPath();
+    Preconditions.checkNotNull(workPath,
+        "Null workPath returned by committer %s", c);
+    Path workFile = new Path(workPath,
+        getUniqueFile(context, getOutputName(context), extension));
+    LOG.debug("Work file for {} extension '{}' is {}",
+        context, extension, workFile);
+    return workFile;
   }
 
   /**
@@ -301,12 +328,14 @@ public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir
     job.getConfiguration().set(BASE_OUTPUT_NAME, name);
   }
 
-  public synchronized 
-     OutputCommitter getOutputCommitter(TaskAttemptContext context
-                                        ) throws IOException {
+  public synchronized
+      OutputCommitter getOutputCommitter(TaskAttemptContext context)
+      throws IOException {
     if (committer == null) {
       Path output = getOutputPath(context);
-      committer = new FileOutputCommitter(output, context);
+      committer = PathOutputCommitterFactory.getCommitterFactory(
+          output,
+          context.getConfiguration()).createOutputCommitter(output, context);
     }
     return committer;
   }

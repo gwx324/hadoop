@@ -19,33 +19,33 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BLOCK_GROUP_INDEX_MASK;
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.MAX_BLOCKS_IN_GROUP;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.not;
-import static org.junit.Assert.assertThat;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.IOException;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.stubbing.Answer;
 
 /**
@@ -53,14 +53,16 @@ import org.mockito.stubbing.Answer;
  * collision handling.
  */
 public class TestSequentialBlockGroupId {
-  private static final Log LOG = LogFactory
-      .getLog("TestSequentialBlockGroupId");
+  private static final Logger LOG = LoggerFactory
+      .getLogger("TestSequentialBlockGroupId");
 
+  private final ErasureCodingPolicy ecPolicy =
+      StripedFileTestUtil.getDefaultECPolicy();
   private final short REPLICATION = 1;
   private final long SEED = 0;
-  private final int dataBlocks = StripedFileTestUtil.NUM_DATA_BLOCKS;
-  private final int parityBlocks = StripedFileTestUtil.NUM_PARITY_BLOCKS;
-  private final int cellSize = StripedFileTestUtil.BLOCK_STRIPED_CELL_SIZE;
+  private final int dataBlocks = ecPolicy.getNumDataUnits();
+  private final int parityBlocks = ecPolicy.getNumParityUnits();
+  private final int cellSize = ecPolicy.getCellSize();
 
   private final int stripesPerBlock = 2;
   private final int blockSize = cellSize * stripesPerBlock;
@@ -69,11 +71,11 @@ public class TestSequentialBlockGroupId {
   private final int fileLen = blockSize * dataBlocks * blockGrpCount;
 
   private MiniDFSCluster cluster;
-  private FileSystem fs;
+  private DistributedFileSystem fs;
   private SequentialBlockGroupIdGenerator blockGrpIdGenerator;
   private Path ecDir = new Path("/ecDir");
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     Configuration conf = new HdfsConfiguration();
     conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
@@ -82,14 +84,16 @@ public class TestSequentialBlockGroupId {
     cluster.waitActive();
 
     fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(
+        StripedFileTestUtil.getDefaultECPolicy().getName());
     blockGrpIdGenerator = cluster.getNamesystem().getBlockManager()
         .getBlockIdManager().getBlockGroupIdGenerator();
     fs.mkdirs(ecDir);
-    cluster.getFileSystem().getClient()
-        .setErasureCodingPolicy("/ecDir", null);
+    cluster.getFileSystem().getClient().setErasureCodingPolicy("/ecDir",
+        StripedFileTestUtil.getDefaultECPolicy().getName());
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     if (cluster != null) {
       cluster.shutdown();
@@ -100,7 +104,8 @@ public class TestSequentialBlockGroupId {
   /**
    * Test that blockGroup IDs are generating unique value.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testBlockGroupIdGeneration() throws IOException {
     long blockGroupIdInitialValue = blockGrpIdGenerator.getCurrentValue();
 
@@ -109,7 +114,9 @@ public class TestSequentialBlockGroupId {
     DFSTestUtil.createFile(fs, path, cellSize, fileLen, blockSize, REPLICATION,
         SEED);
     List<LocatedBlock> blocks = DFSTestUtil.getAllBlocks(fs, path);
-    assertThat("Wrong BlockGrps", blocks.size(), is(blockGrpCount));
+    assertThat(blocks.size())
+        .as("Wrong BlockGrps")
+        .isEqualTo(blockGrpCount);
 
     // initialising the block group generator for verifying the block id
     blockGrpIdGenerator.setCurrentValue(blockGroupIdInitialValue);
@@ -121,15 +128,23 @@ public class TestSequentialBlockGroupId {
       long nextBlockExpectedId = blockGrpIdGenerator.getCurrentValue();
       long nextBlockGrpId = blocks.get(i).getBlock().getBlockId();
       LOG.info("BlockGrp" + i + " id is " + nextBlockGrpId);
-      assertThat("BlockGrpId mismatches!", nextBlockGrpId,
-          is(nextBlockExpectedId));
+      assertThat(nextBlockGrpId)
+          .as("BlockGrpId mismatches!")
+          .isEqualTo(nextBlockExpectedId);
     }
+
+    // verify that the blockGroupId resets on #clear call.
+    cluster.getNamesystem().getBlockManager().clear();
+    assertThat(blockGrpIdGenerator.getCurrentValue())
+        .as("BlockGrpId mismatches!")
+        .isEqualTo(Long.MIN_VALUE);
   }
 
   /**
    * Test that collisions in the blockGroup ID space are handled gracefully.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testTriggerBlockGroupIdCollision() throws IOException {
     long blockGroupIdInitialValue = blockGrpIdGenerator.getCurrentValue();
 
@@ -139,7 +154,9 @@ public class TestSequentialBlockGroupId {
     DFSTestUtil.createFile(fs, path1, cellSize, fileLen, blockSize,
         REPLICATION, SEED);
     List<LocatedBlock> blocks1 = DFSTestUtil.getAllBlocks(fs, path1);
-    assertThat("Wrong BlockGrps", blocks1.size(), is(blockGrpCount));
+    assertThat(blocks1.size())
+        .as("Wrong BlockGrps")
+        .isEqualTo(blockGrpCount);
 
     // Rewind the block ID counter in the name system object. This will result
     // in block ID collisions when we try to allocate new blocks.
@@ -150,14 +167,18 @@ public class TestSequentialBlockGroupId {
     DFSTestUtil.createFile(fs, path2, cellSize, fileLen, blockSize,
         REPLICATION, SEED);
     List<LocatedBlock> blocks2 = DFSTestUtil.getAllBlocks(fs, path2);
-    assertThat("Wrong BlockGrps", blocks2.size(), is(blockGrpCount));
+    assertThat(blocks2.size())
+        .as("Wrong BlockGrps")
+        .isEqualTo(blockGrpCount);
 
     // Make sure that file1 and file2 block IDs are different
     for (LocatedBlock locBlock1 : blocks1) {
       long blockId1 = locBlock1.getBlock().getBlockId();
       for (LocatedBlock locBlock2 : blocks2) {
         long blockId2 = locBlock2.getBlock().getBlockId();
-        assertThat("BlockGrpId mismatches!", blockId1, is(not(blockId2)));
+        assertThat(blockId1)
+            .as("BlockGrpId mismatches!")
+            .isNotEqualTo(blockId2);
       }
     }
   }
@@ -166,7 +187,8 @@ public class TestSequentialBlockGroupId {
    * Test that collisions in the blockGroup ID when the id is occupied by legacy
    * block.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testTriggerBlockGroupIdCollisionWithLegacyBlockId()
       throws Exception {
     long blockGroupIdInitialValue = blockGrpIdGenerator.getCurrentValue();
@@ -198,9 +220,9 @@ public class TestSequentialBlockGroupId {
     DFSTestUtil.createFile(fs, path1, 1024, REPLICATION, SEED);
 
     List<LocatedBlock> contiguousBlocks = DFSTestUtil.getAllBlocks(fs, path1);
-    assertThat(contiguousBlocks.size(), is(1));
-    Assert.assertEquals("Unexpected BlockId!", curBlockGroupIdValue,
-        contiguousBlocks.get(0).getBlock().getBlockId());
+    assertThat(contiguousBlocks.size()).isEqualTo(1);
+    assertEquals(curBlockGroupIdValue, contiguousBlocks.get(0).getBlock().getBlockId(),
+        "Unexpected BlockId!");
 
     // Reset back to the initial value to trigger collision
     blockGrpIdGenerator.setCurrentValue(blockGroupIdInitialValue);
@@ -209,14 +231,18 @@ public class TestSequentialBlockGroupId {
     DFSTestUtil.createFile(fs, path2, cellSize, fileLen, blockSize,
         REPLICATION, SEED);
     List<LocatedBlock> blocks2 = DFSTestUtil.getAllBlocks(fs, path2);
-    assertThat("Wrong BlockGrps", blocks2.size(), is(blockGrpCount));
+    assertThat(blocks2.size())
+        .as("Wrong BlockGrps")
+        .isEqualTo(blockGrpCount);
 
     // Make sure that file1 and file2 block IDs are different
     for (LocatedBlock locBlock1 : contiguousBlocks) {
       long blockId1 = locBlock1.getBlock().getBlockId();
       for (LocatedBlock locBlock2 : blocks2) {
         long blockId2 = locBlock2.getBlock().getBlockId();
-        assertThat("BlockGrpId mismatches!", blockId1, is(not(blockId2)));
+        assertThat(blockId1)
+            .as("BlockGrpId mismatches!")
+            .isNotEqualTo(blockId2);
       }
     }
   }

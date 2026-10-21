@@ -17,40 +17,59 @@
  */
 package org.apache.hadoop.ha;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.contains;
+import static org.mockito.Mockito.endsWith;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.reset;
 
+import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
+import java.util.Arrays;
+import java.util.List;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
-import org.mockito.Mockito;
-
-import static org.mockito.Mockito.spy;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
+import org.slf4j.Logger;
 
 public class TestShellCommandFencer {
   private ShellCommandFencer fencer = createFencer();
   private static final HAServiceTarget TEST_TARGET =
       new DummyHAService(HAServiceState.ACTIVE,
           new InetSocketAddress("dummyhost", 1234));
-  
-  @BeforeClass
-  public static void setupLogSpy() {
-    ShellCommandFencer.LOG = spy(ShellCommandFencer.LOG);
+  private static final Logger LOG = ShellCommandFencer.LOG;
+
+  @BeforeAll
+  public static void setupLogMock() {
+    ShellCommandFencer.LOG = mock(Logger.class, new LogAnswer());
   }
-  
-  @Before
+
+  @AfterAll
+  public static void tearDownLogMock() throws Exception {
+    ShellCommandFencer.LOG = LOG;
+  }
+
+  @BeforeEach
   public void resetLogSpy() {
-    Mockito.reset(ShellCommandFencer.LOG);
+    reset(ShellCommandFencer.LOG);
   }
   
   private static ShellCommandFencer createFencer() {
     Configuration conf = new Configuration();
-    conf.set("in.fencing.tests", "yessir");
+    conf.set("in.fencing-tests", "yessir");
     ShellCommandFencer fencer = new ShellCommandFencer();
     fencer.setConf(conf);
     return fencer;
@@ -75,9 +94,8 @@ public class TestShellCommandFencer {
       new NodeFencer(conf, "shell");
       fail("Didn't throw when passing no args to shell");
     } catch (BadFencingConfigurationException confe) {
-      assertTrue(
-        "Unexpected exception:" + StringUtils.stringifyException(confe),
-        confe.getMessage().contains("No argument passed"));    
+      assertTrue(confe.getMessage().contains("No argument passed"),
+          "Unexpected exception:" + StringUtils.stringifyException(confe));
     }
   }
 
@@ -88,9 +106,8 @@ public class TestShellCommandFencer {
       new NodeFencer(conf, "shell()");
       fail("Didn't throw when passing no args to shell");
     } catch (BadFencingConfigurationException confe) {
-      assertTrue(
-        "Unexpected exception:" + StringUtils.stringifyException(confe),
-        confe.getMessage().contains("Unable to parse line: 'shell()'"));
+      assertTrue(confe.getMessage().contains("Unable to parse line: 'shell()'"),
+          "Unexpected exception:" + StringUtils.stringifyException(confe));
     }
   }
 
@@ -101,8 +118,8 @@ public class TestShellCommandFencer {
   @Test
   public void testStdoutLogging() {
     assertTrue(fencer.tryFence(TEST_TARGET, "echo hello"));
-    Mockito.verify(ShellCommandFencer.LOG).info(
-        Mockito.endsWith("echo hello: hello"));
+    verify(ShellCommandFencer.LOG).info(
+        endsWith("echo hello: hello"));
   }
    
   /**
@@ -112,8 +129,8 @@ public class TestShellCommandFencer {
   @Test
   public void testStderrLogging() {
     assertTrue(fencer.tryFence(TEST_TARGET, "echo hello>&2"));
-    Mockito.verify(ShellCommandFencer.LOG).warn(
-        Mockito.endsWith("echo hello>&2: hello"));
+    verify(ShellCommandFencer.LOG).warn(
+        endsWith("echo hello>&2: hello"));
   }
 
   /**
@@ -124,12 +141,12 @@ public class TestShellCommandFencer {
   public void testConfAsEnvironment() {
     if (!Shell.WINDOWS) {
       fencer.tryFence(TEST_TARGET, "echo $in_fencing_tests");
-      Mockito.verify(ShellCommandFencer.LOG).info(
-          Mockito.endsWith("echo $in...ing_tests: yessir"));
+      verify(ShellCommandFencer.LOG).info(
+          endsWith("echo $in...ing_tests: yessir"));
     } else {
       fencer.tryFence(TEST_TARGET, "echo %in_fencing_tests%");
-      Mockito.verify(ShellCommandFencer.LOG).info(
-          Mockito.endsWith("echo %in...ng_tests%: yessir"));
+      verify(ShellCommandFencer.LOG).info(
+          endsWith("echo %in...ng_tests%: yessir"));
     }
   }
   
@@ -141,12 +158,43 @@ public class TestShellCommandFencer {
   public void testTargetAsEnvironment() {
     if (!Shell.WINDOWS) {
       fencer.tryFence(TEST_TARGET, "echo $target_host $target_port");
-      Mockito.verify(ShellCommandFencer.LOG).info(
-          Mockito.endsWith("echo $ta...rget_port: dummyhost 1234"));
+      verify(ShellCommandFencer.LOG).info(
+          endsWith("echo $ta...rget_port: dummyhost 1234"));
     } else {
       fencer.tryFence(TEST_TARGET, "echo %target_host% %target_port%");
-      Mockito.verify(ShellCommandFencer.LOG).info(
-          Mockito.endsWith("echo %ta...get_port%: dummyhost 1234"));
+      verify(ShellCommandFencer.LOG).info(
+          endsWith("echo %ta...get_port%: dummyhost 1234"));
+    }
+  }
+
+  /**
+   * Test if fencing target has peer set, the failover can trigger different
+   * commands on source and destination respectively.
+   */
+  @Test
+  public void testEnvironmentWithPeer() {
+    HAServiceTarget target = new DummyHAService(HAServiceState.ACTIVE,
+        new InetSocketAddress("dummytarget", 1111));
+    HAServiceTarget source = new DummyHAService(HAServiceState.STANDBY,
+        new InetSocketAddress("dummysource", 2222));
+    target.setTransitionTargetHAStatus(HAServiceState.ACTIVE);
+    source.setTransitionTargetHAStatus(HAServiceState.STANDBY);
+    String cmd = "echo $target_host $target_port,"
+        + "echo $source_host $source_port";
+    if (!Shell.WINDOWS) {
+      fencer.tryFence(target, cmd);
+      verify(ShellCommandFencer.LOG).info(
+          contains("echo $ta...rget_port: dummytarget 1111"));
+      fencer.tryFence(source, cmd);
+      verify(ShellCommandFencer.LOG).info(
+          contains("echo $so...urce_port: dummysource 2222"));
+    } else {
+      fencer.tryFence(target, cmd);
+      verify(ShellCommandFencer.LOG).info(
+          contains("echo %ta...get_port%: dummytarget 1111"));
+      fencer.tryFence(source, cmd);
+      verify(ShellCommandFencer.LOG).info(
+          contains("echo %so...urce_port%: dummysource 2222"));
     }
   }
 
@@ -157,7 +205,8 @@ public class TestShellCommandFencer {
    * so that, if we use 'ssh', it won't try to prompt for a password
    * and block forever, for example.
    */
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testSubprocessInputIsClosed() {
     assertFalse(fencer.tryFence(TEST_TARGET, "read"));
   }
@@ -173,4 +222,36 @@ public class TestShellCommandFencer {
     assertEquals("a...gh", ShellCommandFencer.abbreviate("abcdefgh", 6));
     assertEquals("ab...gh", ShellCommandFencer.abbreviate("abcdefgh", 7));
   }
+
+  /**
+   * An answer simply delegate some basic log methods to real LOG.
+   */
+  private static class LogAnswer implements Answer {
+
+    private static final List<String> DELEGATE_METHODS = Arrays.asList(
+        "error", "warn", "info", "debug", "trace");
+
+    @Override
+    public Object answer(InvocationOnMock invocation) {
+
+      String methodName = invocation.getMethod().getName();
+
+      if (!DELEGATE_METHODS.contains(methodName)) {
+        return null;
+      }
+
+      try {
+        String msg = invocation.getArguments()[0].toString();
+        Method delegateMethod = LOG.getClass().getMethod(methodName,
+            msg.getClass());
+        delegateMethod.invoke(LOG, msg);
+      } catch (Throwable e) {
+        throw new IllegalStateException(
+            "Unsupported delegate method: " + methodName);
+      }
+
+      return null;
+    }
+  }
+
 }

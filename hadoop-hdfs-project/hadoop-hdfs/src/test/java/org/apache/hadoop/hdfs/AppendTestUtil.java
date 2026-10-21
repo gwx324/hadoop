@@ -17,16 +17,17 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -43,7 +44,7 @@ public class AppendTestUtil {
    */
   static final Long RANDOM_NUMBER_GENERATOR_SEED = null;
 
-  static final Log LOG = LogFactory.getLog(AppendTestUtil.class);
+  static final Logger LOG = LoggerFactory.getLogger(AppendTestUtil.class);
 
   private static final Random SEED = new Random();
   static {
@@ -96,9 +97,9 @@ public class AppendTestUtil {
     }
     
     LOG.info("partition=" + Arrays.toString(p));
-    assertTrue("i=0", p[0] > 0 && p[0] < n);
+    assertTrue(p[0] > 0 && p[0] < n, "i=0");
     for(int i = 1; i < p.length; i++) {
-      assertTrue("i=" + i, p[i] > p[i - 1] && p[i] < n);
+      assertTrue(p[i] > p[i - 1] && p[i] < n, "i=" + i);
     }
     return p;
   }
@@ -216,8 +217,7 @@ public class AppendTestUtil {
       boolean checkFileStatus) throws IOException {
     if (checkFileStatus) {
       final FileStatus status = fs.getFileStatus(name);
-      assertEquals("len=" + len + " but status.getLen()=" + status.getLen(),
-          len, status.getLen());
+      assertEquals(len, status.getLen(), "len=" + len + " but status.getLen()=" + status.getLen());
     }
 
     FSDataInputStream stm = fs.open(name);
@@ -230,15 +230,16 @@ public class AppendTestUtil {
   private static void checkData(final byte[] actual, int from,
                                 final byte[] expected, String message) {
     for (int idx = 0; idx < actual.length; idx++) {
-      assertEquals(message+" byte "+(from+idx)+" differs. expected "+
-                   expected[from+idx]+" actual "+actual[idx],
-                   expected[from+idx], actual[idx]);
+      assertEquals(expected[from + idx], actual[idx],
+          message + " byte " + (from + idx) + " differs. expected " +
+              expected[from + idx] + " actual " + actual[idx]);
       actual[idx] = 0;
     }
   }
 
   public static void testAppend(FileSystem fs, Path p) throws IOException {
-    final byte[] bytes = new byte[1000];
+    final int size = 1000;
+    final byte[] bytes = randomBytes(seed, size);
 
     { //create file
       final FSDataOutputStream out = fs.create(p, (short)1);
@@ -247,12 +248,22 @@ public class AppendTestUtil {
       assertEquals(bytes.length, fs.getFileStatus(p).getLen());
     }
 
-    for(int i = 2; i < 500; i++) {
+    final int appends = 50;
+    for (int i = 2; i < appends; i++) {
       //append
       final FSDataOutputStream out = fs.append(p);
       out.write(bytes);
       out.close();
-      assertEquals(i*bytes.length, fs.getFileStatus(p).getLen());
+      assertEquals(i * bytes.length, fs.getFileStatus(p).getLen());
     }
+
+    // Check the appended content
+    final FSDataInputStream in = fs.open(p);
+    for (int i = 0; i < appends - 1; i++) {
+      byte[] read = new byte[size];
+      in.read(i * bytes.length, read, 0, size);
+      assertArrayEquals(bytes, read);
+    }
+    in.close();
   }
 }

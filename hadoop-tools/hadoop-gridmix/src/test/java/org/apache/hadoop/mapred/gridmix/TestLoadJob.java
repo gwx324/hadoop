@@ -17,37 +17,39 @@
  */
 package org.apache.hadoop.mapred.gridmix;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
-import org.apache.log4j.Level;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.event.Level;
 
 import java.io.IOException;
+
+import static org.slf4j.LoggerFactory.getLogger;
 
 /*
  Test LoadJob Gridmix sends data to job and after that
  */
 public class TestLoadJob extends CommonJobTest {
 
-  public static final Log LOG = LogFactory.getLog(Gridmix.class);
+  public static final Logger LOG = getLogger(Gridmix.class);
 
   static {
-    ((Log4JLogger) LogFactory.getLog("org.apache.hadoop.mapred.gridmix"))
-            .getLogger().setLevel(Level.DEBUG);
-    ((Log4JLogger) LogFactory.getLog(StressJobFactory.class)).getLogger()
-            .setLevel(Level.DEBUG);
+    GenericTestUtils.setLogLevel(
+        getLogger("org.apache.hadoop.mapred.gridmix"), Level.DEBUG);
+    GenericTestUtils.setLogLevel(
+        getLogger(StressJobFactory.class), Level.DEBUG);
   }
 
 
-  @BeforeClass
+  @BeforeAll
   public static void init() throws IOException {
     GridmixTestUtils.initCluster(TestLoadJob.class);
   }
 
-  @AfterClass
+  @AfterAll
   public static void shutDown() throws IOException {
     GridmixTestUtils.shutdownCluster();
   }
@@ -56,7 +58,8 @@ public class TestLoadJob extends CommonJobTest {
   /*
   * test serial policy  with LoadJob. Task should execute without exceptions
   */
-  @Test (timeout=500000)
+  @Test
+  @Timeout(value = 500)
   public void testSerialSubmit() throws Exception {
     policy = GridmixJobSubmissionPolicy.SERIAL;
     LOG.info("Serial started at " + System.currentTimeMillis());
@@ -68,7 +71,8 @@ public class TestLoadJob extends CommonJobTest {
   /*
    * test reply policy with LoadJob
    */
-  @Test  (timeout=500000)
+  @Test
+  @Timeout(value = 500)
   public void testReplaySubmit() throws Exception {
     policy = GridmixJobSubmissionPolicy.REPLAY;
     LOG.info(" Replay started at " + System.currentTimeMillis());

@@ -18,17 +18,18 @@
 
 package org.apache.hadoop.yarn.client.api.impl;
 
-import static org.junit.Assert.assertEquals;
-import static org.mockito.Matchers.isA;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.io.DataOutputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -38,17 +39,20 @@ import org.apache.hadoop.yarn.api.protocolrecords.UseSharedCacheResourceRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.UseSharedCacheResourceResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.UseSharedCacheResourceResponsePBImpl;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.URL;
 import org.apache.hadoop.yarn.exceptions.YarnException;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestSharedCacheClientImpl {
 
-  private static final Log LOG = LogFactory
-      .getLog(TestSharedCacheClientImpl.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestSharedCacheClientImpl.class);
 
   public static SharedCacheClientImpl client;
   public static ClientSCMProtocol cProtocol;
@@ -58,7 +62,7 @@ public class TestSharedCacheClientImpl {
   private static String inputChecksumSHA256 =
       "f29bc64a9d3732b4b9035125fdb3285f5b6455778edca72414671e0ca3b2e0de";
 
-  @BeforeClass
+  @BeforeAll
   public static void beforeClass() throws IOException {
     localFs = FileSystem.getLocal(new Configuration());
     TEST_ROOT_DIR =
@@ -67,19 +71,19 @@ public class TestSharedCacheClientImpl {
             localFs.getWorkingDirectory());
   }
 
-  @AfterClass
+  @AfterAll
   public static void afterClass() {
     try {
       if (localFs != null) {
         localFs.close();
       }
     } catch (IOException ioe) {
-      LOG.info("IO exception in closing file system)");
+      LOG.info("IO exception in closing file system");
       ioe.printStackTrace();
     }
   }
 
-  @Before
+  @BeforeEach
   public void setup() {
     cProtocol = mock(ClientSCMProtocol.class);
     client = new SharedCacheClientImpl() {
@@ -97,7 +101,7 @@ public class TestSharedCacheClientImpl {
     client.start();
   }
 
-  @After
+  @AfterEach
   public void cleanup() {
     if (client != null) {
       client.stop();
@@ -106,23 +110,37 @@ public class TestSharedCacheClientImpl {
   }
 
   @Test
-  public void testUse() throws Exception {
+  public void testUseCacheMiss() throws Exception {
+    UseSharedCacheResourceResponse response =
+        new UseSharedCacheResourceResponsePBImpl();
+    response.setPath(null);
+    when(cProtocol.use(isA(UseSharedCacheResourceRequest.class))).thenReturn(
+        response);
+    URL newURL = client.use(mock(ApplicationId.class), "key");
+    assertNull(newURL, "The path is not null!");
+  }
+
+  @Test
+  public void testUseCacheHit() throws Exception {
     Path file = new Path("viewfs://test/path");
+    URL useUrl = URL.fromPath(new Path("viewfs://test/path"));
     UseSharedCacheResourceResponse response =
         new UseSharedCacheResourceResponsePBImpl();
     response.setPath(file.toString());
     when(cProtocol.use(isA(UseSharedCacheResourceRequest.class))).thenReturn(
         response);
-    Path newPath = client.use(mock(ApplicationId.class), "key");
-    assertEquals(file, newPath);
+    URL newURL = client.use(mock(ApplicationId.class), "key");
+    assertEquals(useUrl, newURL, "The paths are not equal!");
   }
 
-  @Test(expected = YarnException.class)
+  @Test
   public void testUseError() throws Exception {
-    String message = "Mock IOExcepiton!";
-    when(cProtocol.use(isA(UseSharedCacheResourceRequest.class))).thenThrow(
-        new IOException(message));
-    client.use(mock(ApplicationId.class), "key");
+    assertThrows(YarnException.class, ()->{
+      String message = "Mock IOExcepiton!";
+      when(cProtocol.use(isA(UseSharedCacheResourceRequest.class))).thenThrow(
+          new IOException(message));
+      client.use(mock(ApplicationId.class), "key");
+    });
   }
 
   @Test
@@ -133,12 +151,14 @@ public class TestSharedCacheClientImpl {
     client.release(mock(ApplicationId.class), "key");
   }
 
-  @Test(expected = YarnException.class)
+  @Test
   public void testReleaseError() throws Exception {
-    String message = "Mock IOExcepiton!";
-    when(cProtocol.release(isA(ReleaseSharedCacheResourceRequest.class)))
-        .thenThrow(new IOException(message));
-    client.release(mock(ApplicationId.class), "key");
+    assertThrows(YarnException.class, () -> {
+      String message = "Mock IOExcepiton!";
+      when(cProtocol.release(isA(ReleaseSharedCacheResourceRequest.class)))
+          .thenThrow(new IOException(message));
+      client.release(mock(ApplicationId.class), "key");
+    });
   }
 
   @Test
@@ -148,10 +168,12 @@ public class TestSharedCacheClientImpl {
     assertEquals(inputChecksumSHA256, client.getFileChecksum(file));
   }
 
-  @Test(expected = FileNotFoundException.class)
+  @Test
   public void testNonexistantFileChecksum() throws Exception {
-    Path file = new Path(TEST_ROOT_DIR, "non-existant-file");
-    client.getFileChecksum(file);
+    assertThrows(FileNotFoundException.class, () -> {
+      Path file = new Path(TEST_ROOT_DIR, "non-existant-file");
+      client.getFileChecksum(file);
+    });
   }
 
   private Path makeFile(String filename) throws Exception {
@@ -159,7 +181,7 @@ public class TestSharedCacheClientImpl {
     DataOutputStream out = null;
     try {
       out = localFs.create(file);
-      out.write(input.getBytes("UTF-8"));
+      out.write(input.getBytes(StandardCharsets.UTF_8));
     } finally {
       if(out != null) {
         out.close();

@@ -18,15 +18,15 @@
 
 package org.apache.hadoop.conf;
 
-import com.google.common.base.Optional;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.ReconfigurationUtil.PropertyChange;
 
 import java.util.Map;
+import java.util.Optional;
 
-@InterfaceAudience.Public
-@InterfaceStability.Stable
+@InterfaceAudience.LimitedPrivate({"HDFS", "Management Tools"})
+@InterfaceStability.Unstable
 public class ReconfigurationTaskStatus {
   long startTime;
   long endTime;
@@ -42,7 +42,8 @@ public class ReconfigurationTaskStatus {
   /**
    * Return true if
    *   - A reconfiguration task has finished or
-   *   - an active reconfiguration task is running
+   *   - an active reconfiguration task is running.
+   * @return true if startTime &gt; 0; false if not.
    */
   public boolean hasTask() {
     return startTime > 0;
@@ -51,6 +52,7 @@ public class ReconfigurationTaskStatus {
   /**
    * Return true if the latest reconfiguration task has finished and there is
    * no another active task running.
+   * @return true if endTime &gt; 0; false if not.
    */
   public boolean stopped() {
     return endTime > 0;

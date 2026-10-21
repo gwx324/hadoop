@@ -19,6 +19,7 @@
 package org.apache.hadoop.lib.wsrs;
 
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.http.JettyUtils;
 import org.json.simple.JSONObject;
 
 import javax.ws.rs.Produces;
@@ -29,15 +30,13 @@ import javax.ws.rs.ext.MessageBodyWriter;
 import javax.ws.rs.ext.Provider;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.io.OutputStreamWriter;
-import java.io.Writer;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 @Provider
-@Produces(MediaType.APPLICATION_JSON)
+@Produces(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
 @InterfaceAudience.Private
 public class JSONMapProvider implements MessageBodyWriter<Map> {
   private static final String ENTER = System.getProperty("line.separator");
@@ -54,13 +53,9 @@ public class JSONMapProvider implements MessageBodyWriter<Map> {
 
   @Override
   public void writeTo(Map map, Class<?> aClass, Type type, Annotation[] annotations,
-                      MediaType mediaType, MultivaluedMap<String, Object> stringObjectMultivaluedMap,
-                      OutputStream outputStream) throws IOException, WebApplicationException {
-    Writer writer =
-        new OutputStreamWriter(outputStream, StandardCharsets.UTF_8);
-    JSONObject.writeJSONString(map, writer);
-    writer.write(ENTER);
-    writer.flush();
+      MediaType mediaType, MultivaluedMap<String, Object> stringObjectMultivaluedMap,
+      OutputStream outputStream) throws IOException, WebApplicationException {
+    String value = JSONObject.toJSONString(map) + ENTER;
+    outputStream.write(value.getBytes(StandardCharsets.UTF_8));
   }
-
 }

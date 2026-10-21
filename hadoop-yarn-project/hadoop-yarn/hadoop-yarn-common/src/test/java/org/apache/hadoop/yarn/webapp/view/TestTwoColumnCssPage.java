@@ -18,13 +18,12 @@
 
 package org.apache.hadoop.yarn.webapp.view;
 
+import org.junit.jupiter.api.Test;
+
 import org.apache.hadoop.yarn.MockApps;
 import org.apache.hadoop.yarn.webapp.Controller;
 import org.apache.hadoop.yarn.webapp.WebApps;
 import org.apache.hadoop.yarn.webapp.test.WebAppTests;
-import org.apache.hadoop.yarn.webapp.view.HtmlPage;
-import org.apache.hadoop.yarn.webapp.view.TwoColumnCssLayout;
-import org.junit.Test;
 
 public class TestTwoColumnCssPage {
 
@@ -52,14 +51,15 @@ public class TestTwoColumnCssPage {
 
   public static class TestView extends HtmlPage {
     @Override
-    public void render(Page.HTML<_> html) {
+    public void render(Page.HTML<__> html) {
       html.
         title($("title")).
-        h1($("title"))._();
+        h1($("title")).__();
     }
   }
 
-  @Test public void shouldNotThrow() {
+  @Test
+  void shouldNotThrow() {
     WebAppTests.testPage(TwoColumnCssLayout.class);
   }
 

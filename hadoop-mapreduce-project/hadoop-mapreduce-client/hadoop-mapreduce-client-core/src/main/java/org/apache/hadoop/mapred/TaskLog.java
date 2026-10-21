@@ -27,6 +27,7 @@ import java.io.Flushable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
@@ -35,8 +36,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
@@ -56,8 +55,8 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.log4j.Appender;
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Charsets;
 
 /**
  * A simple logger to handle the task-specific user logs.
@@ -66,8 +65,8 @@ import com.google.common.base.Charsets;
  */
 @InterfaceAudience.Private
 public class TaskLog {
-  private static final Log LOG =
-    LogFactory.getLog(TaskLog.class);
+  private static final org.slf4j.Logger LOG =
+      LoggerFactory.getLogger(TaskLog.class);
 
   static final String USERLOGS_DIR_NAME = "userlogs";
 
@@ -115,7 +114,7 @@ public class TaskLog {
     File indexFile = getIndexFile(taskid, isCleanup);
     BufferedReader fis = new BufferedReader(new InputStreamReader(
       SecureIOUtils.openForRead(indexFile, obtainLogDirOwner(taskid), null),
-      Charsets.UTF_8));
+      StandardCharsets.UTF_8));
     //the format of the index file is
     //LOG_DIR: <the dir where the task logs are really stored>
     //stdout:<start-offset in the stdout file> <length>
@@ -156,7 +155,7 @@ public class TaskLog {
       fis.close();
       fis = null;
     } finally {
-      IOUtils.cleanup(LOG, fis);
+      IOUtils.cleanupWithLogger(LOG, fis);
     }
     return l;
   }
@@ -231,7 +230,7 @@ public class TaskLog {
       bos.close();
       bos = null;
     } finally {
-      IOUtils.cleanup(LOG, dos, bos);
+      IOUtils.cleanupWithLogger(LOG, dos, bos);
     }
 
     File indexFile = getIndexFile(currentTaskid, isCleanup);
@@ -257,17 +256,6 @@ public class TaskLog {
   throws IOException {
     System.out.flush();
     System.err.flush();
-    Enumeration<Logger> allLoggers = LogManager.getCurrentLoggers();
-    while (allLoggers.hasMoreElements()) {
-      Logger l = allLoggers.nextElement();
-      Enumeration<Appender> allAppenders = l.getAllAppenders();
-      while (allAppenders.hasMoreElements()) {
-        Appender a = allAppenders.nextElement();
-        if (a instanceof TaskLogAppender) {
-          ((TaskLogAppender)a).flush();
-        }
-      }
-    }
     if (currentTaskid != taskid) {
       currentTaskid = taskid;
       resetPrevLengths(logLocation);
@@ -358,7 +346,7 @@ public class TaskLog {
    * The filter for userlogs.
    */
   @InterfaceAudience.Private
-  public static enum LogName {
+  public enum LogName {
     /** Log on the stdout of the task. */
     STDOUT ("stdout"),
 
@@ -530,8 +518,8 @@ public class TaskLog {
                                 throws IOException {
     
     String stdout = FileUtil.makeShellPath(stdoutFilename);
-    String stderr = FileUtil.makeShellPath(stderrFilename);    
-    StringBuffer mergedCmd = new StringBuffer();
+    String stderr = FileUtil.makeShellPath(stderrFilename);
+    StringBuilder mergedCmd = new StringBuilder();
     
     // Export the pid of taskJvm to env variable JVM_PID.
     // Currently pid is not used on Windows
@@ -618,7 +606,7 @@ public class TaskLog {
    */
   public static String addCommand(List<String> cmd, boolean isExecutable) 
   throws IOException {
-    StringBuffer command = new StringBuffer();
+    StringBuilder command = new StringBuilder();
     for(String s: cmd) {
     	command.append('\'');
       if (isExecutable) {

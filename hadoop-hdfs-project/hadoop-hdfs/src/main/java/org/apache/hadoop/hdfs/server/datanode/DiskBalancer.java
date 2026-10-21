@@ -18,11 +18,13 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.util.AutoCloseableLock;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi
+    .FsVolumeReferences;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.datanode.DiskBalancerWorkStatus
@@ -34,13 +36,14 @@ import org.apache.hadoop.hdfs.server.diskbalancer.DiskBalancerConstants;
 import org.apache.hadoop.hdfs.server.diskbalancer.DiskBalancerException;
 import org.apache.hadoop.hdfs.server.diskbalancer.planner.NodePlan;
 import org.apache.hadoop.hdfs.server.diskbalancer.planner.Step;
+import org.apache.hadoop.hdfs.web.JsonUtil;
 import org.apache.hadoop.util.Time;
-import org.codehaus.jackson.map.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.LinkedList;
@@ -52,9 +55,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
-
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static java.util.concurrent.TimeUnit.SECONDS;
 
 /**
  * Worker class for Disk Balancer.
@@ -74,20 +74,23 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 @InterfaceAudience.Private
 public class DiskBalancer {
 
-  private static final Logger LOG = LoggerFactory.getLogger(DiskBalancer
+  @VisibleForTesting
+  public static final Logger LOG = LoggerFactory.getLogger(DiskBalancer
       .class);
   private final FsDatasetSpi<?> dataset;
   private final String dataNodeUUID;
   private final BlockMover blockMover;
   private final ReentrantLock lock;
   private final ConcurrentHashMap<VolumePair, DiskBalancerWorkItem> workMap;
-  private boolean isDiskBalancerEnabled = false;
+  private volatile boolean isDiskBalancerEnabled = false;
   private ExecutorService scheduler;
   private Future future;
   private String planID;
   private String planFile;
   private DiskBalancerWorkStatus.Result currentResult;
   private long bandwidth;
+  private volatile long planValidityInterval;
+  private final Configuration config;
 
   /**
    * Constructs a Disk Balancer object. This object takes care of reading a
@@ -99,6 +102,7 @@ public class DiskBalancer {
    */
   public DiskBalancer(String dataNodeUUID,
                       Configuration conf, BlockMover blockMover) {
+    this.config = conf;
     this.currentResult = Result.NO_PLAN;
     this.blockMover = blockMover;
     this.dataset = this.blockMover.getDataset();
@@ -114,6 +118,10 @@ public class DiskBalancer {
     this.bandwidth = conf.getInt(
         DFSConfigKeys.DFS_DISK_BALANCER_MAX_DISK_THROUGHPUT,
         DFSConfigKeys.DFS_DISK_BALANCER_MAX_DISK_THROUGHPUT_DEFAULT);
+    this.planValidityInterval = conf.getTimeDuration(
+        DFSConfigKeys.DFS_DISK_BALANCER_PLAN_VALID_INTERVAL,
+        DFSConfigKeys.DFS_DISK_BALANCER_PLAN_VALID_INTERVAL_DEFAULT,
+        TimeUnit.MILLISECONDS);
   }
 
   /**
@@ -121,16 +129,22 @@ public class DiskBalancer {
    */
   public void shutdown() {
     lock.lock();
+    boolean needShutdown = false;
     try {
       this.isDiskBalancerEnabled = false;
       this.currentResult = Result.NO_PLAN;
       if ((this.future != null) && (!this.future.isDone())) {
         this.currentResult = Result.PLAN_CANCELLED;
         this.blockMover.setExitFlag();
-        shutdownExecutor();
+        scheduler.shutdown();
+        needShutdown = true;
       }
     } finally {
       lock.unlock();
+    }
+    // no need to hold lock while shutting down executor.
+    if (needShutdown) {
+      shutdownExecutor();
     }
   }
 
@@ -139,7 +153,6 @@ public class DiskBalancer {
    */
   private void shutdownExecutor() {
     final int secondsTowait = 10;
-    scheduler.shutdown();
     try {
       if (!scheduler.awaitTermination(secondsTowait, TimeUnit.SECONDS)) {
         scheduler.shutdownNow();
@@ -157,7 +170,7 @@ public class DiskBalancer {
    * Takes a client submitted plan and converts into a set of work items that
    * can be executed by the blockMover.
    *
-   * @param planId      - A SHA512 of the plan string
+   * @param planId      - A SHA-1 of the plan string
    * @param planVersion - version of the plan string - for future use.
    * @param planFileName    - Plan file name
    * @param planData    - Plan data in json format
@@ -171,7 +184,8 @@ public class DiskBalancer {
     try {
       checkDiskBalancerEnabled();
       if ((this.future != null) && (!this.future.isDone())) {
-        LOG.error("Disk Balancer - Executing another plan, submitPlan failed.");
+        LOG.error("Disk Balancer - Executing another plan (Plan File: {}, Plan ID: {}), " +
+            "submitPlan failed.", planFile, planID);
         throw new DiskBalancerException("Executing another plan",
             DiskBalancerException.Result.PLAN_ALREADY_IN_PROGRESS);
       }
@@ -187,7 +201,30 @@ public class DiskBalancer {
   }
 
   /**
-   * Returns the Current Work Status of a submitted Plan.
+   * Get FsVolume by volume UUID.
+   * @param fsDataset
+   * @param volUuid
+   * @return FsVolumeSpi
+   */
+  private static FsVolumeSpi getFsVolume(final FsDatasetSpi<?> fsDataset,
+      final String volUuid) {
+    FsVolumeSpi fsVolume = null;
+    try (FsVolumeReferences volumeReferences =
+           fsDataset.getFsVolumeReferences()) {
+      for (int i = 0; i < volumeReferences.size(); i++) {
+        if (volumeReferences.get(i).getStorageID().equals(volUuid)) {
+          fsVolume = volumeReferences.get(i);
+          break;
+        }
+      }
+    } catch (IOException e) {
+      LOG.warn("Disk Balancer - Error when closing volume references: ", e);
+    }
+    return fsVolume;
+  }
+
+  /**
+   * Returns the current work status of a previously submitted Plan.
    *
    * @return DiskBalancerWorkStatus.
    * @throws DiskBalancerException
@@ -209,8 +246,8 @@ public class DiskBalancer {
       for (Map.Entry<VolumePair, DiskBalancerWorkItem> entry :
           workMap.entrySet()) {
         DiskBalancerWorkEntry workEntry = new DiskBalancerWorkEntry(
-            entry.getKey().getSource().getBasePath(),
-            entry.getKey().getDest().getBasePath(),
+            entry.getKey().getSourceVolBasePath(),
+            entry.getKey().getDestVolBasePath(),
             entry.getValue());
         status.addWorkEntry(workEntry);
       }
@@ -228,6 +265,7 @@ public class DiskBalancer {
    */
   public void cancelPlan(String planID) throws DiskBalancerException {
     lock.lock();
+    boolean needShutdown = false;
     try {
       checkDiskBalancerEnabled();
       if (this.planID == null ||
@@ -239,12 +277,17 @@ public class DiskBalancer {
             DiskBalancerException.Result.NO_SUCH_PLAN);
       }
       if (!this.future.isDone()) {
-        this.blockMover.setExitFlag();
-        shutdownExecutor();
         this.currentResult = Result.PLAN_CANCELLED;
+        this.blockMover.setExitFlag();
+        scheduler.shutdown();
+        needShutdown = true;
       }
     } finally {
       lock.unlock();
+    }
+    // no need to hold lock while shutting down executor.
+    if (needShutdown) {
+      shutdownExecutor();
     }
   }
 
@@ -258,13 +301,7 @@ public class DiskBalancer {
     lock.lock();
     try {
       checkDiskBalancerEnabled();
-      Map<String, String> pathMap = new HashMap<>();
-      Map<String, FsVolumeSpi> volMap = getStorageIDToVolumeMap();
-      for (Map.Entry<String, FsVolumeSpi> entry : volMap.entrySet()) {
-        pathMap.put(entry.getKey(), entry.getValue().getBasePath());
-      }
-      ObjectMapper mapper = new ObjectMapper();
-      return mapper.writeValueAsString(pathMap);
+      return JsonUtil.toJsonString(getStorageIDToVolumeBasePathMap());
     } catch (DiskBalancerException ex) {
       throw ex;
     } catch (IOException e) {
@@ -306,9 +343,61 @@ public class DiskBalancer {
   }
 
   /**
+   * Sets Disk balancer is to enable or not to enable.
+   *
+   * @param diskBalancerEnabled
+   *          true, enable diskBalancer, otherwise false to disable it.
+   */
+  public void setDiskBalancerEnabled(boolean diskBalancerEnabled) {
+    isDiskBalancerEnabled = diskBalancerEnabled;
+  }
+
+  /**
+   * Returns the value indicating if diskBalancer is enabled.
+   *
+   * @return boolean.
+   */
+  @VisibleForTesting
+  public boolean isDiskBalancerEnabled() {
+    return isDiskBalancerEnabled;
+  }
+
+  /**
+   * Sets maximum amount of time disk balancer plan is valid.
+   *
+   * @param planValidityInterval - maximum amount of time in the unit of milliseconds.
+   */
+  public void setPlanValidityInterval(long planValidityInterval) {
+    this.config.setTimeDuration(DFSConfigKeys.DFS_DISK_BALANCER_PLAN_VALID_INTERVAL,
+        planValidityInterval, TimeUnit.MILLISECONDS);
+    this.planValidityInterval = planValidityInterval;
+  }
+
+  /**
+   * Gets maximum amount of time disk balancer plan is valid.
+   *
+   * @return the maximum amount of time in milliseconds.
+   */
+  @VisibleForTesting
+  public long getPlanValidityInterval() {
+    return planValidityInterval;
+  }
+
+  /**
+   * Gets maximum amount of time disk balancer plan is valid in config.
+   *
+   * @return the maximum amount of time in milliseconds.
+   */
+  @VisibleForTesting
+  public long getPlanValidityIntervalInConfig() {
+    return config.getTimeDuration(DFSConfigKeys.DFS_DISK_BALANCER_PLAN_VALID_INTERVAL,
+        DFSConfigKeys.DFS_DISK_BALANCER_PLAN_VALID_INTERVAL_DEFAULT, TimeUnit.MILLISECONDS);
+  }
+
+  /**
    * Verifies that user provided plan is valid.
    *
-   * @param planID      - SHA 512 of the plan.
+   * @param planID      - SHA-1 of the plan.
    * @param planVersion - Version of the plan, for future use.
    * @param plan        - Plan String in Json.
    * @param force       - Skip verifying when the plan was generated.
@@ -345,15 +434,15 @@ public class DiskBalancer {
   }
 
   /**
-   * Verifies that plan matches the SHA512 provided by the client.
+   * Verifies that plan matches the SHA-1 provided by the client.
    *
-   * @param planID - Sha512 Hex Bytes
+   * @param planID - SHA-1 Hex Bytes
    * @param plan   - Plan String
    * @throws DiskBalancerException
    */
   private NodePlan verifyPlanHash(String planID, String plan)
       throws DiskBalancerException {
-    final long sha512Length = 128;
+    final long sha1Length = 40;
     if (plan == null || plan.length() == 0) {
       LOG.error("Disk Balancer -  Invalid plan.");
       throw new DiskBalancerException("Invalid plan.",
@@ -361,8 +450,8 @@ public class DiskBalancer {
     }
 
     if ((planID == null) ||
-        (planID.length() != sha512Length) ||
-        !DigestUtils.sha512Hex(plan.getBytes(Charset.forName("UTF-8")))
+        (planID.length() != sha1Length) ||
+        !DigestUtils.sha1Hex(plan.getBytes(StandardCharsets.UTF_8))
             .equalsIgnoreCase(planID)) {
       LOG.error("Disk Balancer - Invalid plan hash.");
       throw new DiskBalancerException("Invalid or mis-matched hash.",
@@ -386,15 +475,17 @@ public class DiskBalancer {
     long now = Time.now();
     long planTime = plan.getTimeStamp();
 
-    // TODO : Support Valid Plan hours as a user configurable option.
-    if ((planTime +
-        (TimeUnit.HOURS.toMillis(
-            DiskBalancerConstants.DISKBALANCER_VALID_PLAN_HOURS))) < now) {
-      String hourString = "Plan was generated more than " +
-          Integer.toString(DiskBalancerConstants.DISKBALANCER_VALID_PLAN_HOURS)
-          + " hours ago.";
-      LOG.error("Disk Balancer - " + hourString);
-      throw new DiskBalancerException(hourString,
+    if ((planTime + planValidityInterval) < now) {
+      String planValidity = config.get(
+          DFSConfigKeys.DFS_DISK_BALANCER_PLAN_VALID_INTERVAL,
+          DFSConfigKeys.DFS_DISK_BALANCER_PLAN_VALID_INTERVAL_DEFAULT);
+      if (planValidity.matches("[0-9]$")) {
+        planValidity += "ms";
+      }
+      String errorString = "Plan was generated more than " + planValidity
+          + " ago";
+      LOG.error("Disk Balancer - " + errorString);
+      throw new DiskBalancerException(errorString,
           DiskBalancerException.Result.OLD_PLAN_SUBMITTED);
     }
   }
@@ -424,56 +515,59 @@ public class DiskBalancer {
 
     // Cleanup any residual work in the map.
     workMap.clear();
-    Map<String, FsVolumeSpi> pathMap = getStorageIDToVolumeMap();
+    Map<String, String> storageIDToVolBasePathMap =
+        getStorageIDToVolumeBasePathMap();
 
     for (Step step : plan.getVolumeSetPlans()) {
-      String sourceuuid = step.getSourceVolume().getUuid();
-      String destinationuuid = step.getDestinationVolume().getUuid();
+      String sourceVolUuid = step.getSourceVolume().getUuid();
+      String destVolUuid = step.getDestinationVolume().getUuid();
 
-      FsVolumeSpi sourceVol = pathMap.get(sourceuuid);
-      if (sourceVol == null) {
-        LOG.error("Disk Balancer - Unable to find source volume. submitPlan " +
-            "failed.");
-        throw new DiskBalancerException("Unable to find source volume.",
+      String sourceVolBasePath = storageIDToVolBasePathMap.get(sourceVolUuid);
+      if (sourceVolBasePath == null) {
+        final String errMsg = "Disk Balancer - Unable to find source volume: "
+            + step.getSourceVolume().getPath() + ". SubmitPlan failed.";
+        LOG.error(errMsg);
+        throw new DiskBalancerException(errMsg,
             DiskBalancerException.Result.INVALID_VOLUME);
       }
 
-      FsVolumeSpi destVol = pathMap.get(destinationuuid);
-      if (destVol == null) {
-        LOG.error("Disk Balancer - Unable to find destination volume. " +
-            "submitPlan failed.");
-        throw new DiskBalancerException("Unable to find destination volume.",
+      String destVolBasePath = storageIDToVolBasePathMap.get(destVolUuid);
+      if (destVolBasePath == null) {
+        final String errMsg = "Disk Balancer - Unable to find dest volume: "
+            + step.getDestinationVolume().getPath() + ". SubmitPlan failed.";
+        LOG.error(errMsg);
+        throw new DiskBalancerException(errMsg,
             DiskBalancerException.Result.INVALID_VOLUME);
       }
-      createWorkPlan(sourceVol, destVol, step);
+      VolumePair volumePair = new VolumePair(sourceVolUuid,
+          sourceVolBasePath, destVolUuid, destVolBasePath);
+      createWorkPlan(volumePair, step);
     }
   }
 
   /**
-   * Returns a path to Volume Map.
+   * Returns volume UUID to volume base path map.
    *
    * @return Map
    * @throws DiskBalancerException
    */
-  private Map<String, FsVolumeSpi> getStorageIDToVolumeMap()
+  private Map<String, String> getStorageIDToVolumeBasePathMap()
       throws DiskBalancerException {
-    Map<String, FsVolumeSpi> pathMap = new HashMap<>();
-    FsDatasetSpi.FsVolumeReferences references;
-    try {
-      try(AutoCloseableLock lock = this.dataset.acquireDatasetLock()) {
-        references = this.dataset.getFsVolumeReferences();
-        for (int ndx = 0; ndx < references.size(); ndx++) {
-          FsVolumeSpi vol = references.get(ndx);
-          pathMap.put(vol.getStorageID(), vol);
-        }
-        references.close();
+    Map<String, String> storageIDToVolBasePathMap = new HashMap<>();
+    // Get volumes snapshot so no need to acquire dataset lock.
+    try (FsDatasetSpi.FsVolumeReferences references = dataset.
+        getFsVolumeReferences()) {
+      for (int ndx = 0; ndx < references.size(); ndx++) {
+        FsVolumeSpi vol = references.get(ndx);
+        storageIDToVolBasePathMap.put(vol.getStorageID(),
+            vol.getBaseURI().getPath());
       }
     } catch (IOException ex) {
       LOG.error("Disk Balancer - Internal Error.", ex);
       throw new DiskBalancerException("Internal error", ex,
           DiskBalancerException.Result.INTERNAL_ERROR);
     }
-    return pathMap;
+    return storageIDToVolBasePathMap;
   }
 
   /**
@@ -491,14 +585,11 @@ public class DiskBalancer {
       public void run() {
         Thread.currentThread().setName("DiskBalancerThread");
         LOG.info("Executing Disk balancer plan. Plan File: {}, Plan ID: {}",
-                planFile, planID);
-        try {
-          for (Map.Entry<VolumePair, DiskBalancerWorkItem> entry :
-              workMap.entrySet()) {
-            blockMover.copyBlocks(entry.getKey(), entry.getValue());
-          }
-        } finally {
-          blockMover.setExitFlag();
+            planFile, planID);
+        for (Map.Entry<VolumePair, DiskBalancerWorkItem> entry :
+            workMap.entrySet()) {
+          blockMover.setRunnable();
+          blockMover.copyBlocks(entry.getKey(), entry.getValue());
         }
       }
     });
@@ -506,26 +597,24 @@ public class DiskBalancer {
 
   /**
    * Insert work items to work map.
-   *
-   * @param source - Source vol
-   * @param dest   - destination volume
-   * @param step   - Move Step
+   * @param volumePair - VolumePair
+   * @param step - Move Step
    */
-  private void createWorkPlan(FsVolumeSpi source, FsVolumeSpi dest,
-                              Step step) throws DiskBalancerException {
-
-    if (source.getStorageID().equals(dest.getStorageID())) {
-      LOG.info("Disk Balancer - source & destination volumes are same.");
-      throw new DiskBalancerException("source and destination volumes are " +
-          "same.", DiskBalancerException.Result.INVALID_MOVE);
+  private void createWorkPlan(final VolumePair volumePair, Step step)
+      throws DiskBalancerException {
+    if (volumePair.getSourceVolUuid().equals(volumePair.getDestVolUuid())) {
+      final String errMsg = "Disk Balancer - Source and destination volumes " +
+          "are same: " + volumePair.getSourceVolUuid();
+      LOG.warn(errMsg);
+      throw new DiskBalancerException(errMsg,
+          DiskBalancerException.Result.INVALID_MOVE);
     }
-    VolumePair pair = new VolumePair(source, dest);
     long bytesToMove = step.getBytesToMove();
     // In case we have a plan with more than
-    // one line of same <source, dest>
+    // one line of same VolumePair
     // we compress that into one work order.
-    if (workMap.containsKey(pair)) {
-      bytesToMove += workMap.get(pair).getBytesToCopy();
+    if (workMap.containsKey(volumePair)) {
+      bytesToMove += workMap.get(volumePair).getBytesToCopy();
     }
 
     DiskBalancerWorkItem work = new DiskBalancerWorkItem(bytesToMove, 0);
@@ -535,7 +624,7 @@ public class DiskBalancer {
     work.setBandwidth(step.getBandwidth());
     work.setTolerancePercent(step.getTolerancePercent());
     work.setMaxDiskErrors(step.getMaxDiskErrors());
-    workMap.put(pair, work);
+    workMap.put(volumePair, work);
   }
 
   /**
@@ -584,39 +673,63 @@ public class DiskBalancer {
   }
 
   /**
-   * Holds references to actual volumes that we will be operating against.
+   * Holds source and dest volumes UUIDs and their BasePaths
+   * that disk balancer will be operating against.
    */
   public static class VolumePair {
-    private final FsVolumeSpi source;
-    private final FsVolumeSpi dest;
+    private final String sourceVolUuid;
+    private final String destVolUuid;
+    private final String sourceVolBasePath;
+    private final String destVolBasePath;
 
     /**
      * Constructs a volume pair.
-     *
-     * @param source - Source Volume
-     * @param dest   - Destination Volume
+     * @param sourceVolUuid     - Source Volume
+     * @param sourceVolBasePath - Source Volume Base Path
+     * @param destVolUuid       - Destination Volume
+     * @param destVolBasePath   - Destination Volume Base Path
      */
-    public VolumePair(FsVolumeSpi source, FsVolumeSpi dest) {
-      this.source = source;
-      this.dest = dest;
+    public VolumePair(final String sourceVolUuid,
+        final String sourceVolBasePath, final String destVolUuid,
+        final String destVolBasePath) {
+      this.sourceVolUuid = sourceVolUuid;
+      this.sourceVolBasePath = sourceVolBasePath;
+      this.destVolUuid = destVolUuid;
+      this.destVolBasePath = destVolBasePath;
     }
 
     /**
-     * gets source volume.
+     * Gets source volume UUID.
      *
-     * @return volume
+     * @return UUID String
      */
-    public FsVolumeSpi getSource() {
-      return source;
+    public String getSourceVolUuid() {
+      return sourceVolUuid;
     }
 
     /**
-     * Gets Destination volume.
-     *
-     * @return volume.
+     * Gets source volume base path.
+     * @return String
      */
-    public FsVolumeSpi getDest() {
-      return dest;
+    public String getSourceVolBasePath() {
+      return sourceVolBasePath;
+    }
+    /**
+     * Gets destination volume UUID.
+     *
+     * @return UUID String
+     */
+    public String getDestVolUuid() {
+      return destVolUuid;
+    }
+
+    /**
+     * Gets desitnation volume base path.
+     *
+     * @return String
+     */
+    public String getDestVolBasePath() {
+      return destVolBasePath;
     }
 
     @Override
@@ -629,13 +742,21 @@ public class DiskBalancer {
       }
 
       VolumePair that = (VolumePair) o;
-      return source.equals(that.source) && dest.equals(that.dest);
+      return sourceVolUuid.equals(that.sourceVolUuid)
+          && sourceVolBasePath.equals(that.sourceVolBasePath)
+          && destVolUuid.equals(that.destVolUuid)
+          && destVolBasePath.equals(that.destVolBasePath);
     }
 
     @Override
     public int hashCode() {
-      int result = source.getBasePath().hashCode();
-      result = 31 * result + dest.getBasePath().hashCode();
+      final int primeNum = 31;
+      final List<String> volumeStrList = Arrays.asList(sourceVolUuid,
+          sourceVolBasePath, destVolUuid, destVolBasePath);
+      int result = 1;
+      for (String str : volumeStrList) {
+        result = (result * primeNum) + str.hashCode();
+      }
       return result;
     }
   }
@@ -736,7 +857,7 @@ public class DiskBalancer {
       long bytesToCopy = item.getBytesToCopy() - item.getBytesCopied();
       bytesToCopy = bytesToCopy +
           ((bytesToCopy * getBlockTolerancePercentage(item)) / 100);
-      return (blockSize <= bytesToCopy) ? true : false;
+      return blockSize <= bytesToCopy;
     }
 
     /**
@@ -761,7 +882,7 @@ public class DiskBalancer {
     private boolean isCloseEnough(DiskBalancerWorkItem item) {
       long temp = item.getBytesCopied() +
           ((item.getBytesCopied() * getBlockTolerancePercentage(item)) / 100);
-      return (item.getBytesToCopy() >= temp) ? false : true;
+      return item.getBytesToCopy() < temp;
     }
 
     /**
@@ -789,7 +910,8 @@ public class DiskBalancer {
      * @param item        DiskBalancerWorkItem
      * @return sleep delay in Milliseconds.
      */
-    private long computeDelay(long bytesCopied, long timeUsed,
+    @VisibleForTesting
+    public long computeDelay(long bytesCopied, long timeUsed,
                               DiskBalancerWorkItem item) {
 
       // we had an overflow, ignore this reading and continue.
@@ -797,11 +919,15 @@ public class DiskBalancer {
         return 0;
       }
       final int megaByte = 1024 * 1024;
+      if (bytesCopied < megaByte) {
+        return 0;
+      }
       long bytesInMB = bytesCopied / megaByte;
-      long lastThroughput = bytesInMB / SECONDS.convert(timeUsed,
-          TimeUnit.MILLISECONDS);
-      long delay = (bytesInMB / getDiskBandwidth(item)) - lastThroughput;
-      return (delay <= 0) ? 0 : MILLISECONDS.convert(delay, TimeUnit.SECONDS);
+
+      // converting disk bandwidth in MB/millisec
+      float bandwidth = getDiskBandwidth(item) / 1000f;
+      float delay = ((long) (bytesInMB / bandwidth) - timeUsed);
+      return (delay <= 0) ? 0 : (long) delay;
     }
 
     /**
@@ -825,32 +951,32 @@ public class DiskBalancer {
      */
     private ExtendedBlock getBlockToCopy(FsVolumeSpi.BlockIterator iter,
                                          DiskBalancerWorkItem item) {
-      while (!iter.atEnd() && item.getErrorCount() < getMaxError(item)) {
+      while (!iter.atEnd() && item.getErrorCount() <= getMaxError(item)) {
         try {
           ExtendedBlock block = iter.nextBlock();
-
+          if(null == block){
+            LOG.info("NextBlock call returned null. No valid block to copy. {}",
+                item.toJson());
+            return null;
+          }
           // A valid block is a finalized block, we iterate until we get
           // finalized blocks
           if (!this.dataset.isValidBlock(block)) {
             continue;
           }
-
           // We don't look for the best, we just do first fit
           if (isLessThanNeeded(block.getNumBytes(), item)) {
             return block;
           }
-
         } catch (IOException e) {
           item.incErrorCount();
         }
       }
-
-      if (item.getErrorCount() >= getMaxError(item)) {
+      if (item.getErrorCount() > getMaxError(item)) {
         item.setErrMsg("Error count exceeded.");
-        LOG.info("Maximum error count exceeded. Error count: {} Max error:{} "
-            , item.getErrorCount(), item.getMaxDiskErrors());
+        LOG.info("Maximum error count exceeded. Error count: {} Max error:{} ",
+            item.getErrorCount(), item.getMaxDiskErrors());
       }
-
       return null;
     }
 
@@ -885,8 +1011,8 @@ public class DiskBalancer {
       ExtendedBlock block = null;
       while (block == null && currentCount < poolIters.size()) {
         currentCount++;
-        poolIndex = poolIndex++ % poolIters.size();
-        FsVolumeSpi.BlockIterator currentPoolIter = poolIters.get(poolIndex);
+        int index = poolIndex++ % poolIters.size();
+        FsVolumeSpi.BlockIterator currentPoolIter = poolIters.get(index);
         block = getBlockToCopy(currentPoolIter, item);
       }
 
@@ -912,7 +1038,7 @@ public class DiskBalancer {
         try {
           iter.close();
         } catch (IOException ex) {
-          LOG.error("Error closing a block pool iter. ex: {}", ex);
+          LOG.error("Error closing a block pool iter. ex: ", ex);
         }
       }
     }
@@ -925,22 +1051,46 @@ public class DiskBalancer {
      */
     @Override
     public void copyBlocks(VolumePair pair, DiskBalancerWorkItem item) {
-      FsVolumeSpi source = pair.getSource();
-      FsVolumeSpi dest = pair.getDest();
+      String sourceVolUuid = pair.getSourceVolUuid();
+      String destVolUuuid = pair.getDestVolUuid();
+
+      // When any of the DiskBalancerWorkItem volumes are not
+      // available, return after setting error in item.
+      FsVolumeSpi source = getFsVolume(this.dataset, sourceVolUuid);
+      if (source == null) {
+        final String errMsg = "Disk Balancer - Unable to find source volume: "
+            + pair.getSourceVolBasePath();
+        LOG.error(errMsg);
+        item.setErrMsg(errMsg);
+        return;
+      }
+      FsVolumeSpi dest = getFsVolume(this.dataset, destVolUuuid);
+      if (dest == null) {
+        final String errMsg = "Disk Balancer - Unable to find dest volume: "
+            + pair.getDestVolBasePath();
+        LOG.error(errMsg);
+        item.setErrMsg(errMsg);
+        return;
+      }
+
+      if (source.isTransientStorage() || dest.isTransientStorage()) {
+        final String errMsg = "Disk Balancer - Unable to support " +
+                "transient storage type.";
+        LOG.error(errMsg);
+        item.setErrMsg(errMsg);
+        return;
+      }
+
       List<FsVolumeSpi.BlockIterator> poolIters = new LinkedList<>();
       startTime = Time.now();
       item.setStartTime(startTime);
       secondsElapsed = 0;
 
-      if (source.isTransientStorage() || dest.isTransientStorage()) {
-        return;
-      }
-
       try {
         openPoolIters(source, poolIters);
         if (poolIters.size() == 0) {
           LOG.error("No block pools found on volume. volume : {}. Exiting.",
-              source.getBasePath());
+              source.getBaseURI());
           return;
         }
 
@@ -950,8 +1100,8 @@ public class DiskBalancer {
             // Check for the max error count constraint.
             if (item.getErrorCount() > getMaxError(item)) {
               LOG.error("Exceeded the max error count. source {}, dest: {} " +
-                      "error count: {}", source.getBasePath(),
-                  dest.getBasePath(), item.getErrorCount());
+                      "error count: {}", source.getBaseURI(),
+                  dest.getBaseURI(), item.getErrorCount());
               break;
             }
 
@@ -959,17 +1109,19 @@ public class DiskBalancer {
             if (isCloseEnough(item)) {
               LOG.info("Copy from {} to {} done. copied {} bytes and {} " +
                       "blocks.",
-                  source.getBasePath(), dest.getBasePath(),
+                  source.getBaseURI(), dest.getBaseURI(),
                   item.getBytesCopied(), item.getBlocksCopied());
-              break;
+              this.setExitFlag();
+              continue;
             }
 
             ExtendedBlock block = getNextBlock(poolIters, item);
             // we are not able to find any blocks to copy.
             if (block == null) {
               LOG.error("No source blocks, exiting the copy. Source: {}, " +
-                  "dest:{}", source.getBasePath(), dest.getBasePath());
-              break;
+                  "Dest:{}", source.getBaseURI(), dest.getBaseURI());
+              this.setExitFlag();
+              continue;
             }
 
             // check if someone told us exit, treat this as an interruption
@@ -977,7 +1129,7 @@ public class DiskBalancer {
             // for the thread, since both getNextBlock and moveBlocAcrossVolume
             // can take some time.
             if (!shouldRun()) {
-              break;
+              continue;
             }
 
             long timeUsed;
@@ -995,13 +1147,13 @@ public class DiskBalancer {
               // exiting here.
               LOG.error("Destination volume: {} does not have enough space to" +
                   " accommodate a block. Block Size: {} Exiting from" +
-                  " copyBlocks.", dest.getBasePath(), block.getNumBytes());
+                  " copyBlocks.", dest.getBaseURI(), block.getNumBytes());
               break;
             }
 
             LOG.debug("Moved block with size {} from  {} to {}",
-                block.getNumBytes(), source.getBasePath(),
-                dest.getBasePath());
+                block.getNumBytes(), source.getBaseURI(),
+                dest.getBaseURI());
 
             // Check for the max throughput constraint.
             // We sleep here to keep the promise that we will not
@@ -1009,7 +1161,8 @@ public class DiskBalancer {
             // to make sure that our promise is good on average.
             // Because we sleep, if a shutdown or cancel call comes in
             // we exit via Thread Interrupted exception.
-            Thread.sleep(computeDelay(block.getNumBytes(), timeUsed, item));
+            Thread.sleep(computeDelay(block.getNumBytes(), TimeUnit.NANOSECONDS
+                .toMillis(timeUsed), item));
 
             // We delay updating the info to avoid confusing the user.
             // This way we report the copy only if it is under the
@@ -1020,11 +1173,16 @@ public class DiskBalancer {
                 startTime);
             item.setSecondsElapsed(secondsElapsed);
           } catch (IOException ex) {
-            LOG.error("Exception while trying to copy blocks. error: {}", ex);
+            LOG.error("Exception while trying to copy blocks. error: ", ex);
             item.incErrorCount();
           } catch (InterruptedException e) {
             LOG.error("Copy Block Thread interrupted, exiting the copy.");
             Thread.currentThread().interrupt();
+            item.incErrorCount();
+            this.setExitFlag();
+          } catch (RuntimeException ex) {
+            // Exiting if any run time exceptions.
+            LOG.error("Got an unexpected Runtime Exception ", ex);
             item.incErrorCount();
             this.setExitFlag();
           }

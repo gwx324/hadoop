@@ -27,6 +27,11 @@ import org.apache.hadoop.yarn.api.ApplicationMasterProtocol;
 import org.apache.hadoop.yarn.api.ContainerManagementProtocol;
 import org.apache.hadoop.yarn.util.Records;
 
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 /**
  * {@code Container} represents an allocated resource in the cluster.
  * <p>
@@ -122,7 +127,20 @@ public abstract class Container implements Comparable<Container> {
   @Private
   @Unstable
   public abstract void setNodeHttpAddress(String nodeHttpAddress);
-  
+
+  /**
+   * Get the exposed ports of the node on which the container is allocated.
+   * @return exposed ports of the node on which the container is allocated
+   */
+  @Public
+  @Stable
+  public abstract Map<String, List<Map<String, String>>> getExposedPorts();
+
+  @Private
+  @Unstable
+  public abstract void setExposedPorts(
+      Map<String, List<Map<String, String>>> ports);
+
   /**
    * Get the <code>Resource</code> allocated to the container.
    * @return <code>Resource</code> allocated to the container
@@ -230,8 +248,42 @@ public abstract class Container implements Comparable<Container> {
    *                            allocation.
    */
   @Private
-  @Evolving
+  @Unstable
   public void setAllocationRequestId(long allocationRequestID) {
     throw new UnsupportedOperationException();
+  }
+
+  /**
+   * Get the version of this container. The version will be incremented when
+   * a container is updated.
+   *
+   * @return version of this container.
+   */
+  @Private
+  @Unstable
+  public int getVersion() {
+    return 0;
+  }
+
+  /**
+   * Set the version of this container.
+   * @param version of this container.
+   */
+  @Private
+  @Unstable
+  public void setVersion(int version) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Private
+  @Unstable
+  public Set<String> getAllocationTags() {
+    return Collections.emptySet();
+  }
+
+  @Private
+  @Unstable
+  public void setAllocationTags(Set<String> allocationTags) {
+
   }
 }

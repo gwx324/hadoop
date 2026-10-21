@@ -17,15 +17,18 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
+import java.util.function.Supplier;
+import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.util.HashSet;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
@@ -34,6 +37,8 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.protocol.BlockType;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
@@ -45,22 +50,25 @@ import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
 import org.apache.hadoop.hdfs.server.protocol.RegisterCommand;
+import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
 import org.apache.hadoop.hdfs.server.protocol.StorageBlockReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.net.Node;
-import org.junit.After;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test to ensure requests from dead datnodes are rejected by namenode with
  * appropriate exceptions/failure response
  */
 public class TestDeadDatanode {
-  private static final Log LOG = LogFactory.getLog(TestDeadDatanode.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDeadDatanode.class);
   private MiniDFSCluster cluster;
 
-  @After
+  @AfterEach
   public void cleanup() {
     if (cluster != null) {
       cluster.shutdown();
@@ -102,7 +110,8 @@ public class TestDeadDatanode {
         ReceivedDeletedBlockInfo.BlockStatus.RECEIVED_BLOCK,
         null) };
     StorageReceivedDeletedBlocks[] storageBlocks = { 
-        new StorageReceivedDeletedBlocks(reg.getDatanodeUuid(), blocks) };
+        new StorageReceivedDeletedBlocks(
+            new DatanodeStorage(reg.getDatanodeUuid()), blocks) };
 
     // Ensure blockReceived call from dead datanode is not rejected with
     // IOException, since it's async, but the node remains unregistered.
@@ -118,7 +127,7 @@ public class TestDeadDatanode {
         BlockListAsLongs.EMPTY) };
     try {
       dnp.blockReport(reg, poolId, report,
-          new BlockReportContext(1, 0, System.nanoTime(), 0L, true));
+          new BlockReportContext(1, 0, System.nanoTime(), 0L));
       fail("Expected IOException is not thrown");
     } catch (IOException ex) {
       // Expected
@@ -128,12 +137,13 @@ public class TestDeadDatanode {
     // that asks datanode to register again
     StorageReport[] rep = { new StorageReport(
         new DatanodeStorage(reg.getDatanodeUuid()),
-        false, 0, 0, 0, 0) };
+        false, 0, 0, 0, 0, 0) };
     DatanodeCommand[] cmd =
-        dnp.sendHeartbeat(reg, rep, 0L, 0L, 0, 0, 0, null, true).getCommands();
+        dnp.sendHeartbeat(reg, rep, 0L, 0L, 0, 0, 0, null, true,
+            SlowPeerReports.EMPTY_REPORT, SlowDiskReports.EMPTY_REPORT)
+        .getCommands();
     assertEquals(1, cmd.length);
-    assertEquals(cmd[0].getAction(), RegisterCommand.REGISTER
-        .getAction());
+    assertEquals(cmd[0].getAction(), RegisterCommand.REGISTER.getAction());
   }
 
   @Test
@@ -165,11 +175,62 @@ public class TestDeadDatanode {
     // choose the targets, but local node should not get selected as this is not
     // part of the cluster anymore
     DatanodeStorageInfo[] results = bm.chooseTarget4NewBlock("/hello", 3,
-        clientNode, new HashSet<Node>(), 256 * 1024 * 1024L, null, (byte) 7,
-        false, null);
+        clientNode, new HashSet<>(), 256 * 1024 * 1024L, null, (byte) 7,
+        BlockType.CONTIGUOUS, null, null);
     for (DatanodeStorageInfo datanodeStorageInfo : results) {
-      assertFalse("Dead node should not be choosen", datanodeStorageInfo
-          .getDatanodeDescriptor().equals(clientNode));
+      assertFalse(datanodeStorageInfo.getDatanodeDescriptor().equals(clientNode),
+          "Dead node should not be chosen");
+    }
+  }
+
+  @Test
+  public void testNonDFSUsedONDeadNodeReReg() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY,
+        3000);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_STALE_DATANODE_INTERVAL_KEY,
+        6 * 1000);
+    long CAPACITY = 5000L;
+    long[] capacities = new long[] { 4 * CAPACITY, 4 * CAPACITY };
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2)
+          .simulatedCapacities(capacities).build();
+      long initialCapacity = cluster.getNamesystem(0).getCapacityTotal();
+      assertTrue(initialCapacity > 0);
+      DataNode dn1 = cluster.getDataNodes().get(0);
+      DataNode dn2 = cluster.getDataNodes().get(1);
+      final DatanodeDescriptor dn2Desc = cluster.getNamesystem(0)
+          .getBlockManager().getDatanodeManager()
+          .getDatanode(dn2.getDatanodeId());
+      dn1.setHeartbeatsDisabledForTests(true);
+      cluster.setDataNodeDead(dn1.getDatanodeId());
+      assertEquals(dn2Desc.getCapacity(),
+          cluster.getNamesystem(0).getCapacityTotal(),
+          "Capacity shouldn't include DeadNode");
+      assertEquals(dn2Desc.getNonDfsUsed(),
+          cluster.getNamesystem(0).getNonDfsUsedSpace(),
+          "NonDFS-used shouldn't include DeadNode");
+      // Wait for re-registration and heartbeat
+      dn1.setHeartbeatsDisabledForTests(false);
+      final DatanodeDescriptor dn1Desc = cluster.getNamesystem(0)
+          .getBlockManager().getDatanodeManager()
+          .getDatanode(dn1.getDatanodeId());
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+
+        @Override public Boolean get() {
+          return dn1Desc.isAlive() && dn1Desc.isHeartbeatedSinceRegistration();
+        }
+      }, 100, 5000);
+      assertEquals(initialCapacity, cluster.getNamesystem(0).getCapacityTotal(),
+          "Capacity should be 0 after all DNs dead");
+      long nonDfsAfterReg = cluster.getNamesystem(0).getNonDfsUsedSpace();
+      assertEquals(dn1Desc.getNonDfsUsed() + dn2Desc.getNonDfsUsed(), nonDfsAfterReg,
+          "NonDFS should include actual DN NonDFSUsed");
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
     }
   }
 }

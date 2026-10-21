@@ -20,17 +20,18 @@ package org.apache.hadoop.security;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.util.NativeCodeLoader;
 import org.apache.hadoop.util.PerformanceAdvisory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class JniBasedUnixGroupsMappingWithFallback implements
     GroupMappingServiceProvider {
 
-  private static final Log LOG = LogFactory
-      .getLog(JniBasedUnixGroupsMappingWithFallback.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(JniBasedUnixGroupsMappingWithFallback.class);
   
   private GroupMappingServiceProvider impl;
 
@@ -59,6 +60,11 @@ public class JniBasedUnixGroupsMappingWithFallback implements
   @Override
   public void cacheGroupsAdd(List<String> groups) throws IOException {
     impl.cacheGroupsAdd(groups);
+  }
+
+  @Override
+  public Set<String> getGroupsSet(String user) throws IOException {
+    return impl.getGroupsSet(user);
   }
 
 }

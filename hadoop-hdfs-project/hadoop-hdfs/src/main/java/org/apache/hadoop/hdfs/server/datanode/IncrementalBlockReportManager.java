@@ -37,8 +37,8 @@ import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 /**
  * Manage Incremental Block Reports (IBRs).
@@ -51,6 +51,11 @@ class IncrementalBlockReportManager {
   private static class PerStorageIBR {
     /** The blocks in this IBR. */
     final Map<Block, ReceivedDeletedBlockInfo> blocks = Maps.newHashMap();
+
+    private DataNodeMetrics dnMetrics;
+    PerStorageIBR(final DataNodeMetrics dnMetrics) {
+      this.dnMetrics = dnMetrics;
+    }
 
     /**
      * Remove the given block from this IBR
@@ -76,6 +81,25 @@ class IncrementalBlockReportManager {
     /** Put the block to this IBR. */
     void put(ReceivedDeletedBlockInfo rdbi) {
       blocks.put(rdbi.getBlock(), rdbi);
+      increaseBlocksCounter(rdbi);
+    }
+
+    private void increaseBlocksCounter(
+        final ReceivedDeletedBlockInfo receivedDeletedBlockInfo) {
+      switch (receivedDeletedBlockInfo.getStatus()) {
+      case RECEIVING_BLOCK:
+        dnMetrics.incrBlocksReceivingInPendingIBR();
+        break;
+      case RECEIVED_BLOCK:
+        dnMetrics.incrBlocksReceivedInPendingIBR();
+        break;
+      case DELETED_BLOCK:
+        dnMetrics.incrBlocksDeletedInPendingIBR();
+        break;
+      default:
+        break;
+      }
+      dnMetrics.incrBlocksInPendingIBR();
     }
 
     /**
@@ -104,8 +128,15 @@ class IncrementalBlockReportManager {
       = Maps.newHashMap();
 
   /**
-   * If this flag is set then an IBR will be sent immediately by the actor
-   * thread without waiting for the IBR timer to elapse.
+   * Total number of pending block entries across all storages. Maintained
+   * incrementally so that the size can be checked in O(1) on the hot path
+   * ({@link #addRDBI}) without iterating over all storages.
+   */
+  private long pendingBlockCount = 0;
+
+  /**
+   * If this flag is set then an IBR will be sent by the actor
+   * thread after waiting for the IBR timer to elapse.
    */
   private volatile boolean readyToSend = false;
 
@@ -115,9 +146,23 @@ class IncrementalBlockReportManager {
   /** The timestamp of the last IBR. */
   private volatile long lastIBR;
 
-  IncrementalBlockReportManager(final long ibrInterval) {
+  /**
+   * Maximum number of pending block entries allowed before the queue is
+   * cleared to prevent the DataNode from running out of memory when the
+   * target NameNode is unreachable. 0 disables the check.
+   */
+  private final long maxPendingBlocks;
+
+  private DataNodeMetrics dnMetrics;
+
+  IncrementalBlockReportManager(
+      final long ibrInterval,
+      final long maxPendingBlocks,
+      final DataNodeMetrics dnMetrics) {
     this.ibrInterval = ibrInterval;
+    this.maxPendingBlocks = maxPendingBlocks;
     this.lastIBR = monotonicNow() - ibrInterval;
+    this.dnMetrics = dnMetrics;
   }
 
   boolean sendImmediately() {
@@ -147,13 +192,22 @@ class IncrementalBlockReportManager {
         reports.add(new StorageReceivedDeletedBlocks(entry.getKey(), rdbi));
       }
     }
+    // All entries have been drained from the map.
+    pendingBlockCount = 0;
+
+    /* set blocks to zero */
+    this.dnMetrics.resetBlocksInPendingIBR();
+
     readyToSend = false;
     return reports.toArray(new StorageReceivedDeletedBlocks[reports.size()]);
   }
 
   private synchronized void putMissing(StorageReceivedDeletedBlocks[] reports) {
     for (StorageReceivedDeletedBlocks r : reports) {
-      pendingIBRs.get(r.getStorage()).putMissing(r.getBlocks());
+      final PerStorageIBR perStorage = pendingIBRs.get(r.getStorage());
+      if (perStorage != null) {
+        pendingBlockCount += perStorage.putMissing(r.getBlocks());
+      }
     }
     if (reports.length > 0) {
       readyToSend = true;
@@ -162,7 +216,7 @@ class IncrementalBlockReportManager {
 
   /** Send IBRs to namenode. */
   void sendIBRs(DatanodeProtocol namenode, DatanodeRegistration registration,
-      String bpid, DataNodeMetrics metrics) throws IOException {
+      String bpid, String nnRpcLatencySuffix) throws IOException {
     // Generate a list of the pending reports for each storage under the lock
     final StorageReceivedDeletedBlocks[] reports = generateIBRs();
     if (reports.length == 0) {
@@ -180,14 +234,19 @@ class IncrementalBlockReportManager {
       namenode.blockReceivedAndDeleted(registration, bpid, reports);
       success = true;
     } finally {
-      metrics.addIncrementalBlockReport(monotonicNow() - startTime);
+
       if (success) {
+        dnMetrics.addIncrementalBlockReport(monotonicNow() - startTime,
+            nnRpcLatencySuffix);
         lastIBR = startTime;
       } else {
         // If we didn't succeed in sending the report, put all of the
         // blocks back onto our queue, but only in the case where we
         // didn't put something newer in the meantime.
         putMissing(reports);
+        LOG.warn("Failed to call blockReceivedAndDeleted: {}, nnId: {}"
+            + ", duration(ms): {}", Arrays.toString(reports),
+            nnRpcLatencySuffix, monotonicNow() - startTime);
       }
     }
   }
@@ -199,7 +258,7 @@ class IncrementalBlockReportManager {
       // This is the first time we are adding incremental BR state for
       // this storage so create a new map. This is required once per
       // storage, per service actor.
-      perStorage = new PerStorageIBR();
+      perStorage = new PerStorageIBR(dnMetrics);
       pendingIBRs.put(storage, perStorage);
     }
     return perStorage;
@@ -216,10 +275,12 @@ class IncrementalBlockReportManager {
     // There may only be one such entry.
     for (PerStorageIBR perStorage : pendingIBRs.values()) {
       if (perStorage.remove(rdbi.getBlock()) != null) {
+        pendingBlockCount--;
         break;
       }
     }
     getPerStorageIBR(storage).put(rdbi);
+    pendingBlockCount++;
   }
 
   synchronized void notifyNamenodeBlock(ReceivedDeletedBlockInfo rdbi,
@@ -259,12 +320,46 @@ class IncrementalBlockReportManager {
     }
   }
 
-  void clearIBRs() {
+  synchronized void clearIBRs() {
     pendingIBRs.clear();
+    pendingBlockCount = 0;
+  }
+
+  /**
+   * Clear the pending IBR queue if it has grown beyond
+   * {@code maxPendingBlocks}. This bounds the DataNode's heap footprint when
+   * the target NameNode is unreachable and the queue would otherwise grow
+   * without bound (for example, a NameNode id listed in
+   * {@code dfs.ha.namenodes.<nsId>} whose RPC address is not configured).
+   *
+   * The caller is responsible for triggering a Full Block Report after a clear
+   * so that the NameNode gets a complete, consistent view once it becomes
+   * reachable again.
+   *
+   * @return true if the queue was cleared; false otherwise.
+   */
+  synchronized boolean clearIBRsIfNeeded() {
+    if (maxPendingBlocks <= 0 || pendingBlockCount < maxPendingBlocks) {
+      return false;
+    }
+    LOG.warn("Clearing {} pending IBR block entries because the count reached "
+        + "the limit {}. The target NameNode appears to be unreachable; a "
+        + "Full Block Report will be sent to resync once it is reachable "
+        + "again.", pendingBlockCount, maxPendingBlocks);
+    clearIBRs();
+    return true;
+  }
+
+  /**
+   * @return the number of pending block entries across all storages.
+   */
+  @VisibleForTesting
+  synchronized long getPendingBlockCount() {
+    return pendingBlockCount;
   }
 
   @VisibleForTesting
-  int getPendingIBRSize() {
+  synchronized int getPendingIBRSize() {
     return pendingIBRs.size();
   }
 }

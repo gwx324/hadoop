@@ -17,12 +17,11 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyString;
-import static org.mockito.Matchers.eq;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -35,13 +34,17 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.security.PrivilegedAction;
 import java.security.PrivilegedExceptionAction;
+import java.util.concurrent.TimeUnit;
 
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException;
+import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.net.NetUtils;
-import org.junit.AfterClass;
-import org.junit.Assert;
+import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMDelegationTokenIdentifierData;
+import org.junit.jupiter.api.AfterAll;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -73,19 +76,21 @@ import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Records;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.yarn.util.resource.Resources;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 
 public class TestClientRMTokens {
 
-  private static final Log LOG = LogFactory.getLog(TestClientRMTokens.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestClientRMTokens.class);
   
   // Note : Any test case in ResourceManager package that creates a proxy has
   // to be run with enabling hadoop.security.token.service.use_ip. And reset
   // to false at the end of test class. See YARN-5208
-  @BeforeClass
+  @BeforeAll
   public static void setUp() {
     Configuration conf = new Configuration();
     conf.setBoolean(
@@ -93,7 +98,7 @@ public class TestClientRMTokens {
     SecurityUtil.setConfiguration(conf);
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     Configuration conf = new Configuration();
     conf.setBoolean(
@@ -101,13 +106,13 @@ public class TestClientRMTokens {
     SecurityUtil.setConfiguration(conf);
   }
 
-  @Before
+  @BeforeEach
   public void resetSecretManager() {
     RMDelegationTokenIdentifier.Renewer.setSecretManager(null, null);
   }
   
   @Test
-  public void testDelegationToken() throws IOException, InterruptedException {
+  public void testDelegationToken() throws Exception {
     
     final YarnConfiguration conf = new YarnConfiguration();
     conf.set(YarnConfiguration.RM_PRINCIPAL, "testuser/localhost@apache.org");
@@ -120,9 +125,13 @@ public class TestClientRMTokens {
     long initialInterval = 10000l;
     long maxLifetime= 20000l;
     long renewInterval = 10000l;
+    long delegationTokenRemoverScanInterval =
+        conf.getTimeDuration(YarnConfiguration.RM_DELEGATION_TOKEN_REMOVE_SCAN_INTERVAL_KEY,
+        YarnConfiguration.RM_DELEGATION_TOKEN_REMOVE_SCAN_INTERVAL_DEFAULT,
+        TimeUnit.MILLISECONDS);
 
     RMDelegationTokenSecretManager rmDtSecretManager = createRMDelegationTokenSecretManager(
-        initialInterval, maxLifetime, renewInterval);
+        initialInterval, maxLifetime, renewInterval, delegationTokenRemoverScanInterval);
     rmDtSecretManager.startThreads();
     LOG.info("Creating DelegationTokenSecretManager with initialInterval: "
         + initialInterval + ", maxLifetime: " + maxLifetime
@@ -139,7 +148,7 @@ public class TestClientRMTokens {
       // Create a user for the renewr and fake the authentication-method
       UserGroupInformation loggedInUser = UserGroupInformation
           .createRemoteUser("testrenewer@APACHE.ORG");
-      Assert.assertEquals("testrenewer", loggedInUser.getShortUserName());
+      assertEquals("testrenewer", loggedInUser.getShortUserName());
       // Default realm is APACHE.ORG
       loggedInUser.setAuthenticationMethod(AuthenticationMethod.KERBEROS);
 
@@ -194,14 +203,11 @@ public class TestClientRMTokens {
       }
       Thread.sleep(50l);
       LOG.info("At time: " + System.currentTimeMillis() + ", token should be invalid");
-      // Token should have expired.      
-      try {
-        clientRMWithDT.getNewApplication(request);
-        fail("Should not have succeeded with an expired token");
-      } catch (Exception e) {
-        assertEquals(InvalidToken.class.getName(), e.getClass().getName());
-        assertTrue(e.getMessage().contains("is expired"));
-      } 
+      // Token should have expired.
+      final ApplicationClientProtocol finalClientRMWithDT = clientRMWithDT;
+      final GetNewApplicationRequest finalRequest = request;
+      LambdaTestUtils.intercept(InvalidToken.class, "Token  has expired",
+          () -> finalClientRMWithDT.getNewApplication(finalRequest));
 
       // Test cancellation
       // Stop the existing proxy, start another.
@@ -352,6 +358,46 @@ public class TestClientRMTokens {
         false);
   }
 
+  @Test
+  public void testReadOldFormatFields() throws IOException {
+    RMDelegationTokenIdentifier token = new RMDelegationTokenIdentifier(
+        new Text("alice"), new Text("bob"), new Text("colin"));
+    token.setIssueDate(123);
+    token.setMasterKeyId(321);
+    token.setMaxDate(314);
+    token.setSequenceNumber(12345);
+    DataInputBuffer inBuf = new DataInputBuffer();
+    DataOutputBuffer outBuf = new DataOutputBuffer();
+    token.writeInOldFormat(outBuf);
+    outBuf.writeLong(42);   // renewDate
+    inBuf.reset(outBuf.getData(), 0, outBuf.getLength());
+
+    RMDelegationTokenIdentifier identifier = null;
+
+    try {
+      RMDelegationTokenIdentifierData identifierData =
+          new RMDelegationTokenIdentifierData();
+      identifierData.readFields(inBuf);
+      fail("Should have thrown a "
+          + InvalidProtocolBufferException.class.getName()
+          + " because the token is not a protobuf");
+    } catch (InvalidProtocolBufferException e) {
+      identifier = new RMDelegationTokenIdentifier();
+      inBuf.reset();
+      identifier.readFieldsInOldFormat(inBuf);
+      assertEquals(42, inBuf.readLong());
+    }
+
+    assertEquals("alice", identifier.getUser().getUserName());
+    assertEquals(new Text("bob"), identifier.getRenewer());
+    assertEquals("colin", identifier.getUser().getRealUser().getUserName());
+    assertEquals(123, identifier.getIssueDate());
+    assertEquals(321, identifier.getMasterKeyId());
+    assertEquals(314, identifier.getMaxDate());
+    assertEquals(12345, identifier.getSequenceNumber());
+
+  }
+
   @SuppressWarnings("unchecked")
   private void checkShortCircuitRenewCancel(InetSocketAddress rmAddr,
                                             InetSocketAddress serviceAddr,
@@ -499,8 +545,9 @@ public class TestClientRMTokens {
         ResourceScheduler scheduler,
         RMDelegationTokenSecretManager rmDTSecretManager) {
       super(mock(RMContext.class), scheduler, mock(RMAppManager.class),
-          new ApplicationACLsManager(conf), new QueueACLsManager(scheduler,
-              conf), rmDTSecretManager);
+          new ApplicationACLsManager(conf),
+          QueueACLsManager.getQueueACLsManager(scheduler, conf),
+          rmDTSecretManager);
     }
 
     // Use a random port unless explicitly specified.
@@ -523,22 +570,26 @@ public class TestClientRMTokens {
 
   private static ResourceScheduler createMockScheduler(Configuration conf) {
     ResourceScheduler mockSched = mock(ResourceScheduler.class);
-    doReturn(BuilderUtils.newResource(512, 0)).when(mockSched)
+    doReturn(Resources.createResource(512)).when(mockSched)
         .getMinimumResourceCapability();
-    doReturn(BuilderUtils.newResource(5120, 0)).when(mockSched)
+    doReturn(Resources.createResource(5120)).when(mockSched)
         .getMaximumResourceCapability();
     return mockSched;
   }
 
   private static RMDelegationTokenSecretManager
       createRMDelegationTokenSecretManager(long secretKeyInterval,
-          long tokenMaxLifetime, long tokenRenewInterval) {
+          long tokenMaxLifetime, long tokenRenewInterval,
+          long delegationTokenRemoverScanInterval) {
+    ResourceManager rm = mock(ResourceManager.class);
     RMContext rmContext = mock(RMContext.class);
     when(rmContext.getStateStore()).thenReturn(new NullRMStateStore());
+    when(rm.getRMContext()).thenReturn(rmContext);
+    when(rmContext.getResourceManager()).thenReturn(rm);
 
     RMDelegationTokenSecretManager rmDtSecretManager =
         new RMDelegationTokenSecretManager(secretKeyInterval, tokenMaxLifetime,
-          tokenRenewInterval, 3600000, rmContext);
+          tokenRenewInterval, delegationTokenRemoverScanInterval, rmContext);
     return rmDtSecretManager;
   }
 }

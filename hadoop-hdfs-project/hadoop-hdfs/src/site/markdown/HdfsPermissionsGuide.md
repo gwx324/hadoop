@@ -15,20 +15,7 @@
 HDFS Permissions Guide
 ======================
 
-* [HDFS Permissions Guide](#HDFS_Permissions_Guide)
-    * [Overview](#Overview)
-    * [User Identity](#User_Identity)
-    * [Group Mapping](#Group_Mapping)
-    * [Permission Checks](#Permission_Checks)
-    * [Understanding the Implementation](#Understanding_the_Implementation)
-    * [Changes to the File System API](#Changes_to_the_File_System_API)
-    * [Changes to the Application Shell](#Changes_to_the_Application_Shell)
-    * [The Super-User](#The_Super-User)
-    * [The Web Server](#The_Web_Server)
-    * [ACLs (Access Control Lists)](#ACLs_Access_Control_Lists)
-    * [ACLs File System API](#ACLs_File_System_API)
-    * [ACLs Shell Commands](#ACLs_Shell_Commands)
-    * [Configuration Parameters](#Configuration_Parameters)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Overview
 --------
@@ -195,7 +182,7 @@ ACLs (Access Control Lists)
 
 In addition to the traditional POSIX permissions model, HDFS also supports POSIX ACLs (Access Control Lists). ACLs are useful for implementing permission requirements that differ from the natural organizational hierarchy of users and groups. An ACL provides a way to set different permissions for specific named users or named groups, not only the file's owner and the file's group.
 
-By default, support for ACLs is disabled, and the NameNode disallows creation of ACLs. To enable support for ACLs, set `dfs.namenode.acls.enabled` to true in the NameNode configuration.
+By default, support for ACLs is enabled, and the NameNode allows creation of ACLs. To disable support for ACLs, set `dfs.namenode.acls.enabled` to false in the NameNode configuration.
 
 An ACL consists of a set of ACL entries. Each ACL entry names a specific user or group and grants or denies read, write and execute permissions for that specific user or group. For example:
 
@@ -233,6 +220,8 @@ The exact permission values in the new child's access ACL are subject to filteri
 Note that the copy occurs at time of creation of the new file or sub-directory. Subsequent changes to the parent's default ACL do not change existing children.
 
 The default ACL must have all minimum required ACL entries, including the unnamed user (file owner), unnamed group (file group) and other entries. If the user doesn't supply one of these entries while setting a default ACL, then the entries are inserted automatically by copying the corresponding permissions from the access ACL, or permission bits if there is no access ACL. The default ACL also must have mask. As described above, if the mask is unspecified, then a mask is inserted automatically by calculating the union of permissions on all entries that would be filtered by the mask.
+
+Note that you can not have unlimited amount of ACL entries for a given file or directory. The maximum number is 32 for access and 32 for default entries which is 64 in total.
 
 When considering a file that has an ACL, the algorithm for permission checks changes to:
 
@@ -330,7 +319,13 @@ Configuration Parameters
 *   `dfs.namenode.acls.enabled = true`
 
     Set to true to enable support for HDFS ACLs (Access Control Lists). By
-    default, ACLs are disabled. When ACLs are disabled, the NameNode rejects
+    default, ACLs are enabled. When ACLs are disabled, the NameNode rejects
     all attempts to set an ACL.
 
+*   `dfs.namenode.posix.acl.inheritance.enabled`
 
+    Set to true to enable POSIX style ACL inheritance. Enabled by default.
+    When it is enabled and the create request comes from a compatible client,
+    the NameNode will apply default ACLs from the parent directory to
+    the create mode and ignore the client umask. If no default ACL is found,
+    it will apply the client umask.

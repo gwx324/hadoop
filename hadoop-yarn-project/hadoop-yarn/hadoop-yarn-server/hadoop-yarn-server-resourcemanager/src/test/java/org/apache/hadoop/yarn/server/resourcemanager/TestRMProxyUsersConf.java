@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
+import static org.junit.jupiter.api.Assertions.fail;
+
 import java.util.Arrays;
 import java.util.Collection;
 
@@ -26,12 +28,10 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.junit.Assert;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import static org.apache.hadoop.yarn.conf.YarnConfiguration.RM_PROXY_USER_PREFIX;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
-@RunWith(Parameterized.class)
 public class TestRMProxyUsersConf {
 
   private static final UserGroupInformation FOO_USER =
@@ -40,45 +40,46 @@ public class TestRMProxyUsersConf {
       UserGroupInformation.createUserForTesting("bar", new String[] { "bar_group" });
   private final String ipAddress = "127.0.0.1";
 
-  @Parameterized.Parameters
   public static Collection<Object[]> headers() {
-    return Arrays.asList(new Object[][] { { 0 }, { 1 }, { 2 } });
+    return Arrays.asList(new Object[][]{{0}, {1}, {2}});
   }
 
   private Configuration conf;
 
-  public TestRMProxyUsersConf(int round) {
+  public void initTestRMProxyUsersConf(int round) {
     conf = new YarnConfiguration();
     switch (round) {
-      case 0:
-        // hadoop.proxyuser prefix
-        conf.set("hadoop.proxyuser.foo.hosts", ipAddress);
-        conf.set("hadoop.proxyuser.foo.users", "bar");
-        conf.set("hadoop.proxyuser.foo.groups", "bar_group");
-        break;
-      case 1:
-        // yarn.resourcemanager.proxyuser prefix
-        conf.set("yarn.resourcemanager.proxyuser.foo.hosts", ipAddress);
-        conf.set("yarn.resourcemanager.proxyuser.foo.users", "bar");
-        conf.set("yarn.resourcemanager.proxyuser.foo.groups", "bar_group");
-        break;
-      case 2:
-        // hadoop.proxyuser prefix has been overwritten by
-        // yarn.resourcemanager.proxyuser prefix
-        conf.set("hadoop.proxyuser.foo.hosts", "xyz");
-        conf.set("hadoop.proxyuser.foo.users", "xyz");
-        conf.set("hadoop.proxyuser.foo.groups", "xyz");
-        conf.set("yarn.resourcemanager.proxyuser.foo.hosts", ipAddress);
-        conf.set("yarn.resourcemanager.proxyuser.foo.users", "bar");
-        conf.set("yarn.resourcemanager.proxyuser.foo.groups", "bar_group");
-        break;
-      default:
-        break;
+    case 0:
+      // hadoop.proxyuser prefix
+      conf.set("hadoop.proxyuser.foo.hosts", ipAddress);
+      conf.set("hadoop.proxyuser.foo.users", "bar");
+      conf.set("hadoop.proxyuser.foo.groups", "bar_group");
+      break;
+    case 1:
+      // yarn.resourcemanager.proxyuser prefix
+      conf.set(RM_PROXY_USER_PREFIX + "foo.hosts", ipAddress);
+      conf.set(RM_PROXY_USER_PREFIX + "foo.users", "bar");
+      conf.set(RM_PROXY_USER_PREFIX + "foo.groups", "bar_group");
+      break;
+    case 2:
+      // hadoop.proxyuser prefix has been overwritten by
+      // yarn.resourcemanager.proxyuser prefix
+      conf.set("hadoop.proxyuser.foo.hosts", "xyz");
+      conf.set("hadoop.proxyuser.foo.users", "xyz");
+      conf.set("hadoop.proxyuser.foo.groups", "xyz");
+      conf.set(RM_PROXY_USER_PREFIX + "foo.hosts", ipAddress);
+      conf.set(RM_PROXY_USER_PREFIX + "foo.users", "bar");
+      conf.set(RM_PROXY_USER_PREFIX + "foo.groups", "bar_group");
+      break;
+    default:
+      break;
     }
   }
 
-  @Test
-  public void testProxyUserConfiguration() throws Exception {
+  @ParameterizedTest
+  @MethodSource("headers")
+  public void testProxyUserConfiguration(int round) throws Exception {
+    initTestRMProxyUsersConf(round);
     MockRM rm = null;
     try {
       rm = new MockRM(conf);
@@ -93,7 +94,7 @@ public class TestRMProxyUsersConf {
             ipAddress);
       } catch (AuthorizationException e) {
         // Exception is not expected
-        Assert.fail();
+        fail();
       }
     } finally {
       if (rm != null) {

@@ -17,9 +17,13 @@
  */
 package org.apache.hadoop.hdfs.nfs.nfs3;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.io.EOFException;
 import java.io.File;
@@ -28,12 +32,13 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.EnumSet;
 
+import io.netty.channel.Channel;
 import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystemTestHelper;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
@@ -92,14 +97,11 @@ import org.apache.hadoop.oncrpc.security.SecurityHandler;
 import org.apache.hadoop.security.IdMappingConstant;
 import org.apache.hadoop.security.authorize.DefaultImpersonationProvider;
 import org.apache.hadoop.security.authorize.ProxyUsers;
-import org.jboss.netty.channel.Channel;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
-import org.mockito.Mockito;
-
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Tests for {@link RpcProgramNfs3}
@@ -121,7 +123,7 @@ public class TestRpcProgramNfs3 {
   private static final EnumSet<CreateEncryptionZoneFlag> NO_TRASH =
       EnumSet.of(CreateEncryptionZoneFlag.NO_TRASH);
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     String currentUser = System.getProperty("user.name");
 
@@ -135,7 +137,7 @@ public class TestRpcProgramNfs3 {
     String testRoot = fsHelper.getTestRootDir();
     testRootDir = new File(testRoot).getAbsoluteFile();
     final Path jksPath = new Path(testRootDir.toString(), "test.jks");
-    config.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
+    config.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
         JavaKeyStoreProvider.SCHEME_NAME + "://file" + jksPath.toUri());
     ProxyUsers.refreshSuperUserGroupsConfiguration(config);
 
@@ -159,22 +161,22 @@ public class TestRpcProgramNfs3 {
     DFSTestUtil.createKey(TEST_KEY, cluster, config);
 
     // Mock SecurityHandler which returns system user.name
-    securityHandler = Mockito.mock(SecurityHandler.class);
-    Mockito.when(securityHandler.getUser()).thenReturn(currentUser);
+    securityHandler = mock(SecurityHandler.class);
+    when(securityHandler.getUser()).thenReturn(currentUser);
 
     // Mock SecurityHandler which returns a dummy username "harry"
-    securityHandlerUnpriviledged = Mockito.mock(SecurityHandler.class);
-    Mockito.when(securityHandlerUnpriviledged.getUser()).thenReturn("harry");
+    securityHandlerUnpriviledged = mock(SecurityHandler.class);
+    when(securityHandlerUnpriviledged.getUser()).thenReturn("harry");
   }
 
-  @AfterClass
+  @AfterAll
   public static void shutdown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
     }
   }
 
-  @Before
+  @BeforeEach
   public void createFiles() throws IllegalArgumentException, IOException {
     hdfs.delete(new Path(testdir), true);
     hdfs.mkdirs(new Path(testdir));
@@ -182,11 +184,13 @@ public class TestRpcProgramNfs3 {
     DFSTestUtil.createFile(hdfs, new Path(testdir + "/bar"), 0, (short) 1, 0);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testGetattr() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo("/tmp/bar");
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     XDR xdr_req = new XDR();
     GETATTR3Request req = new GETATTR3Request(handle);
     req.serialize(xdr_req);
@@ -195,22 +199,24 @@ public class TestRpcProgramNfs3 {
     GETATTR3Response response1 = nfsd.getattr(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code");
 
     // Attempt by a priviledged user should pass.
     GETATTR3Response response2 = nfsd.getattr(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testSetattr() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
     XDR xdr_req = new XDR();
-    FileHandle handle = new FileHandle(dirId);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     SetAttr3 symAttr = new SetAttr3(0, 1, 0, 0, null, null,
         EnumSet.of(SetAttrField.UID));
     SETATTR3Request req = new SETATTR3Request(handle, symAttr, false, null);
@@ -220,21 +226,23 @@ public class TestRpcProgramNfs3 {
     SETATTR3Response response1 = nfsd.setattr(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code");
 
     // Attempt by a priviledged user should pass.
     SETATTR3Response response2 = nfsd.setattr(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testLookup() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     LOOKUP3Request lookupReq = new LOOKUP3Request(handle, "bar");
     XDR xdr_req = new XDR();
     lookupReq.serialize(xdr_req);
@@ -243,21 +251,23 @@ public class TestRpcProgramNfs3 {
     LOOKUP3Response response1 = nfsd.lookup(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code");
 
     // Attempt by a priviledged user should pass.
     LOOKUP3Response response2 = nfsd.lookup(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testAccess() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo("/tmp/bar");
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     XDR xdr_req = new XDR();
     ACCESS3Request req = new ACCESS3Request(handle);
     req.serialize(xdr_req);
@@ -266,31 +276,33 @@ public class TestRpcProgramNfs3 {
     ACCESS3Response response1 = nfsd.access(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code");
 
     // Attempt by a priviledged user should pass.
     ACCESS3Response response2 = nfsd.access(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testReadlink() throws Exception {
     // Create a symlink first.
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
     XDR xdr_req = new XDR();
-    FileHandle handle = new FileHandle(dirId);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     SYMLINK3Request req = new SYMLINK3Request(handle, "fubar", new SetAttr3(),
         "bar");
     req.serialize(xdr_req);
     
     SYMLINK3Response response = nfsd.symlink(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response.getStatus(), "Incorrect return code:");
 
     // Now perform readlink operations.
     FileHandle handle2 = response.getObjFileHandle();
@@ -302,21 +314,23 @@ public class TestRpcProgramNfs3 {
     READLINK3Response response1 = nfsd.readlink(xdr_req2.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+         response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a priviledged user should pass.
     READLINK3Response response2 = nfsd.readlink(xdr_req2.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testRead() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo("/tmp/bar");
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
 
     READ3Request readReq = new READ3Request(handle, 0, 5);
     XDR xdr_req = new XDR();
@@ -326,17 +340,18 @@ public class TestRpcProgramNfs3 {
     READ3Response response1 = nfsd.read(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a priviledged user should pass.
     READ3Response response2 = nfsd.read(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testEncryptedReadWrite() throws Exception {
     final int len = 8192;
 
@@ -352,9 +367,9 @@ public class TestRpcProgramNfs3 {
     final String encFile1 = "/zone/myfile";
     createFileUsingNfs(encFile1, buffer);
     commit(encFile1, len);
-    assertArrayEquals("encFile1 not equal",
+    assertArrayEquals(
         getFileContentsUsingNfs(encFile1, len),
-        getFileContentsUsingDfs(encFile1, len));
+        getFileContentsUsingDfs(encFile1, len), "encFile1 not equal");
 
     /*
      * Same thing except this time create the encrypted file using DFS.
@@ -362,9 +377,9 @@ public class TestRpcProgramNfs3 {
     final String encFile2 = "/zone/myfile2";
     final Path encFile2Path = new Path(encFile2);
     DFSTestUtil.createFile(hdfs, encFile2Path, len, (short) 1, 0xFEED);
-    assertArrayEquals("encFile2 not equal",
+    assertArrayEquals(
         getFileContentsUsingNfs(encFile2, len),
-        getFileContentsUsingDfs(encFile2, len));
+        getFileContentsUsingDfs(encFile2, len), "encFile2 not equal");
   }
 
   private void createFileUsingNfs(String fileName, byte[] buffer)
@@ -373,7 +388,8 @@ public class TestRpcProgramNfs3 {
 
     final HdfsFileStatus status = nn.getRpcServer().getFileInfo(fileName);
     final long dirId = status.getFileId();
-    final FileHandle handle = new FileHandle(dirId);
+    final int namenodeId = Nfs3Utils.getNamenodeId(config);
+    final FileHandle handle = new FileHandle(dirId, namenodeId);
 
     final WRITE3Request writeReq = new WRITE3Request(handle, 0,
         buffer.length, WriteStableHow.DATA_SYNC, ByteBuffer.wrap(buffer));
@@ -383,14 +399,15 @@ public class TestRpcProgramNfs3 {
     final WRITE3Response response = nfsd.write(xdr_req.asReadOnlyWrap(),
         null, 1, securityHandler,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect response: ", null, response);
+    assertEquals(null, response, "Incorrect response: ");
   }
 
   private byte[] getFileContentsUsingNfs(String fileName, int len)
       throws Exception {
     final HdfsFileStatus status = nn.getRpcServer().getFileInfo(fileName);
     final long dirId = status.getFileId();
-    final FileHandle handle = new FileHandle(dirId);
+    final int namenodeId = Nfs3Utils.getNamenodeId(config);
+    final FileHandle handle = new FileHandle(dirId, namenodeId);
 
     final READ3Request readReq = new READ3Request(handle, 0, len);
     final XDR xdr_req = new XDR();
@@ -398,9 +415,9 @@ public class TestRpcProgramNfs3 {
 
     final READ3Response response = nfsd.read(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code: ", Nfs3Status.NFS3_OK,
-        response.getStatus());
-    assertTrue("expected full read", response.isEof());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response.getStatus(), "Incorrect return code: ");
+    assertTrue(response.isEof(), "expected full read");
     return response.getData().array();
   }
 
@@ -411,7 +428,7 @@ public class TestRpcProgramNfs3 {
     in.readFully(ret);
     try {
       in.readByte();
-      Assert.fail("expected end of file");
+      fail("expected end of file");
     } catch (EOFException e) {
       // expected. Unfortunately there is no associated message to check
     }
@@ -422,24 +439,27 @@ public class TestRpcProgramNfs3 {
   private void commit(String fileName, int len) throws Exception {
     final HdfsFileStatus status = nn.getRpcServer().getFileInfo(fileName);
     final long dirId = status.getFileId();
-    final FileHandle handle = new FileHandle(dirId);
+    final int namenodeId = Nfs3Utils.getNamenodeId(config);
+    final FileHandle handle = new FileHandle(dirId, namenodeId);
     final XDR xdr_req = new XDR();
     final COMMIT3Request req = new COMMIT3Request(handle, 0, len);
     req.serialize(xdr_req);
 
-    Channel ch = Mockito.mock(Channel.class);
+    Channel ch = mock(Channel.class);
 
     COMMIT3Response response2 = nfsd.commit(xdr_req.asReadOnlyWrap(),
         ch, 1, securityHandler,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect COMMIT3Response:", null, response2);
+    assertEquals(null, response2, "Incorrect COMMIT3Response:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testWrite() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo("/tmp/bar");
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
 
     byte[] buffer = new byte[10];
     for (int i = 0; i < 10; i++) {
@@ -455,22 +475,24 @@ public class TestRpcProgramNfs3 {
     WRITE3Response response1 = nfsd.write(xdr_req.asReadOnlyWrap(),
         null, 1, securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a priviledged user should pass.
     WRITE3Response response2 = nfsd.write(xdr_req.asReadOnlyWrap(),
         null, 1, securityHandler,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect response:", null, response2);
+    assertEquals(null, response2, "Incorrect response:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testCreate() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
     XDR xdr_req = new XDR();
-    FileHandle handle = new FileHandle(dirId);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     CREATE3Request req = new CREATE3Request(handle, "fubar",
         Nfs3Constant.CREATE_UNCHECKED, new SetAttr3(), 0);
     req.serialize(xdr_req);
@@ -479,22 +501,24 @@ public class TestRpcProgramNfs3 {
     CREATE3Response response1 = nfsd.create(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a priviledged user should pass.
     CREATE3Response response2 = nfsd.create(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testMkdir() throws Exception {//FixME
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
     XDR xdr_req = new XDR();
-    FileHandle handle = new FileHandle(dirId);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     MKDIR3Request req = new MKDIR3Request(handle, "fubar1", new SetAttr3());
     req.serialize(xdr_req);
     
@@ -502,8 +526,8 @@ public class TestRpcProgramNfs3 {
     MKDIR3Response response1 = nfsd.mkdir(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     XDR xdr_req2 = new XDR();
     MKDIR3Request req2 = new MKDIR3Request(handle, "fubar2", new SetAttr3());
@@ -512,16 +536,18 @@ public class TestRpcProgramNfs3 {
     // Attempt to mkdir by a privileged user should pass.
     MKDIR3Response response2 = nfsd.mkdir(xdr_req2.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testSymlink() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
     XDR xdr_req = new XDR();
-    FileHandle handle = new FileHandle(dirId);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     SYMLINK3Request req = new SYMLINK3Request(handle, "fubar", new SetAttr3(),
         "bar");
     req.serialize(xdr_req);
@@ -530,22 +556,24 @@ public class TestRpcProgramNfs3 {
     SYMLINK3Response response1 = nfsd.symlink(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a privileged user should pass.
     SYMLINK3Response response2 = nfsd.symlink(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testRemove() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
     XDR xdr_req = new XDR();
-    FileHandle handle = new FileHandle(dirId);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     REMOVE3Request req = new REMOVE3Request(handle, "bar");
     req.serialize(xdr_req);
 
@@ -553,22 +581,24 @@ public class TestRpcProgramNfs3 {
     REMOVE3Response response1 = nfsd.remove(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a priviledged user should pass.
     REMOVE3Response response2 = nfsd.remove(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testRmdir() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
     XDR xdr_req = new XDR();
-    FileHandle handle = new FileHandle(dirId);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     RMDIR3Request req = new RMDIR3Request(handle, "foo");
     req.serialize(xdr_req);
 
@@ -576,22 +606,24 @@ public class TestRpcProgramNfs3 {
     RMDIR3Response response1 = nfsd.rmdir(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a privileged user should pass.
     RMDIR3Response response2 = nfsd.rmdir(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testRename() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
     XDR xdr_req = new XDR();
-    FileHandle handle = new FileHandle(dirId);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     RENAME3Request req = new RENAME3Request(handle, "bar", handle, "fubar");
     req.serialize(xdr_req);
     
@@ -599,21 +631,23 @@ public class TestRpcProgramNfs3 {
     RENAME3Response response1 = nfsd.rename(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a privileged user should pass.
     RENAME3Response response2 = nfsd.rename(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testReaddir() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     XDR xdr_req = new XDR();
     READDIR3Request req = new READDIR3Request(handle, 0, 0, 100);
     req.serialize(xdr_req);
@@ -622,21 +656,23 @@ public class TestRpcProgramNfs3 {
     READDIR3Response response1 = nfsd.readdir(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a priviledged user should pass.
     READDIR3Response response2 = nfsd.readdir(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testReaddirplus() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     XDR xdr_req = new XDR();
     READDIRPLUS3Request req = new READDIRPLUS3Request(handle, 0, 0, 3, 2);
     req.serialize(xdr_req);
@@ -645,21 +681,23 @@ public class TestRpcProgramNfs3 {
     READDIRPLUS3Response response1 = nfsd.readdirplus(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a privileged user should pass.
     READDIRPLUS3Response response2 = nfsd.readdirplus(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testFsstat() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo("/tmp/bar");
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     XDR xdr_req = new XDR();
     FSSTAT3Request req = new FSSTAT3Request(handle);
     req.serialize(xdr_req);
@@ -668,21 +706,23 @@ public class TestRpcProgramNfs3 {
     FSSTAT3Response response1 = nfsd.fsstat(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a priviledged user should pass.
     FSSTAT3Response response2 = nfsd.fsstat(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testFsinfo() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo("/tmp/bar");
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     XDR xdr_req = new XDR();
     FSINFO3Request req = new FSINFO3Request(handle);
     req.serialize(xdr_req);
@@ -691,21 +731,23 @@ public class TestRpcProgramNfs3 {
     FSINFO3Response response1 = nfsd.fsinfo(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a priviledged user should pass.
     FSINFO3Response response2 = nfsd.fsinfo(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testPathconf() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo("/tmp/bar");
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     XDR xdr_req = new XDR();
     PATHCONF3Request req = new PATHCONF3Request(handle);
     req.serialize(xdr_req);
@@ -714,42 +756,45 @@ public class TestRpcProgramNfs3 {
     PATHCONF3Response response1 = nfsd.pathconf(xdr_req.asReadOnlyWrap(),
         securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a priviledged user should pass.
     PATHCONF3Response response2 = nfsd.pathconf(xdr_req.asReadOnlyWrap(),
         securityHandler, new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3_OK,
-        response2.getStatus());
+    assertEquals(Nfs3Status.NFS3_OK,
+        response2.getStatus(), "Incorrect return code:");
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testCommit() throws Exception {
     HdfsFileStatus status = nn.getRpcServer().getFileInfo("/tmp/bar");
     long dirId = status.getFileId();
-    FileHandle handle = new FileHandle(dirId);
+    int namenodeId = Nfs3Utils.getNamenodeId(config);
+    FileHandle handle = new FileHandle(dirId, namenodeId);
     XDR xdr_req = new XDR();
     COMMIT3Request req = new COMMIT3Request(handle, 0, 5);
     req.serialize(xdr_req);
 
-    Channel ch = Mockito.mock(Channel.class);
+    Channel ch = mock(Channel.class);
 
     // Attempt by an unpriviledged user should fail.
     COMMIT3Response response1 = nfsd.commit(xdr_req.asReadOnlyWrap(),
         ch, 1, securityHandlerUnpriviledged,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect return code:", Nfs3Status.NFS3ERR_ACCES,
-        response1.getStatus());
+    assertEquals(Nfs3Status.NFS3ERR_ACCES,
+        response1.getStatus(), "Incorrect return code:");
 
     // Attempt by a priviledged user should pass.
     COMMIT3Response response2 = nfsd.commit(xdr_req.asReadOnlyWrap(),
         ch, 1, securityHandler,
         new InetSocketAddress("localhost", 1234));
-    assertEquals("Incorrect COMMIT3Response:", null, response2);
+    assertEquals(null, response2, "Incorrect COMMIT3Response:");
   }
 
-  @Test(timeout=1000)
+  @Test
+  @Timeout(value = 10)
   public void testIdempotent() {
     Object[][] procedures = {
         { Nfs3Constant.NFSPROC3.NULL, 1 },
@@ -778,11 +823,9 @@ public class TestRpcProgramNfs3 {
       boolean idempotent = procedure[1].equals(Integer.valueOf(1));
       Nfs3Constant.NFSPROC3 proc = (Nfs3Constant.NFSPROC3)procedure[0];
       if (idempotent) {
-        Assert.assertTrue(("Procedure " + proc + " should be idempotent"),
-            proc.isIdempotent());
+        assertTrue(proc.isIdempotent(), ("Procedure " + proc + " should be idempotent"));
       } else {
-        Assert.assertFalse(("Procedure " + proc + " should be non-idempotent"),
-            proc.isIdempotent());
+        assertFalse(proc.isIdempotent(), ("Procedure " + proc + " should be non-idempotent"));
       }
     }
   }

@@ -22,20 +22,21 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.junit.Assert;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.HadoopTestCase;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil;
-import org.junit.Test;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * This class performs unit test for Job/JobControl classes.
@@ -43,8 +44,8 @@ import static org.junit.Assert.assertFalse;
  */
 public class TestMapReduceJobControl extends HadoopTestCase {
 
-  public static final Log LOG = 
-      LogFactory.getLog(TestMapReduceJobControl.class.getName());
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestMapReduceJobControl.class);
 
   static Path rootDataDir = new Path(
     System.getProperty("test.build.data", "."), "TestData");
@@ -95,7 +96,7 @@ public class TestMapReduceJobControl extends HadoopTestCase {
     cjob2 = new ControlledJob(job2, dependingJobs);
 
     Job job3 = MapReduceTestUtil.createCopyJob(conf, outdir_3, 
-	                                   outdir_1, outdir_2);
+                                     outdir_1, outdir_2);
     dependingJobs = new ArrayList<ControlledJob>();
     dependingJobs.add(cjob1);
     dependingJobs.add(cjob2);
@@ -202,12 +203,13 @@ public class TestMapReduceJobControl extends HadoopTestCase {
     // wait till all the jobs complete
     waitTillAllFinished(theControl);
     
-    assertEquals("Some jobs failed", 0, theControl.getFailedJobList().size());
+    assertEquals(0, theControl.getFailedJobList().size(), "Some jobs failed");
     
     theControl.stop();
   }
   
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testControlledJob() throws Exception {
     LOG.info("Starting testControlledJob");
 
@@ -222,11 +224,11 @@ public class TestMapReduceJobControl extends HadoopTestCase {
         break;
       }
     }
-    Assert.assertNotNull(cjob1.getMapredJobId());
+    assertNotNull(cjob1.getMapredJobId());
 
     // wait till all the jobs complete
     waitTillAllFinished(theControl);
-    assertEquals("Some jobs failed", 0, theControl.getFailedJobList().size());
+    assertEquals(0, theControl.getFailedJobList().size(), "Some jobs failed");
     theControl.stop();
   }
 }

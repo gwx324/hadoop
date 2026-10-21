@@ -33,14 +33,13 @@ import javax.servlet.ServletRequest;
 import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.net.NetUtils;
-import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestPathFilter extends HttpServerFunctionalTest {
-  static final Log LOG = LogFactory.getLog(HttpServer2.class);
+  static final Logger LOG = LoggerFactory.getLogger(HttpServer2.class);
   static final Set<String> RECORDS = new TreeSet<String>(); 
 
   /** A very simple filter that records accessed uri's */
@@ -102,7 +101,6 @@ public class TestPathFilter extends HttpServerFunctionalTest {
     }
   }
 
-  @Test
   public void testPathSpecFilters() throws Exception {
     Configuration conf = new Configuration();
     

@@ -21,7 +21,6 @@ package org.apache.hadoop.util;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
@@ -29,13 +28,14 @@ import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.apache.commons.logging.Log;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
@@ -46,6 +46,7 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.serializer.Deserializer;
 import org.apache.hadoop.io.serializer.SerializationFactory;
 import org.apache.hadoop.io.serializer.Serializer;
+import org.slf4j.Logger;
 
 /**
  * General reflection utils
@@ -117,19 +118,41 @@ public class ReflectionUtils {
    * 
    * @param theClass class of which an object is created
    * @param conf Configuration
+   * @param <T> Generics Type T.
    * @return a new object
    */
   @SuppressWarnings("unchecked")
   public static <T> T newInstance(Class<T> theClass, Configuration conf) {
+    return newInstance(theClass, conf, EMPTY_ARRAY);
+  }
+
+  /** Create an object for the given class and initialize it from conf
+   *
+   * @param theClass class of which an object is created
+   * @param conf Configuration
+   * @param argTypes the types of the arguments
+   * @param values the values of the arguments
+   * @param <T> Generics Type.
+   * @return a new object
+   */
+  @SuppressWarnings("unchecked")
+  public static <T> T newInstance(Class<T> theClass, Configuration conf,
+      Class<?>[] argTypes, Object ... values) {
     T result;
+    if (argTypes.length != values.length) {
+      throw new IllegalArgumentException(argTypes.length
+          + " parameters are required but "
+          + values.length
+          + " arguments are provided");
+    }
     try {
       Constructor<T> meth = (Constructor<T>) CONSTRUCTOR_CACHE.get(theClass);
       if (meth == null) {
-        meth = theClass.getDeclaredConstructor(EMPTY_ARRAY);
+        meth = theClass.getDeclaredConstructor(argTypes);
         meth.setAccessible(true);
         CONSTRUCTOR_CACHE.put(theClass, meth);
       }
-      result = meth.newInstance();
+      result = meth.newInstance(values);
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
@@ -198,20 +221,22 @@ public class ReflectionUtils {
   }
     
   private static long previousLogTime = 0;
-    
+
   /**
    * Log the current thread stacks at INFO level.
    * @param log the logger that logs the stack trace
    * @param title a descriptive title for the call stacks
-   * @param minInterval the minimum time from the last 
+   * @param minInterval the minimum time from the last
+   * @deprecated to be removed with 3.4.0. Use {@link #logThreadInfo(Logger, String, long)} instead.
    */
-  public static void logThreadInfo(Log log,
-                                   String title,
-                                   long minInterval) {
+  @Deprecated
+  public static void logThreadInfo(org.apache.commons.logging.Log log,
+      String title,
+      long minInterval) {
     boolean dumpStack = false;
     if (log.isInfoEnabled()) {
       synchronized (ReflectionUtils.class) {
-        long now = Time.now();
+        long now = Time.monotonicNow();
         if (now - previousLogTime >= minInterval * 1000) {
           previousLogTime = now;
           dumpStack = true;
@@ -221,7 +246,36 @@ public class ReflectionUtils {
         try {
           ByteArrayOutputStream buffer = new ByteArrayOutputStream();
           printThreadInfo(new PrintStream(buffer, false, "UTF-8"), title);
-          log.info(buffer.toString(Charset.defaultCharset().name()));
+          log.info(buffer.toString(StandardCharsets.UTF_8.name()));
+        } catch (UnsupportedEncodingException ignored) {
+        }
+      }
+    }
+  }
+
+  /**
+   * Log the current thread stacks at INFO level.
+   * @param log the logger that logs the stack trace
+   * @param title a descriptive title for the call stacks
+   * @param minInterval the minimum time from the last
+   */
+  public static void logThreadInfo(Logger log,
+                                   String title,
+                                   long minInterval) {
+    boolean dumpStack = false;
+    if (log.isInfoEnabled()) {
+      synchronized (ReflectionUtils.class) {
+        long now = Time.monotonicNow();
+        if (now - previousLogTime >= minInterval * 1000) {
+          previousLogTime = now;
+          dumpStack = true;
+        }
+      }
+      if (dumpStack) {
+        try {
+          ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+          printThreadInfo(new PrintStream(buffer, false, "UTF-8"), title);
+          log.info(buffer.toString(StandardCharsets.UTF_8.name()));
         } catch (UnsupportedEncodingException ignored) {
         }
       }
@@ -232,6 +286,7 @@ public class ReflectionUtils {
    * Return the correctly-typed {@link Class} of the given object.
    *  
    * @param o object whose correctly-typed <code>Class</code> is to be obtained
+   * @param <T> Generics Type T.
    * @return the correctly typed <code>Class</code> of the given object.
    */
   @SuppressWarnings("unchecked")
@@ -247,6 +302,60 @@ public class ReflectionUtils {
   static int getCacheSize() {
     return CONSTRUCTOR_CACHE.size();
   }
+
+  /**
+   * Find and load the class with given name <code>className</code> using the
+   * classloader of the specified <code>conf</code> (or this class's classloader
+   * when <code>conf</code> is null) and, when <code>requiredSuperType</code> is
+   * non-null, verify the loaded class is assignable to it before returning.
+   * <p>The class is not initialized.
+   *
+   * @param conf configuration supplying the classloader; may be null.
+   * @param className the name of the class to load.
+   * @param requiredSuperType required supertype of the class, or null to skip
+   *        the check.
+   * @param <T> type of the interface.
+   * @return the loaded class.
+   * @throws ClassNotFoundException if the class cannot be found.
+   * @throws ClassCastException if <code>requiredSuperType</code> is
+   *         non-null and the class is not assignable to it.
+   */
+  public static<T> Class<? extends T> loadUninitedClass(Configuration conf, String className,
+      Class<T> requiredSuperType) throws ClassNotFoundException {
+    ClassLoader cl = (conf != null)
+        ? conf.getClassLoader()
+        : ReflectionUtils.class.getClassLoader();
+    return loadUninitedClass(cl, className, requiredSuperType);
+  }
+
+  /**
+   * Find and load the class with given name <code>className</code> using the
+   * specified classloader <code>cl</code> and, when
+   * <code>requiredSuperType</code> is non-null, verify the loaded class is
+   * assignable to it before returning.
+   * <p>The class is not initialized.
+   *
+   * @param cl the classloader to use.
+   * @param className the name of the class to load.
+   * @param requiredSuperType required supertype of the class, or null to skip
+   *        the check.
+   * @param <T> type of the interface.
+   * @return the loaded class.
+   * @throws ClassNotFoundException if the class cannot be found.
+   * @throws ClassCastException if <code>requiredSuperType</code> is
+   *         non-null and the class is not assignable to it.
+   */
+  @SuppressWarnings("unchecked")
+  public static<T> Class<? extends T> loadUninitedClass(ClassLoader cl, String className,
+      Class<T> requiredSuperType) throws ClassNotFoundException, ClassCastException {
+    Class<?> clazz = Class.forName(className, false, cl);
+    if (requiredSuperType != null && !requiredSuperType.isAssignableFrom(clazz)) {
+      throw new ClassCastException(
+          className + " is not a subtype of " + requiredSuperType.getName());
+    }
+    return (Class<? extends T>) clazz;
+  }
+
   /**
    * A pair of input/output buffers that we use to clone writables.
    */
@@ -280,11 +389,13 @@ public class ReflectionUtils {
   }
   
   /**
-   * Make a copy of the writable object using serialization to a buffer
+   * Make a copy of the writable object using serialization to a buffer.
    * @param src the object to copy from
    * @param dst the object to copy into, which is destroyed
+   * @param <T> Generics Type.
+   * @param conf configuration.
    * @return dst param (the copy)
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   @SuppressWarnings("unchecked")
   public static <T> T copy(Configuration conf, 
@@ -316,11 +427,20 @@ public class ReflectionUtils {
   /**
    * Gets all the declared fields of a class including fields declared in
    * superclasses.
+   *
+   * @param clazz clazz
+   * @return field List
    */
   public static List<Field> getDeclaredFieldsIncludingInherited(Class<?> clazz) {
     List<Field> fields = new ArrayList<Field>();
     while (clazz != null) {
-      for (Field field : clazz.getDeclaredFields()) {
+      Field[] sortedFields = clazz.getDeclaredFields();
+      Arrays.sort(sortedFields, new Comparator<Field>() {
+        public int compare(Field a, Field b) {
+          return a.getName().compareTo(b.getName());
+        }
+      });
+      for (Field field : sortedFields) {
         fields.add(field);
       }
       clazz = clazz.getSuperclass();
@@ -332,6 +452,9 @@ public class ReflectionUtils {
   /**
    * Gets all the declared methods of a class including methods declared in
    * superclasses.
+   *
+   * @param clazz clazz.
+   * @return Method List.
    */
   public static List<Method> getDeclaredMethodsIncludingInherited(Class<?> clazz) {
     List<Method> methods = new ArrayList<Method>();
@@ -344,4 +467,5 @@ public class ReflectionUtils {
     
     return methods;
   }
+
 }

@@ -20,13 +20,11 @@ package org.apache.hadoop.yarn.util;
 
 import java.lang.reflect.Constructor;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
-import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
+import org.apache.hadoop.yarn.exceptions.YarnException;
 
 /**
  * Interface class to obtain process resource usage
@@ -37,8 +35,6 @@ import org.apache.hadoop.conf.Configured;
 @Public
 @Evolving
 public abstract class ResourceCalculatorProcessTree extends Configured {
-  static final Log LOG = LogFactory
-      .getLog(ResourceCalculatorProcessTree.class);
   public static final int UNAVAILABLE = -1;
 
   /**
@@ -48,6 +44,13 @@ public abstract class ResourceCalculatorProcessTree extends Configured {
    * @param root process-tree root-process
    */
   public ResourceCalculatorProcessTree(String root) {
+  }
+
+  /**
+   * Initialize the object.
+   * @throws YarnException Throws an exception on error.
+   */
+  public void initialize() throws YarnException {
   }
 
   /**
@@ -80,18 +83,6 @@ public abstract class ResourceCalculatorProcessTree extends Configured {
   }
 
   /**
-   * Get the virtual memory used by all the processes in the
-   * process-tree.
-   *
-   * @return virtual memory used by the process-tree in bytes,
-   * {@link #UNAVAILABLE} if it cannot be calculated.
-   */
-  @Deprecated
-  public long getCumulativeVmem() {
-    return getCumulativeVmem(0);
-  }
-
-  /**
    * Get the resident set size (rss) memory used by all the processes
    * in the process-tree.
    *
@@ -100,18 +91,6 @@ public abstract class ResourceCalculatorProcessTree extends Configured {
    */
   public long getRssMemorySize() {
     return getRssMemorySize(0);
-  }
-
-  /**
-   * Get the resident set size (rss) memory used by all the processes
-   * in the process-tree.
-   *
-   * @return rss memory used by the process-tree in bytes,
-   * {@link #UNAVAILABLE} if it cannot be calculated.
-   */
-  @Deprecated
-  public long getCumulativeRssmem() {
-    return getCumulativeRssmem(0);
   }
 
   /**
@@ -129,21 +108,6 @@ public abstract class ResourceCalculatorProcessTree extends Configured {
   }
 
   /**
-   * Get the virtual memory used by all the processes in the
-   * process-tree that are older than the passed in age.
-   *
-   * @param olderThanAge processes above this age are included in the
-   *                     memory addition
-   * @return virtual memory used by the process-tree in bytes for
-   * processes older than the specified age, {@link #UNAVAILABLE} if it
-   * cannot be calculated.
-   */
-  @Deprecated
-  public long getCumulativeVmem(int olderThanAge) {
-    return UNAVAILABLE;
-  }
-
-  /**
    * Get the resident set size (rss) memory used by all the processes
    * in the process-tree that are older than the passed in age.
    *
@@ -154,21 +118,6 @@ public abstract class ResourceCalculatorProcessTree extends Configured {
    * calculated.
    */
   public long getRssMemorySize(int olderThanAge) {
-    return UNAVAILABLE;
-  }
-
-  /**
-   * Get the resident set size (rss) memory used by all the processes
-   * in the process-tree that are older than the passed in age.
-   *
-   * @param olderThanAge processes above this age are included in the
-   *                     memory addition
-   * @return rss memory used by the process-tree in bytes for
-   * processes older than specified age, {@link #UNAVAILABLE} if it cannot be
-   * calculated.
-   */
-  @Deprecated
-  public long getCumulativeRssmem(int olderThanAge) {
     return UNAVAILABLE;
   }
 
@@ -216,12 +165,12 @@ public abstract class ResourceCalculatorProcessTree extends Configured {
    */
   public static ResourceCalculatorProcessTree getResourceCalculatorProcessTree(
     String pid, Class<? extends ResourceCalculatorProcessTree> clazz, Configuration conf) {
-
     if (clazz != null) {
       try {
         Constructor <? extends ResourceCalculatorProcessTree> c = clazz.getConstructor(String.class);
         ResourceCalculatorProcessTree rctree = c.newInstance(pid);
         rctree.setConf(conf);
+        rctree.initialize();
         return rctree;
       } catch(Exception e) {
         throw new RuntimeException(e);

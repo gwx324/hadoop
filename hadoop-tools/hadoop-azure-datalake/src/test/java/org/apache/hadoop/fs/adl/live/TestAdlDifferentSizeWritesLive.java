@@ -23,60 +23,79 @@ import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Random;
+import java.util.UUID;
+
+import static org.apache.hadoop.fs.adl.AdlConfKeys.WRITE_BUFFER_SIZE_KEY;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Verify different data segment size writes ensure the integrity and
- * order of the data.
+ * Verify data integrity with different data sizes with buffer size.
  */
 public class TestAdlDifferentSizeWritesLive {
+  private static Random rand = new Random();
+  private int totalSize;
+  private int chunkSize;
+
+  public void initTestAdlDifferentSizeWritesLive(int pTotalSize, int pChunkSize) {
+    this.totalSize = pTotalSize;
+    this.chunkSize = pChunkSize;
+  }
 
   public static byte[] getRandomByteArrayData(int size) {
     byte[] b = new byte[size];
-    Random rand = new Random();
     rand.nextBytes(b);
     return b;
   }
 
-  @Before
+  public static Collection testDataForIntegrityTest() {
+    return Arrays.asList(
+        new Object[][] {{4 * 1024, 1 * 1024}, {4 * 1024, 7 * 1024},
+            {4 * 1024, 10}, {2 * 1024, 10}, {1 * 1024, 10}, {100, 1},
+            {4 * 1024, 1 * 1024}, {7 * 1024, 2 * 1024}, {9 * 1024, 2 * 1024},
+            {10 * 1024, 3 * 1024}, {10 * 1024, 1 * 1024},
+            {10 * 1024, 8 * 1024}});
+  }
+
+  @BeforeAll
+  public static void cleanUpParent() throws IOException, URISyntaxException {
+    if (AdlStorageConfiguration.isContractTestEnabled()) {
+      Path path = new Path("/test/dataIntegrityCheck/");
+      FileSystem fs = AdlStorageConfiguration.createStorageConnector();
+      fs.delete(path, true);
+    }
+  }
+
+  @BeforeEach
   public void setup() throws Exception {
-    org.junit.Assume
-        .assumeTrue(AdlStorageConfiguration.isContractTestEnabled());
+    assumeTrue(AdlStorageConfiguration.isContractTestEnabled());
   }
 
-  @Test
-  public void testSmallDataWrites() throws IOException {
-    testDataIntegrity(4 * 1024 * 1024, 1 * 1024);
-    testDataIntegrity(4 * 1024 * 1024, 7 * 1024);
-    testDataIntegrity(4 * 1024 * 1024, 10);
-    testDataIntegrity(2 * 1024 * 1024, 10);
-    testDataIntegrity(1 * 1024 * 1024, 10);
-    testDataIntegrity(100, 1);
-  }
-
-  @Test
-  public void testMediumDataWrites() throws IOException {
-    testDataIntegrity(4 * 1024 * 1024, 1 * 1024 * 1024);
-    testDataIntegrity(7 * 1024 * 1024, 2 * 1024 * 1024);
-    testDataIntegrity(9 * 1024 * 1024, 2 * 1024 * 1024);
-    testDataIntegrity(10 * 1024 * 1024, 3 * 1024 * 1024);
-  }
-
-  private void testDataIntegrity(int totalSize, int chunkSize)
-      throws IOException {
-    Path path = new Path("/test/dataIntegrityCheck");
+  @MethodSource("testDataForIntegrityTest")
+  @ParameterizedTest(name = "{index}: Data Size [{0}] ; Chunk Size [{1}]")
+  public void testDataIntegrity(int pTotalSize, int pChunkSize) throws IOException {
+    initTestAdlDifferentSizeWritesLive(pTotalSize, pChunkSize);
+    Path path = new Path(
+        "/test/dataIntegrityCheck/" + UUID.randomUUID().toString());
     FileSystem fs = null;
+    AdlStorageConfiguration.getConfiguration()
+        .setInt(WRITE_BUFFER_SIZE_KEY, 4 * 1024);
     try {
-      fs = AdlStorageConfiguration.createAdlStorageConnector();
+      fs = AdlStorageConfiguration.createStorageConnector();
     } catch (URISyntaxException e) {
       throw new IllegalStateException("Can not initialize ADL FileSystem. "
-          + "Please check fs.defaultFS property.", e);
+          + "Please check test.fs.adl.name property.", e);
     }
     byte[] expectedData = getRandomByteArrayData(totalSize);
 
@@ -96,7 +115,7 @@ public class TestAdlDifferentSizeWritesLive {
     FSDataInputStream in = fs.open(path);
     in.readFully(0, actualData);
     in.close();
-    Assert.assertArrayEquals(expectedData, actualData);
-    Assert.assertTrue(fs.delete(path, true));
+    assertArrayEquals(expectedData, actualData);
+    assertTrue(fs.delete(path, true));
   }
 }

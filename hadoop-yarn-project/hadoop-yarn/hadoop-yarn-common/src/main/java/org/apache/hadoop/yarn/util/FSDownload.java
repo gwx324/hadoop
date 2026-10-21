@@ -21,6 +21,8 @@ package org.apache.hadoop.yarn.util;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URISyntaxException;
 import java.security.PrivilegedExceptionAction;
 import java.util.concurrent.Callable;
@@ -29,8 +31,10 @@ import java.util.concurrent.Future;
 import java.util.regex.Pattern;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.io.IOUtils;
+import org.apache.hadoop.util.Time;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.LimitedPrivate;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
@@ -50,19 +54,25 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.LocalResource;
 import org.apache.hadoop.yarn.api.records.LocalResourceVisibility;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-import com.google.common.util.concurrent.Futures;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Futures;
+import org.apache.hadoop.yarn.exceptions.YarnException;
 
-/**
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_READ_POLICY;
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_READ_POLICY_WHOLE_FILE;
+import static org.apache.hadoop.util.functional.FutureIO.awaitFuture;
+
+ /**
  * Download a single URL to the local disk.
  *
  */
 @LimitedPrivate({"YARN", "MapReduce"})
 public class FSDownload implements Callable<Path> {
 
-  private static final Log LOG = LogFactory.getLog(FSDownload.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(FSDownload.class);
 
   private FileContext files;
   private final UserGroupInformation userUgi;
@@ -113,10 +123,13 @@ public class FSDownload implements Callable<Path> {
    * Creates the cache loader for the status loading cache. This should be used
    * to create an instance of the status cache that is passed into the
    * FSDownload constructor.
+   *
+   * @param conf configuration.
+   * @return cache loader for the status loading cache.
    */
-  public static CacheLoader<Path,Future<FileStatus>>
+  public static CacheLoader<Path, Future<FileStatus>>
       createStatusCacheLoader(final Configuration conf) {
-    return new CacheLoader<Path,Future<FileStatus>>() {
+    return new CacheLoader<Path, Future<FileStatus>>() {
       public Future<FileStatus> load(Path path) {
         try {
           FileSystem fs = path.getFileSystem(conf);
@@ -131,14 +144,19 @@ public class FSDownload implements Callable<Path> {
 
   /**
    * Returns a boolean to denote whether a cache file is visible to all (public)
-   * or not
+   * or not.
    *
+   * @param fs fileSystem.
+   * @param current current path.
+   * @param sStat file status.
+   * @param statCache stat cache.
    * @return true if the path in the current path is visible to all, false
    * otherwise
+   * @throws IOException io error occur.
    */
   @Private
   public static boolean isPublic(FileSystem fs, Path current, FileStatus sStat,
-      LoadingCache<Path,Future<FileStatus>> statCache) throws IOException {
+      LoadingCache<Path, Future<FileStatus>> statCache) throws IOException {
     current = fs.makeQualified(current);
     //the leaf level file should be readable by others
     if (!checkPublicPermsForAll(fs, sStat, FsAction.READ_EXECUTE, FsAction.READ)) {
@@ -247,99 +265,146 @@ public class FSDownload implements Callable<Path> {
     }
   }
 
-  private Path copy(Path sCopy, Path dstdir) throws IOException {
+  /**
+   * Localize files.
+   * @param destination destination directory
+   * @throws IOException cannot read or write file
+   * @throws YarnException subcommand returned an error
+   */
+  private void verifyAndCopy(Path destination)
+      throws IOException, YarnException {
+    final Path sCopy;
+    try {
+      sCopy = resource.getResource().toPath();
+    } catch (URISyntaxException e) {
+      throw new IOException("Invalid resource", e);
+    }
     FileSystem sourceFs = sCopy.getFileSystem(conf);
-    Path dCopy = new Path(dstdir, "tmp_"+sCopy.getName());
     FileStatus sStat = sourceFs.getFileStatus(sCopy);
     if (sStat.getModificationTime() != resource.getTimestamp()) {
-      throw new IOException("Resource " + sCopy +
-          " changed on src filesystem (expected " + resource.getTimestamp() +
-          ", was " + sStat.getModificationTime());
+      throw new IOException("Resource " + sCopy + " changed on src filesystem" +
+          " - expected: " +
+          "\"" + Times.formatISO8601(resource.getTimestamp()) + "\"" +
+          ", was: " +
+          "\"" + Times.formatISO8601(sStat.getModificationTime()) + "\"" +
+          ", current time: " + "\"" + Times.formatISO8601(Time.now()) + "\"");
     }
     if (resource.getVisibility() == LocalResourceVisibility.PUBLIC) {
       if (!isPublic(sourceFs, sCopy, sStat, statCache)) {
         throw new IOException("Resource " + sCopy +
-            " is not publicly accessable and as such cannot be part of the" +
+            " is not publicly accessible and as such cannot be part of the" +
             " public cache.");
       }
     }
 
-    FileUtil.copy(sourceFs, sStat, FileSystem.getLocal(conf), dCopy, false,
-        true, conf);
-    return dCopy;
+    downloadAndUnpack(sCopy, sStat, destination);
   }
 
-  private long unpack(File localrsrc, File dst) throws IOException {
-    switch (resource.getType()) {
-    case ARCHIVE: {
-      String lowerDst = StringUtils.toLowerCase(dst.getName());
-      if (lowerDst.endsWith(".jar")) {
-        RunJar.unJar(localrsrc, dst);
-      } else if (lowerDst.endsWith(".zip")) {
-        FileUtil.unZip(localrsrc, dst);
-      } else if (lowerDst.endsWith(".tar.gz") ||
-                 lowerDst.endsWith(".tgz") ||
-                 lowerDst.endsWith(".tar")) {
-        FileUtil.unTar(localrsrc, dst);
+  /**
+   * Copy source path to destination with localization rules.
+   * @param source source path to copy. Typically HDFS or an object store.
+   * @param sourceStatus status of source
+   * @param destination destination path. Typically local filesystem
+   * @exception YarnException Any error has occurred
+   */
+  private void downloadAndUnpack(Path source,
+      FileStatus sourceStatus,  Path destination)
+      throws YarnException {
+    try {
+      FileSystem sourceFileSystem = source.getFileSystem(conf);
+      FileSystem destinationFileSystem = destination.getFileSystem(conf);
+      if (sourceStatus.isDirectory()) {
+        FileUtil.copy(
+            sourceFileSystem, sourceStatus,
+            destinationFileSystem, destination, false,
+            true, conf);
       } else {
-        LOG.warn("Cannot unpack " + localrsrc);
-        if (!localrsrc.renameTo(dst)) {
-            throw new IOException("Unable to rename file: [" + localrsrc
-              + "] to [" + dst + "]");
-        }
+        unpack(source, destination, sourceFileSystem, destinationFileSystem);
       }
+    } catch (Exception e) {
+      throw new YarnException("Download and unpack failed", e);
     }
-    break;
-    case PATTERN: {
+  }
+
+  /**
+   * Do the localization action on the input stream.
+   * We use the deprecated method RunJar.unJarAndSave for compatibility reasons.
+   * We should use the more efficient RunJar.unJar in the future.
+   * @param source Source path
+   * @param destination Destination pth
+   * @param sourceFileSystem Source filesystem
+   * @param destinationFileSystem Destination filesystem
+   * @throws IOException Could not read or write stream
+   * @throws InterruptedException Operation interrupted by caller
+   * @throws ExecutionException Could not create thread pool execution
+   */
+  @SuppressWarnings("deprecation")
+  private void unpack(Path source, Path destination,
+                      FileSystem sourceFileSystem,
+                      FileSystem destinationFileSystem)
+      throws IOException, InterruptedException, ExecutionException {
+    try (InputStream inputStream = awaitFuture(
+        sourceFileSystem.openFile(source)
+            .opt(FS_OPTION_OPENFILE_READ_POLICY,
+                FS_OPTION_OPENFILE_READ_POLICY_WHOLE_FILE)
+            .build())) {
+      File dst = new File(destination.toUri());
       String lowerDst = StringUtils.toLowerCase(dst.getName());
-      if (lowerDst.endsWith(".jar")) {
-        String p = resource.getPattern();
-        RunJar.unJar(localrsrc, dst,
-            p == null ? RunJar.MATCH_ANY : Pattern.compile(p));
-        File newDst = new File(dst, dst.getName());
-        if (!dst.exists() && !dst.mkdir()) {
-          throw new IOException("Unable to create directory: [" + dst + "]");
+      switch (resource.getType()) {
+      case ARCHIVE:
+        if (lowerDst.endsWith(".jar")) {
+          RunJar.unJar(inputStream, dst, RunJar.MATCH_ANY);
+        } else if (lowerDst.endsWith(".zip")) {
+          FileUtil.unZip(inputStream, dst);
+        } else if (lowerDst.endsWith(".tar.gz") ||
+            lowerDst.endsWith(".tgz") ||
+            lowerDst.endsWith(".tar")) {
+          FileUtil.unTar(inputStream, dst, lowerDst.endsWith("gz"));
+        } else {
+          LOG.warn("Cannot unpack " + source);
+          try (OutputStream outputStream =
+                   destinationFileSystem.create(destination, true)) {
+            IOUtils.copy(inputStream, outputStream);
+          }
         }
-        if (!localrsrc.renameTo(newDst)) {
-          throw new IOException("Unable to rename file: [" + localrsrc
-              + "] to [" + newDst + "]");
+        break;
+      case PATTERN:
+        if (lowerDst.endsWith(".jar")) {
+          String p = resource.getPattern();
+          if (!dst.exists() && !dst.mkdir()) {
+            throw new IOException("Unable to create directory: [" + dst + "]");
+          }
+          RunJar.unJarAndSave(inputStream, dst, source.getName(),
+              p == null ? RunJar.MATCH_ANY : Pattern.compile(p));
+        } else if (lowerDst.endsWith(".zip")) {
+          LOG.warn("Treating [" + source + "] as an archive even though it " +
+              "was specified as PATTERN");
+          FileUtil.unZip(inputStream, dst);
+        } else if (lowerDst.endsWith(".tar.gz") ||
+            lowerDst.endsWith(".tgz") ||
+            lowerDst.endsWith(".tar")) {
+          LOG.warn("Treating [" + source + "] as an archive even though it " +
+              "was specified as PATTERN");
+          FileUtil.unTar(inputStream, dst, lowerDst.endsWith("gz"));
+        } else {
+          LOG.warn("Cannot unpack " + source);
+          try (OutputStream outputStream =
+                   destinationFileSystem.create(destination, true)) {
+            IOUtils.copy(inputStream, outputStream);
+          }
         }
-      } else if (lowerDst.endsWith(".zip")) {
-        LOG.warn("Treating [" + localrsrc + "] as an archive even though it " +
-        		"was specified as PATTERN");
-        FileUtil.unZip(localrsrc, dst);
-      } else if (lowerDst.endsWith(".tar.gz") ||
-                 lowerDst.endsWith(".tgz") ||
-                 lowerDst.endsWith(".tar")) {
-        LOG.warn("Treating [" + localrsrc + "] as an archive even though it " +
-        "was specified as PATTERN");
-        FileUtil.unTar(localrsrc, dst);
-      } else {
-        LOG.warn("Cannot unpack " + localrsrc);
-        if (!localrsrc.renameTo(dst)) {
-          throw new IOException("Unable to rename file: [" + localrsrc
-              + "] to [" + dst + "]");
+        break;
+      case FILE:
+      default:
+        try (OutputStream outputStream =
+                 destinationFileSystem.create(destination, true)) {
+          IOUtils.copy(inputStream, outputStream);
         }
+        break;
       }
+      // TODO Should calculate here before returning
+      //return FileUtil.getDU(destDir);
     }
-    break;
-    case FILE:
-    default:
-      if (!localrsrc.renameTo(dst)) {
-        throw new IOException("Unable to rename file: [" + localrsrc
-          + "] to [" + dst + "]");
-      }
-      break;
-    }
-    if(localrsrc.isFile()){
-      try {
-        files.delete(new Path(localrsrc.toString()), false);
-      } catch (IOException ignore) {
-      }
-    }
-    return 0;
-    // TODO Should calculate here before returning
-    //return FileUtil.getDU(destDir);
   }
 
   @Override
@@ -350,20 +415,31 @@ public class FSDownload implements Callable<Path> {
     } catch (URISyntaxException e) {
       throw new IOException("Invalid resource", e);
     }
-    createDir(destDirPath, cachePerms);
-    final Path dst_work = new Path(destDirPath + "_tmp");
-    createDir(dst_work, cachePerms);
-    Path dFinal = files.makeQualified(new Path(dst_work, sCopy.getName()));
+
+    LOG.debug("Starting to download {} {} {}", sCopy,
+        resource.getType(), resource.getPattern());
+
+    final Path destinationTmp = new Path(destDirPath + "_tmp");
+    createDir(destinationTmp, cachePerms);
+    Path dFinal =
+        files.makeQualified(new Path(destinationTmp, sCopy.getName()));
     try {
-      Path dTmp = null == userUgi ? files.makeQualified(copy(sCopy, dst_work))
-          : userUgi.doAs(new PrivilegedExceptionAction<Path>() {
-            public Path run() throws Exception {
-              return files.makeQualified(copy(sCopy, dst_work));
-            };
-          });
-      unpack(new File(dTmp.toUri()), new File(dFinal.toUri()));
+      if (userUgi == null) {
+        verifyAndCopy(dFinal);
+      } else {
+        userUgi.doAs(new PrivilegedExceptionAction<Void>() {
+          @Override
+          public Void run() throws Exception {
+            verifyAndCopy(dFinal);
+            return null;
+          }
+        });
+      }
       changePermissions(dFinal.getFileSystem(conf), dFinal);
-      files.rename(dst_work, destDirPath, Rename.OVERWRITE);
+      files.rename(destinationTmp, destDirPath, Rename.OVERWRITE);
+
+      LOG.debug("File has been downloaded to {} from {}",
+          new Path(destDirPath, sCopy.getName()), sCopy);
     } catch (Exception e) {
       try {
         files.delete(destDirPath, true);
@@ -372,7 +448,7 @@ public class FSDownload implements Callable<Path> {
       throw e;
     } finally {
       try {
-        files.delete(dst_work, true);
+        files.delete(destinationTmp, true);
       } catch (FileNotFoundException ignore) {
       }
       conf = null;
@@ -387,7 +463,7 @@ public class FSDownload implements Callable<Path> {
    * Change to 755 or 700 for dirs, 555 or 500 for files.
    * @param fs FileSystem
    * @param path Path to modify perms for
-   * @throws IOException
+   * @throws IOException io error occur.
    * @throws InterruptedException 
    */
   private void changePermissions(FileSystem fs, final Path path)
@@ -409,8 +485,9 @@ public class FSDownload implements Callable<Path> {
       // APPLICATION:
       perm = isDir ? PRIVATE_DIR_PERMS : PRIVATE_FILE_PERMS;
     }
-    LOG.debug("Changing permissions for path " + path
-        + " to perm " + perm);
+
+    LOG.debug("Changing permissions for path {} to perm {}", path, perm);
+
     final FsPermission fPerm = perm;
     if (null == userUgi) {
       files.setPermission(path, perm);

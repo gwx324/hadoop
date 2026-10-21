@@ -27,8 +27,12 @@ import org.apache.hadoop.io.retry.Idempotent;
 import org.apache.hadoop.yarn.api.protocolrecords.FailApplicationAttemptRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.FailApplicationAttemptResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationReportRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAttributesToNodesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAttributesToNodesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterMetricsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterMetricsResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeAttributesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeAttributesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeLabelsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodeLabelsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterNodesRequest;
@@ -39,6 +43,8 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToAttributesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToAttributesResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetQueueInfoRequest;
@@ -59,10 +65,18 @@ import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationPriorityRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationPriorityResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationTimeoutsRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationTimeoutsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAllResourceProfilesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAllResourceProfilesResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAllResourceTypeInfoRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAllResourceTypeInfoResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetResourceProfileRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetResourceProfileResponse;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
@@ -73,6 +87,7 @@ import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.YarnClusterMetrics;
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.exceptions.YARNFeatureNotEnabledException;
 
 /**
  * <p>The protocol between clients and the <code>ResourceManager</code>
@@ -97,8 +112,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * @param request request to get a new <code>ApplicationId</code>
    * @return response containing the new <code>ApplicationId</code> to be used
    * to submit an application
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    * @see #submitApplication(SubmitApplicationRequest)
    */
   @Public
@@ -142,8 +157,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * 
    * @param request request to submit a new application
    * @return (empty) response on accepting the submission
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    * @see #getNewApplication(GetNewApplicationRequest)
    */
   @Public
@@ -169,8 +184,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * @param request request to fail an attempt
    * @return <code>ResourceManager</code> returns an empty response
    *         on success and throws an exception on rejecting the request
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    * @see #getQueueUserAcls(GetQueueUserAclsInfoRequest)
    */
   @Public
@@ -195,8 +210,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * @param request request to abort a submitted application
    * @return <code>ResourceManager</code> returns an empty response
    *         on success and throws an exception on rejecting the request
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    * @see #getQueueUserAcls(GetQueueUserAclsInfoRequest) 
    */
   @Public
@@ -217,8 +232,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * 
    * @param request request for cluster metrics
    * @return cluster metrics
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Stable
@@ -237,8 +252,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * 
    * @param request request for report on all nodes
    * @return report on all nodes
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Stable
@@ -259,8 +274,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * 
    * @param request request to get queue information
    * @return queue information
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Stable
@@ -279,8 +294,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * 
    * @param request request to get queue acls for <em>current user</em>
    * @return queue acls for <em>current user</em>
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Stable
@@ -294,8 +309,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * 
    * @param request the application ID and the target queue
    * @return an empty response
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Unstable
@@ -368,7 +383,7 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * @return response the {@link ReservationId} on accepting the submission
    * @throws YarnException if the request is invalid or reservation cannot be
    *           created successfully
-   * @throws IOException
+   * @throws IOException io error occur.
    * 
    */
   @Public
@@ -402,7 +417,7 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * @return response empty on successfully updating the existing reservation
    * @throws YarnException if the request is invalid or reservation cannot be
    *           updated successfully
-   * @throws IOException
+   * @throws IOException io error occur.
    * 
    */
   @Public
@@ -424,7 +439,7 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * @return response empty on successfully deleting the existing reservation
    * @throws YarnException if the request is invalid or reservation cannot be
    *           deleted successfully
-   * @throws IOException
+   * @throws IOException io error occur.
    *
    */
   @Public
@@ -479,13 +494,13 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
 
   /**
    * <p>
-   * The interface used by client to get node to labels mappings in existing cluster
+   * The interface used by client to get node to labels mappings in existing cluster.
    * </p>
    *
-   * @param request
+   * @param request get node to labels request.
    * @return node to labels mappings
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Unstable
@@ -495,13 +510,13 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
   /**
    * <p>
    * The interface used by client to get labels to nodes mappings
-   * in existing cluster
+   * in existing cluster.
    * </p>
    *
-   * @param request
+   * @param request get label to nodes request.
    * @return labels to nodes mappings
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Unstable
@@ -515,8 +530,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    *
    * @param request to get node labels collection of this cluster
    * @return node labels collection of this cluster
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Unstable
@@ -529,8 +544,8 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * </p>
    * @param request to set priority of an application
    * @return an empty response
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Unstable
@@ -558,12 +573,128 @@ public interface ApplicationClientProtocol extends ApplicationBaseProtocol {
    * @param request request to signal a container
    * @return <code>ResourceManager</code> returns an empty response
    *         on success and throws an exception on rejecting the request
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    */
   @Public
   @Unstable
   SignalContainerResponse signalToContainer(
       SignalContainerRequest request) throws YarnException,
       IOException;
+
+  /**
+   * <p>
+   * The interface used by client to set ApplicationTimeouts of an application.
+   * The UpdateApplicationTimeoutsRequest should have timeout value with
+   * absolute time with ISO8601 format <b>yyyy-MM-dd'T'HH:mm:ss.SSSZ</b>.
+   * </p>
+   * <b>Note:</b> If application timeout value is less than or equal to current
+   * time then update application throws YarnException.
+   * @param request to set ApplicationTimeouts of an application
+   * @return a response with updated timeouts.
+   * @throws YarnException if update request has empty values or application is
+   *           in completing states.
+   * @throws IOException on IO failures
+   */
+  @Public
+  @Unstable
+  @Idempotent
+  public UpdateApplicationTimeoutsResponse updateApplicationTimeouts(
+      UpdateApplicationTimeoutsRequest request)
+      throws YarnException, IOException;
+
+  /**
+   * <p>
+   * The interface used by clients to get all the resource profiles that are
+   * available on the ResourceManager.
+   * </p>
+   * @param request request to get all the resource profiles
+   * @return Response containing a map of the profile name to Resource
+   *         capabilities
+   * @throws YARNFeatureNotEnabledException if resource-profile is disabled
+   * @throws YarnException if any error happens inside YARN
+   * @throws IOException in case of other errors
+   */
+  @Public
+  @Unstable
+  GetAllResourceProfilesResponse getResourceProfiles(
+      GetAllResourceProfilesRequest request) throws YarnException, IOException;
+
+  /**
+   * <p>
+   * The interface to get the details for a specific resource profile.
+   * </p>
+   * @param request request to get the details of a resource profile
+   * @return Response containing the details for a particular resource profile
+   * @throws YARNFeatureNotEnabledException if resource-profile is disabled
+   * @throws YarnException if any error happens inside YARN
+   * @throws IOException in case of other errors
+   */
+  @Public
+  @Unstable
+  GetResourceProfileResponse getResourceProfile(
+      GetResourceProfileRequest request) throws YarnException, IOException;
+
+  /**
+   * <p>
+   * The interface to get the details for a specific resource profile.
+   * </p>
+   * @param request request to get the details of a resource profile
+   * @return Response containing the details for a particular resource profile
+   * @throws YarnException if any error happens inside YARN
+   * @throws IOException in case of other errors
+   */
+  @Public
+  @Unstable
+  GetAllResourceTypeInfoResponse getResourceTypeInfo(
+      GetAllResourceTypeInfoRequest request) throws YarnException, IOException;
+
+  /**
+   * <p>
+   * The interface used by client to get attributes to nodes mappings
+   * available in ResourceManager.
+   * </p>
+   *
+   * @param request request to get details of attributes to nodes mapping.
+   * @return Response containing the details of attributes to nodes mappings.
+   * @throws YarnException if any error happens inside YARN
+   * @throws IOException   incase of other errors
+   */
+  @Public
+  @Unstable
+  GetAttributesToNodesResponse getAttributesToNodes(
+      GetAttributesToNodesRequest request) throws YarnException, IOException;
+
+  /**
+   * <p>
+   * The interface used by client to get node attributes available in
+   * ResourceManager.
+   * </p>
+   *
+   * @param request request to get node attributes collection of this cluster.
+   * @return Response containing node attributes collection.
+   * @throws YarnException if any error happens inside YARN.
+   * @throws IOException   incase of other errors.
+   */
+  @Public
+  @Unstable
+  GetClusterNodeAttributesResponse getClusterNodeAttributes(
+      GetClusterNodeAttributesRequest request)
+      throws YarnException, IOException;
+
+  /**
+   * <p>
+   * The interface used by client to get node to attributes mappings.
+   * in existing cluster.
+   * </p>
+   *
+   * @param request request to get nodes to attributes mapping.
+   * @return nodes to attributes mappings.
+   * @throws YarnException if any error happens inside YARN.
+   * @throws IOException io error occur.
+   */
+  @Public
+  @Unstable
+  GetNodesToAttributesResponse getNodesToAttributes(
+      GetNodesToAttributesRequest request) throws YarnException, IOException;
 }

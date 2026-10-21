@@ -27,12 +27,16 @@ import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.NodeId;
-import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
 import org.apache.hadoop.yarn.server.api.protocolrecords.LogAggregationReport;
+import org.apache.hadoop.yarn.server.api.records.AppCollectorData;
 import org.apache.hadoop.yarn.server.api.records.NodeHealthStatus;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.AuxServices;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.ContainerManager;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.ResourcePluginManager;
+import org.apache.hadoop.yarn.server.nodemanager.logaggregation.tracker.NMLogAggregationStatusTracker;
+import org.apache.hadoop.yarn.server.nodemanager.metrics.NodeManagerMetrics;
 import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService;
 import org.apache.hadoop.yarn.server.scheduler.OpportunisticContainerAllocator;
 import org.apache.hadoop.yarn.server.nodemanager.security.NMContainerTokenSecretManager;
@@ -45,15 +49,6 @@ import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
  * NodeManager.
  */
 public interface Context {
-
-  /**
-   * Interface exposing methods related to the queuing of containers in the NM.
-   */
-  interface QueuingContext {
-    ConcurrentMap<ContainerId, ContainerTokenIdentifier> getQueuedContainers();
-
-    ConcurrentMap<ContainerTokenIdentifier, String> getKilledQueuedContainers();
-  }
 
   /**
    * Return the nodeId. Usable only when the ContainerManager is started.
@@ -74,11 +69,18 @@ public interface Context {
   Map<ApplicationId, Credentials> getSystemCredentialsForApps();
 
   /**
-   * Get the registered collectors that located on this NM.
-   * @return registered collectors, or null if the timeline service v.2 is not
+   * Get the list of collectors that are registering with the RM from this node.
+   * @return registering collectors, or null if the timeline service v.2 is not
    * enabled
    */
-  Map<ApplicationId, String> getRegisteredCollectors();
+  ConcurrentMap<ApplicationId, AppCollectorData> getRegisteringCollectors();
+
+  /**
+   * Get the list of collectors registered with the RM and known by this node.
+   * @return known collectors, or null if the timeline service v.2 is not
+   * enabled.
+   */
+  ConcurrentMap<ApplicationId, AppCollectorData> getKnownCollectors();
 
   ConcurrentMap<ContainerId, Container> getContainers();
 
@@ -112,13 +114,6 @@ public interface Context {
 
   NodeStatusUpdater getNodeStatusUpdater();
 
-  /**
-   * Returns a <code>QueuingContext</code> that provides information about the
-   * number of Containers Queued as well as the number of Containers that were
-   * queued and killed.
-   */
-  QueuingContext getQueuingContext();
-
   boolean isDistributedSchedulingEnabled();
 
   OpportunisticContainerAllocator getContainerAllocator();
@@ -126,4 +121,25 @@ public interface Context {
   void setNMTimelinePublisher(NMTimelinePublisher nmMetricsPublisher);
 
   NMTimelinePublisher getNMTimelinePublisher();
+
+  NMLogAggregationStatusTracker getNMLogAggregationStatusTracker();
+
+  ContainerExecutor getContainerExecutor();
+
+  ContainerStateTransitionListener getContainerStateTransitionListener();
+
+  ResourcePluginManager getResourcePluginManager();
+
+  NodeManagerMetrics getNodeManagerMetrics();
+
+  /**
+   * Get the {@code DeletionService} associated with the NM.
+   *
+   * @return the NM {@code DeletionService}.
+   */
+  DeletionService getDeletionService();
+
+  void setAuxServices(AuxServices auxServices);
+
+  AuxServices getAuxServices();
 }

@@ -32,22 +32,25 @@ import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.MultithreadedTestUtil.RepeatingTestThread;
 import org.apache.hadoop.test.MultithreadedTestUtil.TestContext;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 
 /**
  * Stress-test for potential bugs when replication is changing
  * on blocks during a failover.
  */
+@Tag("slow")
 public class TestDNFencingWithReplication {
   static {
-    GenericTestUtils.setLogLevel(FSNamesystem.auditLog, Level.WARN);
-    GenericTestUtils.setLogLevel(Server.LOG, Level.FATAL);
-    GenericTestUtils.setLogLevel(RetryInvocationHandler.LOG, Level.FATAL);
+    GenericTestUtils.setLogLevel(FSNamesystem.AUDIT_LOG, Level.WARN);
+    GenericTestUtils.setLogLevel(Server.LOG, Level.ERROR);
+    GenericTestUtils.setLogLevel(RetryInvocationHandler.LOG, Level.ERROR);
   }
 
   private static final int NUM_THREADS = 20;
@@ -60,11 +63,14 @@ public class TestDNFencingWithReplication {
   private static class ReplicationToggler extends RepeatingTestThread {
     private final FileSystem fs;
     private final Path path;
+    private final MiniDFSCluster cluster;
 
-    public ReplicationToggler(TestContext ctx, FileSystem fs, Path p) {
+    ReplicationToggler(TestContext ctx, FileSystem fs, Path p,
+                       MiniDFSCluster cluster) {
       super(ctx);
       this.fs = fs;
       this.path = p;
+      this.cluster = cluster;
     }
 
     @Override
@@ -81,8 +87,9 @@ public class TestDNFencingWithReplication {
           @Override
           public Boolean get() {
             try {
+              cluster.waitActive();
               BlockLocation[] blocks = fs.getFileBlockLocations(path, 0, 10);
-              Assert.assertEquals(1, blocks.length);
+              assertEquals(1, blocks.length);
               return blocks[0].getHosts().length == replicas;
             } catch (IOException e) {
               throw new RuntimeException(e);
@@ -90,8 +97,8 @@ public class TestDNFencingWithReplication {
           }
         }, 100, 60000);
       } catch (TimeoutException te) {
-        throw new IOException("Timed out waiting for " + replicas + " replicas " +
-            "on path " + path);
+        throw new IOException("Timed out waiting for " + replicas +
+                " replicas on path " + path);
       }
     }
     
@@ -110,7 +117,7 @@ public class TestDNFencingWithReplication {
     harness.conf.setInt(
         DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 1);
     harness.conf.setInt(
-        DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
+        DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
 
     final MiniDFSCluster cluster = harness.startCluster();
     try {
@@ -122,7 +129,7 @@ public class TestDNFencingWithReplication {
       for (int i = 0; i < NUM_THREADS; i++) {
         Path p = new Path("/test-" + i);
         DFSTestUtil.createFile(fs, p, BLOCK_SIZE*10, (short)3, (long)i);
-        togglers.addThread(new ReplicationToggler(togglers, fs, p));
+        togglers.addThread(new ReplicationToggler(togglers, fs, p, cluster));
       }
       
       // Start a separate thread which will make sure that replication

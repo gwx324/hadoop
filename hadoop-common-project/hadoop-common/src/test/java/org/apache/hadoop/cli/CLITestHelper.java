@@ -18,22 +18,24 @@
 
 package org.apache.hadoop.cli;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.cli.util.*;
 import org.apache.hadoop.cli.util.CommandExecutor.Result;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import org.apache.hadoop.util.XMLUtils;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.xml.sax.Attributes;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import javax.xml.parsers.SAXParser;
-import javax.xml.parsers.SAXParserFactory;
 import java.io.File;
 import java.util.ArrayList;
 
@@ -41,9 +43,9 @@ import java.util.ArrayList;
  * Tests for the Command Line Interface (CLI)
  */
 public class CLITestHelper {
-  private static final Log LOG =
-    LogFactory.getLog(CLITestHelper.class.getName());
-  
+  private static final Logger LOG = LoggerFactory.getLogger(CLITestHelper
+      .class);
+
   // In this mode, it runs the command and compares the actual output
   // with the expected output  
   public static final String TESTMODE_TEST = "test"; // Run the tests
@@ -62,7 +64,6 @@ public class CLITestHelper {
   // Storage for tests read in from the config file
   protected ArrayList<CLITestData> testsFromConfigFile = null;
   protected ArrayList<ComparatorData> testComparators = null;
-  protected String thisTestCaseName = null;
   protected ComparatorData comparatorData = null;
   protected Configuration conf = null;
   protected String clitestDataDir = null;
@@ -76,14 +77,15 @@ public class CLITestHelper {
       boolean success = false;
       testConfigFile = TEST_CACHE_DATA_DIR + File.separator + testConfigFile;
       try {
-        SAXParser p = (SAXParserFactory.newInstance()).newSAXParser();
+        SAXParser p = XMLUtils.newSecureSAXParserFactory().newSAXParser();
         p.parse(testConfigFile, getConfigParser());
         success = true;
       } catch (Exception e) {
-        LOG.info("File: " + testConfigFile + " not found");
+        LOG.info("Exception while reading test config file {}:",
+            testConfigFile, e);
         success = false;
       }
-      assertTrue("Error reading test config file", success);
+      assertTrue(success, "Error reading test config file");
     }
   }
 
@@ -111,7 +113,7 @@ public class CLITestHelper {
     readTestConfigFile();
     
     conf = new Configuration();
-    conf.setBoolean(CommonConfigurationKeys.HADOOP_SECURITY_AUTHORIZATION, 
+    conf.setBoolean(CommonConfigurationKeys.HADOOP_SECURITY_AUTHORIZATION,
                     true);
 
     clitestDataDir = new File(TEST_CACHE_DATA_DIR).
@@ -260,10 +262,9 @@ public class CLITestHelper {
     	LOG.info("NONE");
     }
 
-    assertTrue("One of the tests failed. " +
-    		"See the Detailed results to identify " +
-    		"the command that failed", overallResults);
-    
+    assertTrue(overallResults, "One of the tests failed. " +
+        "See the Detailed results to identify " +
+        "the command that failed");
   }
   
   /**
@@ -297,14 +298,19 @@ public class CLITestHelper {
     
     return compareOutput;
   }
+
+  private boolean compareTextExitCode(ComparatorData compdata,
+      Result cmdResult) {
+    return compdata.getExitCode() == cmdResult.getExitCode();
+  }
   
   /***********************************
    ************* TESTS RUNNER
    *********************************/
   
   public void testAll() {
-    assertTrue("Number of tests has to be greater then zero",
-      testsFromConfigFile.size() > 0);
+    assertTrue(testsFromConfigFile.size() > 0,
+        "Number of tests has to be greater then zero");
     LOG.info("TestAll");
     // Run the tests defined in the testConf.xml config file.
     for (int index = 0; index < testsFromConfigFile.size(); index++) {
@@ -329,10 +335,17 @@ public class CLITestHelper {
         final String comptype = cd.getComparatorType();
         
         boolean compareOutput = false;
+        boolean compareExitCode = false;
         
         if (! comptype.equalsIgnoreCase("none")) {
           compareOutput = compareTestOutput(cd, cmdResult);
-          overallTCResult &= compareOutput;
+          if (cd.getExitCode() == -1) {
+            // No need to check exit code if not specified
+            compareExitCode = true;
+          } else {
+            compareExitCode = compareTextExitCode(cd, cmdResult);
+          }
+          overallTCResult &= (compareOutput & compareExitCode);
         }
         
         cd.setExitCode(cmdResult.getExitCode());
@@ -390,6 +403,7 @@ public class CLITestHelper {
         testComparators = new ArrayList<ComparatorData>();
       } else if (qName.equals("comparator")) {
         comparatorData = new ComparatorData();
+        comparatorData.setExitCode(-1);
       }
       charString = "";
     }
@@ -421,6 +435,8 @@ public class CLITestHelper {
         comparatorData.setComparatorType(charString);
       } else if (qName.equals("expected-output")) {
         comparatorData.setExpectedOutput(charString);
+      } else if (qName.equals("expected-exit-code")) {
+        comparatorData.setExitCode(Integer.valueOf(charString));
       } else if (qName.equals("test")) {
         if (!Shell.WINDOWS || runOnWindows) {
           testsFromConfigFile.add(td);

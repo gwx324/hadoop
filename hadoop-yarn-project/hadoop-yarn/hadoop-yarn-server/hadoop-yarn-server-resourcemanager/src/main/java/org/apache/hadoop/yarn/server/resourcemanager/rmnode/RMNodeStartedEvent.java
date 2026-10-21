@@ -22,19 +22,25 @@ import java.util.List;
 
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.server.api.protocolrecords.LogAggregationReport;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
+import org.apache.hadoop.yarn.server.api.records.NodeStatus;
 
 public class RMNodeStartedEvent extends RMNodeEvent {
 
+  private final NodeStatus nodeStatus;
   private List<NMContainerStatus> containerStatuses;
   private List<ApplicationId> runningApplications;
+  private List<LogAggregationReport> logAggregationReportsForApps;
 
   public RMNodeStartedEvent(NodeId nodeId,
       List<NMContainerStatus> containerReports,
-      List<ApplicationId> runningApplications) {
+      List<ApplicationId> runningApplications,
+      NodeStatus nodeStatus) {
     super(nodeId, RMNodeEventType.STARTED);
     this.containerStatuses = containerReports;
     this.runningApplications = runningApplications;
+    this.nodeStatus = nodeStatus;
   }
 
   public List<NMContainerStatus> getNMContainerStatuses() {
@@ -43,5 +49,18 @@ public class RMNodeStartedEvent extends RMNodeEvent {
   
   public List<ApplicationId> getRunningApplications() {
     return runningApplications;
+  }
+
+  public NodeStatus getNodeStatus() {
+    return nodeStatus;
+  }
+
+  public List<LogAggregationReport> getLogAggregationReportsForApps() {
+    return this.logAggregationReportsForApps;
+  }
+
+  public void setLogAggregationReportsForApps(
+      List<LogAggregationReport> logAggregationReportsForApps) {
+    this.logAggregationReportsForApps = logAggregationReportsForApps;
   }
 }

@@ -18,14 +18,14 @@
 package org.apache.hadoop.io.erasurecode.coder;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.apache.hadoop.io.erasurecode.CodecUtil;
 import org.apache.hadoop.io.erasurecode.rawcoder.RSRawErasureCoderFactory;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestHHXORErasureCoder extends TestHHErasureCoderBase {
 
-  @Before
+  @BeforeEach
   public void setup() {
     this.encoderClass = HHXORErasureEncoder.class;
     this.decoderClass = HHXORErasureDecoder.class;
@@ -50,8 +50,8 @@ public class TestHHXORErasureCoder extends TestHHErasureCoderBase {
      * This tests if the configuration items work or not.
      */
     Configuration conf = new Configuration();
-    conf.set(CommonConfigurationKeys.IO_ERASURECODE_CODEC_RS_DEFAULT_RAWCODER_KEY,
-        RSRawErasureCoderFactory.class.getCanonicalName());
+    conf.set(CodecUtil.IO_ERASURECODE_CODEC_RS_RAWCODERS_KEY,
+        RSRawErasureCoderFactory.CODER_NAME);
     prepare(conf, 10, 4, new int[]{0}, new int[0]);
 
     testCoding(true);

@@ -19,10 +19,11 @@
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
 import java.io.IOException;
-import java.util.Iterator;
 
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationConstants;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSystem;
+
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerDynamicEditException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,130 +34,121 @@ import org.slf4j.LoggerFactory;
  * reservations, but functionality wise is a sub-class of ParentQueue
  *
  */
-public class PlanQueue extends ParentQueue {
+public class PlanQueue extends AbstractManagedParentQueue {
 
   private static final Logger LOG = LoggerFactory.getLogger(PlanQueue.class);
 
   private int maxAppsForReservation;
   private int maxAppsPerUserForReservation;
-  private int userLimit;
+  private float userLimit;
   private float userLimitFactor;
-  protected CapacitySchedulerContext schedulerContext;
   private boolean showReservationsAsQueues;
 
-  public PlanQueue(CapacitySchedulerContext cs, String queueName,
+  public PlanQueue(CapacitySchedulerQueueContext queueContext, String queueName,
       CSQueue parent, CSQueue old) throws IOException {
-    super(cs, queueName, parent, old);
+    super(queueContext, queueName, parent, old);
+    super.setupQueueConfigs(queueContext.getClusterResource());
+    updateAbsoluteCapacities();
 
-    this.schedulerContext = cs;
     // Set the reservation queue attributes for the Plan
-    CapacitySchedulerConfiguration conf = cs.getConfiguration();
-    String queuePath = super.getQueuePath();
+    CapacitySchedulerConfiguration conf = queueContext.getConfiguration();
+    QueuePath queuePath = super.getQueuePathObject();
     int maxAppsForReservation = conf.getMaximumApplicationsPerQueue(queuePath);
     showReservationsAsQueues = conf.getShowReservationAsQueues(queuePath);
     if (maxAppsForReservation < 0) {
       maxAppsForReservation =
-          (int) (CapacitySchedulerConfiguration.DEFAULT_MAXIMUM_SYSTEM_APPLICATIIONS * super
+          (int) (CapacitySchedulerConfiguration.
+              DEFAULT_MAXIMUM_SYSTEM_APPLICATIIONS * super
               .getAbsoluteCapacity());
     }
-    int userLimit = conf.getUserLimit(queuePath);
-    float userLimitFactor = conf.getUserLimitFactor(queuePath);
-    int maxAppsPerUserForReservation =
-        (int) (maxAppsForReservation * (userLimit / 100.0f) * userLimitFactor);
-    updateQuotas(userLimit, userLimitFactor, maxAppsForReservation,
-        maxAppsPerUserForReservation);
+    float configuredUserLimit = conf.getUserLimit(queuePath);
+    float configuredUserLimitFactor = conf.getUserLimitFactor(queuePath);
+    int configuredMaxAppsPerUserForReservation =
+        (int) (maxAppsForReservation * (configuredUserLimit / 100.0f) *
+            configuredUserLimitFactor);
+    if (configuredUserLimitFactor == -1) {
+      configuredMaxAppsPerUserForReservation = maxAppsForReservation;
+    }
+    updateQuotas(configuredUserLimit, configuredUserLimitFactor,
+        maxAppsForReservation, configuredMaxAppsPerUserForReservation);
 
-    StringBuffer queueInfo = new StringBuffer();
+    StringBuilder queueInfo = new StringBuilder();
     queueInfo.append("Created Plan Queue: ").append(queueName)
         .append("\nwith capacity: [").append(super.getCapacity())
         .append("]\nwith max capacity: [").append(super.getMaximumCapacity())
         .append("\nwith max reservation apps: [").append(maxAppsForReservation)
         .append("]\nwith max reservation apps per user: [")
-        .append(maxAppsPerUserForReservation).append("]\nwith user limit: [")
-        .append(userLimit).append("]\nwith user limit factor: [")
-        .append(userLimitFactor).append("].");
+        .append(configuredMaxAppsPerUserForReservation)
+        .append("]\nwith user limit: [")
+        .append(configuredUserLimit).append("]\nwith user limit factor: [")
+        .append(configuredUserLimitFactor).append("].");
     LOG.info(queueInfo.toString());
   }
 
   @Override
-  public synchronized void reinitialize(CSQueue newlyParsedQueue,
+  public void reinitialize(CSQueue newlyParsedQueue,
       Resource clusterResource) throws IOException {
-    // Sanity check
-    if (!(newlyParsedQueue instanceof PlanQueue)
-        || !newlyParsedQueue.getQueuePath().equals(getQueuePath())) {
-      throw new IOException("Trying to reinitialize " + getQueuePath()
-          + " from " + newlyParsedQueue.getQueuePath());
-    }
-
-    PlanQueue newlyParsedParentQueue = (PlanQueue) newlyParsedQueue;
-
-    if (newlyParsedParentQueue.getChildQueues().size() > 0) {
-      throw new IOException(
-          "Reservable Queue should not have sub-queues in the"
-              + "configuration");
-    }
-
-    // Set new configs
-    setupQueueConfigs(clusterResource);
-
-    updateQuotas(newlyParsedParentQueue.userLimit,
-        newlyParsedParentQueue.userLimitFactor,
-        newlyParsedParentQueue.maxAppsForReservation,
-        newlyParsedParentQueue.maxAppsPerUserForReservation);
-
-    // run reinitialize on each existing queue, to trigger absolute cap
-    // recomputations
-    for (CSQueue res : this.getChildQueues()) {
-      res.reinitialize(res, clusterResource);
-    }
-    showReservationsAsQueues = newlyParsedParentQueue.showReservationsAsQueues;
-  }
-
-  synchronized void addChildQueue(CSQueue newQueue)
-      throws SchedulerDynamicEditException {
-    if (newQueue.getCapacity() > 0) {
-      throw new SchedulerDynamicEditException("Queue " + newQueue
-          + " being added has non zero capacity.");
-    }
-    boolean added = this.childQueues.add(newQueue);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("updateChildQueues (action: add queue): " + added + " "
-          + getChildQueuesToPrint());
-    }
-  }
-
-  synchronized void removeChildQueue(CSQueue remQueue)
-      throws SchedulerDynamicEditException {
-    if (remQueue.getCapacity() > 0) {
-      throw new SchedulerDynamicEditException("Queue " + remQueue
-          + " being removed has non zero capacity.");
-    }
-    Iterator<CSQueue> qiter = childQueues.iterator();
-    while (qiter.hasNext()) {
-      CSQueue cs = qiter.next();
-      if (cs.equals(remQueue)) {
-        qiter.remove();
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Removed child queue: {}", cs.getQueueName());
-        }
+    writeLock.lock();
+    try {
+      // Sanity check
+      if (!(newlyParsedQueue instanceof PlanQueue) || !newlyParsedQueue
+          .getQueuePath().equals(getQueuePath())) {
+        throw new IOException(
+            "Trying to reinitialize " + getQueuePath() + " from "
+                + newlyParsedQueue.getQueuePath());
       }
+
+      PlanQueue newlyParsedParentQueue = (PlanQueue) newlyParsedQueue;
+
+      String childQueuesError = QueueStructureChecks.checkPlanQueueChildren(
+          newlyParsedParentQueue.getChildQueues().size());
+      if (childQueuesError != null) {
+        throw new IOException(childQueuesError);
+      }
+
+      // Set new configs
+      setupQueueConfigs(clusterResource);
+
+      updateQuotas(newlyParsedParentQueue.userLimit,
+          newlyParsedParentQueue.userLimitFactor,
+          newlyParsedParentQueue.maxAppsForReservation,
+          newlyParsedParentQueue.maxAppsPerUserForReservation);
+
+      // run reinitialize on each existing queue, to trigger absolute cap
+      // recomputations
+      for (CSQueue res : this.getChildQueues()) {
+        res.reinitialize(res, clusterResource);
+      }
+      showReservationsAsQueues =
+          newlyParsedParentQueue.showReservationsAsQueues;
+    } finally {
+      writeLock.unlock();
     }
   }
 
-  protected synchronized float sumOfChildCapacities() {
-    float ret = 0;
-    for (CSQueue l : childQueues) {
-      ret += l.getCapacity();
+  public ReservationQueue initializeDefaultInternalQueue() throws IOException {
+    //initializing the "internal" default queue, for SLS compatibility
+    String defReservationId =
+        getQueueName() + ReservationConstants.DEFAULT_QUEUE_SUFFIX;
+
+    ReservationQueue resQueue = new ReservationQueue(queueContext,
+        defReservationId, this);
+    try {
+      resQueue.initializeEntitlements();
+    } catch (SchedulerDynamicEditException e) {
+      throw new IllegalStateException(e);
     }
-    return ret;
+    childQueues.add(resQueue);
+
+    return resQueue;
   }
 
-  private void updateQuotas(int userLimit, float userLimitFactor,
-      int maxAppsForReservation, int maxAppsPerUserForReservation) {
-    this.userLimit = userLimit;
-    this.userLimitFactor = userLimitFactor;
-    this.maxAppsForReservation = maxAppsForReservation;
-    this.maxAppsPerUserForReservation = maxAppsPerUserForReservation;
+  private void updateQuotas(float newUserLimit, float newUserLimitFactor,
+      int newMaxAppsForReservation, int newMaxAppsPerUserForReservation) {
+    this.userLimit = newUserLimit;
+    this.userLimitFactor = newUserLimitFactor;
+    this.maxAppsForReservation = newMaxAppsForReservation;
+    this.maxAppsPerUserForReservation = newMaxAppsPerUserForReservation;
   }
 
   /**
@@ -183,7 +175,7 @@ public class PlanQueue extends ParentQueue {
    *
    * @return userLimit
    */
-  public int getUserLimitForReservation() {
+  public float getUserLimitForReservation() {
     return userLimit;
   }
 
@@ -197,7 +189,8 @@ public class PlanQueue extends ParentQueue {
   }
 
   /**
-   * Determine whether to hide/show the ReservationQueues
+   * Determine whether to hide/show the ReservationQueues.
+   * @return true, show ReservationQueues; false, hide ReservationQueues.
    */
   public boolean showReservationsAsQueues() {
     return showReservationsAsQueues;

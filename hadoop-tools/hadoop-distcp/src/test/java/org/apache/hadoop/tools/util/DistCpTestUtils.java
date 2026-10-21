@@ -18,20 +18,22 @@
 
 package org.apache.hadoop.tools.util;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Map.Entry;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-
 import org.apache.hadoop.tools.DistCp;
 import org.apache.hadoop.util.ToolRunner;
+
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.stream.Collectors;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Utility class for DistCpTests
@@ -51,7 +53,7 @@ public class DistCpTestUtils {
       Map<String, byte[]> expectedXAttrs)
       throws Exception {
     Map<String, byte[]> xAttrs = fs.getXAttrs(path);
-    assertEquals(path.toString(), expectedXAttrs.size(), xAttrs.size());
+    assertEquals(expectedXAttrs.size(), xAttrs.size(), path.toString());
     Iterator<Entry<String, byte[]>> i = expectedXAttrs.entrySet().iterator();
     while (i.hasNext()) {
       Entry<String, byte[]> e = i.next();
@@ -79,11 +81,22 @@ public class DistCpTestUtils {
   public static void assertRunDistCp(int exitCode, String src, String dst,
       String options, Configuration conf)
       throws Exception {
+    assertRunDistCp(exitCode, src, dst,
+        options == null ? new String[0] : options.trim().split(" "), conf);
+  }
+
+  private static void assertRunDistCp(int exitCode, String src, String dst,
+      String[] options, Configuration conf)
+      throws Exception {
     DistCp distCp = new DistCp(conf, null);
-    String[] optsArr = options == null ?
-        new String[] { src, dst } :
-        new String[] { options, src, dst };
-    assertEquals(exitCode,
-        ToolRunner.run(conf, distCp, optsArr));
+    String[] optsArr = new String[options.length + 2];
+    System.arraycopy(options, 0, optsArr, 0, options.length);
+    optsArr[optsArr.length - 2] = src;
+    optsArr[optsArr.length - 1] = dst;
+
+    assertThat(ToolRunner.run(conf, distCp, optsArr))
+        .describedAs("Exit code of distcp %s",
+            Arrays.stream(optsArr).collect(Collectors.joining(" ")))
+        .isEqualTo(exitCode);
   }
 }

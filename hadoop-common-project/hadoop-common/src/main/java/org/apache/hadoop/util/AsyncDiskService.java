@@ -26,10 +26,10 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /*
  * This class is a container of multiple thread pools, each for a volume,
@@ -43,7 +43,8 @@ import org.apache.hadoop.classification.InterfaceStability;
 @InterfaceStability.Unstable
 public class AsyncDiskService {
   
-  public static final Log LOG = LogFactory.getLog(AsyncDiskService.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(AsyncDiskService.class);
   
   // ThreadPool core pool size
   private static final int CORE_THREADS_PER_VOLUME = 1;
@@ -93,6 +94,9 @@ public class AsyncDiskService {
   
   /**
    * Execute the task sometime in the future, using ThreadPools.
+   *
+   * @param root root.
+   * @param task task.
    */
   public synchronized void execute(String root, Runnable task) {
     ThreadPoolExecutor executor = executors.get(root);
@@ -122,7 +126,7 @@ public class AsyncDiskService {
    * 
    * @param milliseconds  The number of milliseconds to wait
    * @return   true if all thread pools are terminated without time limit
-   * @throws InterruptedException 
+   * @throws InterruptedException if the thread is interrupted.
    */
   public synchronized boolean awaitTermination(long milliseconds) 
       throws InterruptedException {
@@ -144,6 +148,8 @@ public class AsyncDiskService {
   
   /**
    * Shut down all ThreadPools immediately.
+   *
+   * @return Runnable List.
    */
   public synchronized List<Runnable> shutdownNow() {
     

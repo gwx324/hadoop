@@ -23,10 +23,9 @@ import java.net.InetSocketAddress;
 import java.util.Arrays;
 import java.util.Collection;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.http.HttpConfig.Policy;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.mapreduce.JobACL;
@@ -79,6 +78,10 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEventType;
 import org.apache.hadoop.mapreduce.v2.app.security.authorize.MRAMPolicyProvider;
 import org.apache.hadoop.mapreduce.v2.app.webapp.AMWebApp;
+import org.apache.hadoop.mapreduce.v2.app.webapp.AMWebServices;
+import org.apache.hadoop.mapreduce.v2.app.webapp.App;
+import org.apache.hadoop.mapreduce.v2.app.webapp.JAXBContextResolver;
+import org.apache.hadoop.mapreduce.v2.app.webapp.jsonprovider.JsonProviderFeature;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -88,8 +91,13 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
+import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
 import org.apache.hadoop.yarn.webapp.WebApp;
 import org.apache.hadoop.yarn.webapp.WebApps;
+import org.glassfish.jersey.internal.inject.AbstractBinder;
+import org.glassfish.jersey.server.ResourceConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This module is responsible for talking to the 
@@ -98,7 +106,7 @@ import org.apache.hadoop.yarn.webapp.WebApps;
  */
 public class MRClientService extends AbstractService implements ClientService {
 
-  static final Log LOG = LogFactory.getLog(MRClientService.class);
+  static final Logger LOG = LoggerFactory.getLogger(MRClientService.class);
   
   private MRClientProtocol protocolHandler;
   private Server server;
@@ -136,13 +144,20 @@ public class MRClientService extends AbstractService implements ClientService {
         server.getListenerAddress().getPort());
     LOG.info("Instantiated MRClientService at " + this.bindAddress);
     try {
-      // Explicitly disabling SSL for map reduce task as we can't allow MR users
-      // to gain access to keystore file for opening SSL listener. We can trust
-      // RM/NM to issue SSL certificates but definitely not MR-AM as it is
-      // running in user-land.
+      HttpConfig.Policy httpPolicy = conf.getBoolean(
+          MRJobConfig.MR_AM_WEBAPP_HTTPS_ENABLED,
+          MRJobConfig.DEFAULT_MR_AM_WEBAPP_HTTPS_ENABLED)
+          ? Policy.HTTPS_ONLY : Policy.HTTP_ONLY;
+      boolean needsClientAuth = conf.getBoolean(
+          MRJobConfig.MR_AM_WEBAPP_HTTPS_CLIENT_AUTH,
+          MRJobConfig.DEFAULT_MR_AM_WEBAPP_HTTPS_CLIENT_AUTH);
       webApp =
-          WebApps.$for("mapreduce", AppContext.class, appContext, "ws")
-            .withHttpPolicy(conf, Policy.HTTP_ONLY).start(new AMWebApp());
+          WebApps.$for("mapreduce", AppContext.class, appContext, "rm-ws")
+            .withHttpPolicy(conf, httpPolicy)
+            .withPortRange(conf, MRJobConfig.MR_AM_WEBAPP_PORT_RANGE)
+            .needsClientAuth(needsClientAuth)
+            .withResourceConfig(configure())
+            .start(new AMWebApp(appContext));
     } catch (Exception e) {
       LOG.error("Webapps failed to start. Ignoring for now:", e);
     }
@@ -432,5 +447,23 @@ public class MRClientService extends AbstractService implements ClientService {
 
   public WebApp getWebApp() {
     return webApp;
+  }
+
+  protected ResourceConfig configure() {
+    ResourceConfig config = new ResourceConfig();
+    config.register(new JerseyBinder());
+    config.register(AMWebServices.class);
+    config.register(GenericExceptionHandler.class);
+    config.register(JsonProviderFeature.class);
+    config.register(JAXBContextResolver.class);
+    return config;
+  }
+
+  private class JerseyBinder extends AbstractBinder {
+    @Override
+    protected void configure() {
+      bind(appContext).to(AppContext.class).named("am");
+      bind(new App(appContext)).to(App.class).named("app");
+    }
   }
 }

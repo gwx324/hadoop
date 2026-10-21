@@ -19,7 +19,13 @@
 package org.apache.hadoop.tools.rumen;
 import java.io.IOException;
 
+import java.io.OutputStream;
 import java.util.List;
+
+import com.fasterxml.jackson.core.JsonEncoding;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -27,15 +33,13 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.codehaus.jackson.JsonEncoding;
-import org.codehaus.jackson.JsonGenerator;
-import org.codehaus.jackson.JsonFactory;
-import org.codehaus.jackson.map.ObjectMapper;
 
-import org.junit.Ignore;
-import org.junit.Test;
-import static org.junit.Assert.*;
-@Ignore
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+@Disabled
 public class TestHistograms {
 
   /**
@@ -56,8 +60,8 @@ public class TestHistograms {
   public void testHistograms() throws IOException {
     final Configuration conf = new Configuration();
     final FileSystem lfs = FileSystem.getLocal(conf);
-    final Path rootInputDir = new Path(
-        System.getProperty("test.tools.input.dir", "")).makeQualified(lfs);
+    final Path rootInputDir = lfs.makeQualified(new Path(
+        System.getProperty("test.tools.input.dir", "target/input")));
     final Path rootInputFile = new Path(rootInputDir, "rumen/histogram-tests");
 
 
@@ -69,7 +73,7 @@ public class TestHistograms {
       if (fileName.startsWith("input")) {
         String testName = fileName.substring("input".length());
         Path goldFilePath = new Path(rootInputFile, "gold"+testName);
-        assertTrue("Gold file dies not exist", lfs.exists(goldFilePath));
+        assertTrue(lfs.exists(goldFilePath), "Gold file dies not exist");
         LoggedDiscreteCDF newResult = histogramFileToCDF(filePath, lfs);
         System.out.println("Testing a Histogram for " + fileName);
         FSDataInputStream goldStream = lfs.open(goldFilePath);
@@ -104,12 +108,11 @@ public class TestHistograms {
     List<Long> measurements = data.getData();
     List<Long> typeProbeData = new HistogramRawTestData().getData();
 
-    assertTrue(
+    assertTrue(measurements.getClass() == typeProbeData.getClass(),
         "The data attribute of a jackson-reconstructed HistogramRawTestData "
-            + " should be a " + typeProbeData.getClass().getName()
-            + ", like a virgin HistogramRawTestData, but it's a "
-            + measurements.getClass().getName(),
-        measurements.getClass() == typeProbeData.getClass());
+        + " should be a " + typeProbeData.getClass().getName()
+        + ", like a virgin HistogramRawTestData, but it's a "
+        + measurements.getClass().getName());
 
     for (int j = 0; j < measurements.size(); ++j) {
       hist.enter(measurements.get(j));
@@ -131,7 +134,7 @@ public class TestHistograms {
     final FileSystem lfs = FileSystem.getLocal(conf);
 
     for (String arg : args) {
-      Path filePath = new Path(arg).makeQualified(lfs);
+      Path filePath = lfs.makeQualified(new Path(arg));
       String fileName = filePath.getName();
       if (fileName.startsWith("input")) {
         LoggedDiscreteCDF newResult = histogramFileToCDF(filePath, lfs);
@@ -139,9 +142,9 @@ public class TestHistograms {
         Path goldFilePath = new Path(filePath.getParent(), "gold"+testName);
 
         ObjectMapper mapper = new ObjectMapper();
-        JsonFactory factory = mapper.getJsonFactory();
+        JsonFactory factory = mapper.getFactory();
         FSDataOutputStream ostream = lfs.create(goldFilePath, true);
-        JsonGenerator gen = factory.createJsonGenerator(ostream,
+        JsonGenerator gen = factory.createGenerator((OutputStream)ostream,
             JsonEncoding.UTF8);
         gen.useDefaultPrettyPrinter();
         

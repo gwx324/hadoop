@@ -23,8 +23,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import org.apache.hadoop.util.StringUtils;
-import org.codehaus.jackson.annotate.JsonAnySetter;
 
 // HACK ALERT!!!  This "should" have have two subclasses, which might be called
 //                LoggedMapTaskAttempt and LoggedReduceTaskAttempt, but 
@@ -636,11 +636,11 @@ public class LoggedTaskAttempt implements DeepCompare {
       String counterName) {
     counterName = canonicalizeCounterName(counterName);
 
-    for (JhCounterGroup group : counters.groups) {
-      for (JhCounter counter : group.counts) {
+    for (JhCounterGroup group : counters.getGroups()) {
+      for (JhCounter counter : group.getCounts()) {
         if (counterName
-            .equals(canonicalizeCounterName(counter.name.toString()))) {
-          thunk.set(counter.value);
+            .equals(canonicalizeCounterName(counter.getName().toString()))) {
+          thunk.set(counter.getValue());
           return;
         }
       }

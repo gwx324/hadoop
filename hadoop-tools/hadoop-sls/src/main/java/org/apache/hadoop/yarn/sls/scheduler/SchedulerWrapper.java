@@ -17,31 +17,40 @@
  */
 package org.apache.hadoop.yarn.sls.scheduler;
 
-import java.util.Set;
-
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
-import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.ContainerId;
+import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.api.records.SchedulingRequest;
+import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Allocation;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ContainerUpdates;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEvent;
+import org.apache.hadoop.yarn.sls.SLSRunner;
 
-import com.codahale.metrics.MetricRegistry;
+import java.util.List;
 
 @Private
 @Unstable
 public interface SchedulerWrapper {
+  SchedulerMetrics getSchedulerMetrics();
 
-	public MetricRegistry getMetrics();
-	public SchedulerMetrics getSchedulerMetrics();
-	public Set<String> getQueueSet();
-	public void setQueueSet(Set<String> queues);
-	public Set<String> getTrackedAppSet();
-	public void setTrackedAppSet(Set<String> apps);
-	public void addTrackedApp(ApplicationAttemptId appAttemptId,
-              String oldAppId);
-	public void removeTrackedApp(ApplicationAttemptId appAttemptId,
-                 String oldAppId);
-	public void addAMRuntime(ApplicationId appId,
-              long traceStartTimeMS, long traceEndTimeMS,
-              long simulateStartTimeMS, long simulateEndTimeMS);
+  Tracker getTracker();
 
+  String getRealQueueName(String queue) throws YarnException;
+
+  void propagatedHandle(SchedulerEvent schedulerEvent);
+
+  Allocation allocatePropagated(ApplicationAttemptId attemptId,
+      List<ResourceRequest> resourceRequests,
+      List<SchedulingRequest> schedulingRequests,
+      List<ContainerId> containerIds,
+      List<String> blacklistAdditions,
+      List<String> blacklistRemovals,
+      ContainerUpdates updateRequests);
+
+  void setSLSRunner(SLSRunner runner);
+
+  SLSRunner getSLSRunner();
 }

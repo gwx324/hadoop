@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.fs;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
@@ -26,12 +26,16 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.PeerCache;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.io.IOUtils;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestUnbuffer {
-  private static final Log LOG =
-      LogFactory.getLog(TestUnbuffer.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestUnbuffer.class.getName());
 
   /**
    * Test that calling Unbuffer closes sockets.
@@ -66,22 +70,22 @@ public class TestUnbuffer {
       // Read a byte.  This will trigger the creation of a block reader.
       stream.seek(2);
       int b = stream.read();
-      Assert.assertTrue(-1 != b);
+      assertTrue(-1 != b);
 
       // The Peer cache should start off empty.
       PeerCache cache = dfs.getClient().getClientContext().getPeerCache();
-      Assert.assertEquals(0, cache.size());
+      assertEquals(0, cache.size());
 
       // Unbuffer should clear the block reader and return the socket to the
       // cache.
       stream.unbuffer();
       stream.seek(2);
-      Assert.assertEquals(1, cache.size());
+      assertEquals(1, cache.size());
       int b2 = stream.read();
-      Assert.assertEquals(b, b2);
+      assertEquals(b, b2);
     } finally {
       if (stream != null) {
-        IOUtils.cleanup(null, stream);
+        IOUtils.cleanupWithLogger(null, stream);
       }
       if (cluster != null) {
         cluster.shutdown();
@@ -111,16 +115,42 @@ public class TestUnbuffer {
       for (int i = 0; i < NUM_OPENS; i++) {
         streams[i] = dfs.open(TEST_PATH);
         LOG.info("opening file " + i + "...");
-        Assert.assertTrue(-1 != streams[i].read());
+        assertTrue(-1 != streams[i].read());
         streams[i].unbuffer();
       }
     } finally {
       for (FSDataInputStream stream : streams) {
-        IOUtils.cleanup(null, stream);
+        IOUtils.cleanupWithLogger(null, stream);
       }
       if (cluster != null) {
         cluster.shutdown();
       }
     }
+  }
+
+  /**
+   * Test that a InputStream should throw an exception when not implementing
+   * CanUnbuffer
+   *
+   * This should throw an exception when the stream claims to have the
+   * unbuffer capability, but actually does not implement CanUnbuffer.
+   */
+  @Test
+  public void testUnbufferException() {
+    abstract class BuggyStream
+            extends FSInputStream
+            implements StreamCapabilities {
+    }
+
+    BuggyStream bs = Mockito.mock(BuggyStream.class);
+    Mockito.when(bs.hasCapability(Mockito.anyString())).thenReturn(true);
+
+    UnsupportedOperationException exception = assertThrows(UnsupportedOperationException.class,
+        () -> {
+          FSDataInputStream fs = new FSDataInputStream(bs);
+          fs.unbuffer();
+        });
+    assertTrue(exception.getMessage().
+        contains(StreamCapabilitiesPolicy.CAN_UNBUFFER_NOT_IMPLEMENTED_MESSAGE));
   }
 }

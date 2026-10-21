@@ -21,16 +21,17 @@ package org.apache.hadoop.metrics2.sink.ganglia;
 import java.io.IOException;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.configuration.SubsetConfiguration;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.configuration2.SubsetConfiguration;
 import org.apache.hadoop.metrics2.MetricsSink;
 import org.apache.hadoop.metrics2.util.Servers;
 import org.apache.hadoop.net.DNS;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This the base class for Ganglia sink classes using metrics2. Lot of the code
@@ -41,7 +42,7 @@ import org.apache.hadoop.net.DNS;
  */
 public abstract class AbstractGangliaSink implements MetricsSink {
 
-  public final Log LOG = LogFactory.getLog(this.getClass());
+  public final Logger LOG = LoggerFactory.getLogger(this.getClass());
 
   /*
    * Output of "gmetric --help" showing allowable values
@@ -77,6 +78,10 @@ public abstract class AbstractGangliaSink implements MetricsSink {
   private byte[] buffer = new byte[BUFFER_SIZE];
   private int offset;
   private boolean supportSparseMetrics = SUPPORT_SPARSE_METRICS_DEFAULT;
+
+  public List<? extends SocketAddress> getMetricsServers() {
+    return metricsServers;
+  }
 
   /**
    * Used for visiting Metrics
@@ -127,14 +132,17 @@ public abstract class AbstractGangliaSink implements MetricsSink {
             conf.getString("dfs.datanode.dns.interface", "default"),
             conf.getString("dfs.datanode.dns.nameserver", "default"));
       } catch (UnknownHostException uhe) {
-        LOG.error(uhe);
+        LOG.error(uhe.toString());
         hostName = "UNKNOWN.example.com";
       }
     }
 
     // load the gannglia servers from properties
-    metricsServers = Servers.parse(conf.getString(SERVERS_PROPERTY),
-        DEFAULT_PORT);
+    List<String> serversFromConf =
+        conf.getList(String.class, SERVERS_PROPERTY, new ArrayList<String>());
+    metricsServers =
+        Servers.parse(serversFromConf.size() > 0 ? String.join(",", serversFromConf) : null,
+            DEFAULT_PORT);
     multicastEnabled = conf.getBoolean(MULTICAST_ENABLED_PROPERTY,
             DEFAULT_MULTICAST_ENABLED);
     multicastTtl = conf.getInt(MULTICAST_TTL_PROPERTY, DEFAULT_MULTICAST_TTL);
@@ -155,7 +163,7 @@ public abstract class AbstractGangliaSink implements MetricsSink {
         datagramSocket = new DatagramSocket();
       }
     } catch (IOException e) {
-      LOG.error(e);
+      LOG.error(e.toString());
     }
 
     // see if sparseMetrics is supported. Default is false
@@ -212,7 +220,7 @@ public abstract class AbstractGangliaSink implements MetricsSink {
   /**
    * Lookup GangliaConf from cache. If not found, return default values
    *
-   * @param metricName
+   * @param metricName metricName.
    * @return looked up GangliaConf
    */
   protected GangliaConf getGangliaConfForMetric(String metricName) {
@@ -253,6 +261,7 @@ public abstract class AbstractGangliaSink implements MetricsSink {
 
   /**
    * Puts an integer into the buffer as 4 bytes, big-endian.
+   * @param i i.
    */
   protected void xdr_int(int i) {
     buffer[offset++] = (byte) ((i >> 24) & 0xff);
@@ -263,7 +272,7 @@ public abstract class AbstractGangliaSink implements MetricsSink {
 
   /**
    * Sends Ganglia Metrics to the configured hosts
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   protected void emitToGangliaHosts() throws IOException {
     try {

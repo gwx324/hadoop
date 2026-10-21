@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.mapred.gridmix;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.NullWritable;
@@ -54,7 +54,7 @@ import java.util.Random;
  */
 class LoadJob extends GridmixJob {
 
-  public static final Log LOG = LogFactory.getLog(LoadJob.class);
+  public static final Logger LOG = LoggerFactory.getLogger(LoadJob.class);
 
   public LoadJob(final Configuration conf, long submissionMillis, 
                  final JobStory jobdesc, Path outRoot, UserGroupInformation ugi,
@@ -143,7 +143,7 @@ class LoadJob extends GridmixJob {
    * This is a progress based resource usage matcher.
    */
   @SuppressWarnings("unchecked")
-  static class ResourceUsageMatcherRunner extends Thread 
+  static class ResourceUsageMatcherRunner extends Thread
   implements Progressive {
     private final ResourceUsageMatcher matcher;
     private final BoostingProgress progress;

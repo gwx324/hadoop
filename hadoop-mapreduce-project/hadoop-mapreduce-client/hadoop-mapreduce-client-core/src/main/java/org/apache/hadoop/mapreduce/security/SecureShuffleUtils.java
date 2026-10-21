@@ -23,18 +23,18 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import javax.crypto.SecretKey;
 import javax.servlet.http.HttpServletRequest;
 
 import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.io.WritableComparator;
 import org.apache.hadoop.mapreduce.security.token.JobTokenSecretManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Charsets;
 
 /**
  * 
@@ -44,7 +44,8 @@ import com.google.common.base.Charsets;
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 public class SecureShuffleUtils {
-  private static final Log LOG = LogFactory.getLog(SecureShuffleUtils.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(SecureShuffleUtils.class);
   
   public static final String HTTP_HEADER_URL_HASH = "UrlHash";
   public static final String HTTP_HEADER_REPLY_URL_HASH = "ReplyHash";
@@ -55,7 +56,7 @@ public class SecureShuffleUtils {
    */
   public static String generateHash(byte[] msg, SecretKey key) {
     return new String(Base64.encodeBase64(generateByteHash(msg, key)), 
-        Charsets.UTF_8);
+        StandardCharsets.UTF_8);
   }
   
   /**
@@ -69,12 +70,11 @@ public class SecureShuffleUtils {
   
   /**
    * verify that hash equals to HMacHash(msg)
-   * @param newHash
    * @return true if is the same
    */
   private static boolean verifyHash(byte[] hash, byte[] msg, SecretKey key) {
     byte[] msg_hash = generateByteHash(msg, key);
-    return WritableComparator.compareBytes(msg_hash, 0, msg_hash.length, hash, 0, hash.length) == 0;
+    return MessageDigest.isEqual(msg_hash, hash);
   }
   
   /**
@@ -86,7 +86,7 @@ public class SecureShuffleUtils {
    */
   public static String hashFromString(String enc_str, SecretKey key) 
   throws IOException {
-    return generateHash(enc_str.getBytes(Charsets.UTF_8), key); 
+    return generateHash(enc_str.getBytes(StandardCharsets.UTF_8), key);
   }
   
   /**
@@ -97,9 +97,9 @@ public class SecureShuffleUtils {
    */
   public static void verifyReply(String base64Hash, String msg, SecretKey key)
   throws IOException {
-    byte[] hash = Base64.decodeBase64(base64Hash.getBytes(Charsets.UTF_8));
+    byte[] hash = Base64.decodeBase64(base64Hash.getBytes(StandardCharsets.UTF_8));
     
-    boolean res = verifyHash(hash, msg.getBytes(Charsets.UTF_8), key);
+    boolean res = verifyHash(hash, msg.getBytes(StandardCharsets.UTF_8), key);
     
     if(res != true) {
       throw new IOException("Verification of the hashReply failed");
@@ -147,7 +147,7 @@ public class SecureShuffleUtils {
       for (byte b : ba) {
         ps.printf("%x", b);
       }
-      strHex = baos.toString("UTF-8");
+      strHex = new String(baos.toByteArray(), StandardCharsets.UTF_8);
     } catch (UnsupportedEncodingException e) {
     }
     return strHex;

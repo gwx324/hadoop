@@ -24,8 +24,6 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.io.DataOutputBuffer;
@@ -35,12 +33,15 @@ import org.apache.hadoop.io.compress.zlib.ZlibCompressor.CompressionLevel;
 import org.apache.hadoop.io.compress.zlib.ZlibCompressor.CompressionStrategy;
 import org.apache.hadoop.util.ReflectionUtils;
 
-import org.junit.Test;
-import static org.junit.Assert.assertTrue;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestCompressionStreamReuse {
-  private static final Log LOG = LogFactory
-      .getLog(TestCompressionStreamReuse.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestCompressionStreamReuse.class);
 
   private Configuration conf = new Configuration();
   private int count = 10000;
@@ -56,6 +57,12 @@ public class TestCompressionStreamReuse {
   public void testGzipCompressStreamReuse() throws IOException {
     resetStateTest(conf, seed, count,
         "org.apache.hadoop.io.compress.GzipCodec");
+  }
+
+  @Test
+  public void testZStandardCompressStreamReuse() throws IOException {
+    resetStateTest(conf, seed, count,
+        "org.apache.hadoop.io.compress.ZStandardCodec");
   }
 
   @Test
@@ -156,9 +163,8 @@ public class TestCompressionStreamReuse {
       RandomDatum v2 = new RandomDatum();
       k2.readFields(inflateIn);
       v2.readFields(inflateIn);
-      assertTrue(
-          "original and compressed-then-decompressed-output not equal",
-          k1.equals(k2) && v1.equals(v2));
+      assertTrue(k1.equals(k2) && v1.equals(v2),
+          "original and compressed-then-decompressed-output not equal");
     }
     LOG.info("SUCCESS! Completed checking " + count + " records");
   }

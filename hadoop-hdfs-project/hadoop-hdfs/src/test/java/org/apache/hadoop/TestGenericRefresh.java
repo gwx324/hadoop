@@ -18,10 +18,8 @@
 
 package org.apache.hadoop;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -31,11 +29,11 @@ import org.apache.hadoop.ipc.RefreshHandler;
 
 import org.apache.hadoop.ipc.RefreshRegistry;
 import org.apache.hadoop.ipc.RefreshResponse;
-import org.junit.Test;
-import org.junit.Before;
-import org.junit.After;
-import org.junit.BeforeClass;
-import org.junit.AfterClass;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.AfterAll;
 import org.mockito.Mockito;
 
 /**
@@ -51,7 +49,7 @@ public class TestGenericRefresh {
   private static RefreshHandler firstHandler;
   private static RefreshHandler secondHandler;
 
-  @BeforeClass
+  @BeforeAll
   public static void setUpBeforeClass() throws Exception {
     config = new Configuration();
     config.set("hadoop.security.authorization", "true");
@@ -61,31 +59,31 @@ public class TestGenericRefresh {
     cluster.waitActive();
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDownBeforeClass() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
     }
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     // Register Handlers, first one just sends an ok response
     firstHandler = Mockito.mock(RefreshHandler.class);
-    Mockito.stub(firstHandler.handleRefresh(Mockito.anyString(), Mockito.any(String[].class)))
-      .toReturn(RefreshResponse.successResponse());
+    Mockito.when(firstHandler.handleRefresh(Mockito.anyString(), Mockito.any(String[].class)))
+      .thenReturn(RefreshResponse.successResponse());
     RefreshRegistry.defaultRegistry().register("firstHandler", firstHandler);
 
     // Second handler has conditional response for testing args
     secondHandler = Mockito.mock(RefreshHandler.class);
-    Mockito.stub(secondHandler.handleRefresh("secondHandler", new String[]{"one", "two"}))
-      .toReturn(new RefreshResponse(3, "three"));
-    Mockito.stub(secondHandler.handleRefresh("secondHandler", new String[]{"one"}))
-      .toReturn(new RefreshResponse(2, "two"));
+    Mockito.when(secondHandler.handleRefresh("secondHandler", new String[]{"one", "two"}))
+      .thenReturn(new RefreshResponse(3, "three"));
+    Mockito.when(secondHandler.handleRefresh("secondHandler", new String[]{"one"}))
+      .thenReturn(new RefreshResponse(2, "two"));
     RefreshRegistry.defaultRegistry().register("secondHandler", secondHandler);
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     RefreshRegistry.defaultRegistry().unregisterAll("firstHandler");
     RefreshRegistry.defaultRegistry().unregisterAll("secondHandler");
@@ -96,7 +94,7 @@ public class TestGenericRefresh {
     DFSAdmin admin = new DFSAdmin(config);
     String [] args = new String[]{"-refresh", "nn"};
     int exitCode = admin.run(args);
-    assertEquals("DFSAdmin should fail due to bad args", -1, exitCode);
+    assertEquals(-1, exitCode, "DFSAdmin should fail due to bad args");
   }
 
   @Test
@@ -105,7 +103,7 @@ public class TestGenericRefresh {
     String [] args = new String[]{"-refresh", "localhost:" + 
         cluster.getNameNodePort(), "unregisteredIdentity"};
     int exitCode = admin.run(args);
-    assertEquals("DFSAdmin should fail due to no handler registered", -1, exitCode);
+    assertEquals(-1, exitCode, "DFSAdmin should fail due to no handler registered");
   }
 
   @Test
@@ -114,7 +112,7 @@ public class TestGenericRefresh {
     String[] args = new String[]{"-refresh",
         "localhost:" + cluster.getNameNodePort(), "firstHandler"};
     int exitCode = admin.run(args);
-    assertEquals("DFSAdmin should succeed", 0, exitCode);
+    assertEquals(0, exitCode, "DFSAdmin should succeed");
 
     Mockito.verify(firstHandler).handleRefresh("firstHandler", new String[]{});
     // Second handler was never called
@@ -128,11 +126,11 @@ public class TestGenericRefresh {
     String[] args = new String[]{"-refresh", "localhost:" +
         cluster.getNameNodePort(), "secondHandler", "one"};
     int exitCode = admin.run(args);
-    assertEquals("DFSAdmin should return 2", 2, exitCode);
+    assertEquals(2, exitCode, "DFSAdmin should return 2");
 
     exitCode = admin.run(new String[]{"-refresh", "localhost:" +
         cluster.getNameNodePort(), "secondHandler", "one", "two"});
-    assertEquals("DFSAdmin should now return 3", 3, exitCode);
+    assertEquals(3, exitCode, "DFSAdmin should now return 3");
 
     Mockito.verify(secondHandler).handleRefresh("secondHandler", new String[]{"one"});
     Mockito.verify(secondHandler).handleRefresh("secondHandler", new String[]{"one", "two"});
@@ -147,7 +145,7 @@ public class TestGenericRefresh {
     String[] args = new String[]{"-refresh", "localhost:" +
         cluster.getNameNodePort(), "firstHandler"};
     int exitCode = admin.run(args);
-    assertEquals("DFSAdmin should return -1", -1, exitCode);
+    assertEquals(-1, exitCode, "DFSAdmin should return -1");
   }
 
   @Test
@@ -181,12 +179,12 @@ public class TestGenericRefresh {
   public void testMultipleReturnCodeMerging() throws Exception {
     // Two handlers which return two non-zero values
     RefreshHandler handlerOne = Mockito.mock(RefreshHandler.class);
-    Mockito.stub(handlerOne.handleRefresh(Mockito.anyString(), Mockito.any(String[].class)))
-      .toReturn(new RefreshResponse(23, "Twenty Three"));
+    Mockito.when(handlerOne.handleRefresh(Mockito.anyString(), Mockito.any(String[].class)))
+      .thenReturn(new RefreshResponse(23, "Twenty Three"));
 
     RefreshHandler handlerTwo = Mockito.mock(RefreshHandler.class);
-    Mockito.stub(handlerTwo.handleRefresh(Mockito.anyString(), Mockito.any(String[].class)))
-      .toReturn(new RefreshResponse(10, "Ten"));
+    Mockito.when(handlerTwo.handleRefresh(Mockito.anyString(), Mockito.any(String[].class)))
+      .thenReturn(new RefreshResponse(10, "Ten"));
 
     // Then registered to the same ID
     RefreshRegistry.defaultRegistry().register("shared", handlerOne);
@@ -210,12 +208,12 @@ public class TestGenericRefresh {
   public void testExceptionResultsInNormalError() throws Exception {
     // In this test, we ensure that all handlers are called even if we throw an exception in one
     RefreshHandler exceptionalHandler = Mockito.mock(RefreshHandler.class);
-    Mockito.stub(exceptionalHandler.handleRefresh(Mockito.anyString(), Mockito.any(String[].class)))
-      .toThrow(new RuntimeException("Exceptional Handler Throws Exception"));
+    Mockito.when(exceptionalHandler.handleRefresh(Mockito.anyString(), Mockito.any(String[].class)))
+      .thenThrow(new RuntimeException("Exceptional Handler Throws Exception"));
 
     RefreshHandler otherExceptionalHandler = Mockito.mock(RefreshHandler.class);
-    Mockito.stub(otherExceptionalHandler.handleRefresh(Mockito.anyString(), Mockito.any(String[].class)))
-      .toThrow(new RuntimeException("More Exceptions"));
+    Mockito.when(otherExceptionalHandler.handleRefresh(Mockito.anyString(), Mockito.any(String[].class)))
+      .thenThrow(new RuntimeException("More Exceptions"));
 
     RefreshRegistry.defaultRegistry().register("exceptional", exceptionalHandler);
     RefreshRegistry.defaultRegistry().register("exceptional", otherExceptionalHandler);

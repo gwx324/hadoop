@@ -18,7 +18,7 @@
 
 ## Paths and Path Elements
 
-A Path is a list of Path elements which represents a path to a file, directory of symbolic link
+A Path is a list of Path elements which represents a path to a file, directory or symbolic link
 
 Path elements are non-empty strings. The exact set of valid strings MAY
 be specific to a particular FileSystem implementation.
@@ -108,21 +108,21 @@ such as `rename`.
 ## Defining the Filesystem
 
 
-A filesystem `FS` contains a set of directories, a dictionary of paths and a dictionary of symbolic links
+A filesystem `FS` contains directories (a set of paths), files (a mapping of a path to a list of bytes) and symlinks (a set of paths mapping to paths)
 
-    (Directories:Set[Path], Files:[Path:List[byte]], Symlinks:Set[Path])
+    (Directories:Set[Path], Files:Map[Path:List[byte]], Symlinks:Map[Path:Path])
 
 
 Accessor functions return the specific element of a filesystem
 
-    def FS.Directories  = FS.Directories
+    def directories(FS)  = FS.Directories
     def files(FS) = FS.Files
-    def symlinks(FS) = FS.Symlinks
+    def symlinks(FS) = keys(FS.Symlinks)
     def filenames(FS) = keys(FS.Files)
 
 The entire set of a paths finite subset of all possible Paths, and functions to resolve a path to data, a directory predicate or a symbolic link:
 
-    def paths(FS) = FS.Directories + filenames(FS) + FS.Symlinks)
+    def paths(FS) = FS.Directories + filenames(FS) + symlinks(FS)
 
 A path is deemed to exist if it is in this aggregate set:
 
@@ -169,19 +169,19 @@ in a set, hence no children with duplicate names.
 A path *D* is a descendant of a path *P* if it is the direct child of the
 path *P* or an ancestor is a direct child of path *P*:
 
-    def isDescendant(P, D) = parent(D) == P where isDescendant(P, parent(D))
+    def isDescendant(P, D) = parent(D) == P or isDescendant(P, parent(D))
 
 The descendants of a directory P are all paths in the filesystem whose
-path begins with the path P -that is their parent is P or an ancestor is P
+path begins with the path P, i.e. their parent is P or an ancestor is P
 
     def descendants(FS, D) = {p for p in paths(FS) where isDescendant(D, p)}
 
 
 ### File references
 
-A path MAY refer to a file; that it it has data in the filesystem; its path is a key in the data dictionary
+A path MAY refer to a file that has data in the filesystem; its path is a key in the data dictionary
 
-    def isFile(FS, p) =  p in FS.Files
+    def isFile(FS, p) =  p in keys(FS.Files)
 
 
 ### Symbolic references
@@ -192,6 +192,10 @@ A path MAY refer to a symbolic link:
 
 
 ### File Length
+
+Files store data:
+
+    def data(FS, p) = files(FS)[p]
 
 The length of a path p in a filesystem FS is the length of the data stored, or 0 if it is a directory:
 
@@ -206,7 +210,8 @@ process working with the filesystem:
 
 The function `getHomeDirectory` returns the home directory for the Filesystem and the current user account.
 For some FileSystems, the path is `["/","users", System.getProperty("user-name")]`. However,
-for HDFS,
+for HDFS, the username is derived from the credentials used to authenticate the client with HDFS.
+This may differ from the local user account name.
 
 
 ### Exclusivity
@@ -214,9 +219,9 @@ for HDFS,
 A path cannot refer to more than one of a file, a directory or a symbolic link
 
 
-    FS.Directories  ^ keys(data(FS)) == {}
-    FS.Directories  ^ symlinks(FS) == {}
-    keys(data(FS))(FS) ^ symlinks(FS) == {}
+    directories(FS) ^ filenames(FS) == {}
+    directories(FS) ^ symlinks(FS) == {}
+    filenames(FS) ^ symlinks(FS) == {}
 
 
 This implies that only files may have data.
@@ -247,7 +252,7 @@ For all files in an encrypted zone, the data is encrypted, but the encryption
 type and specification are not defined.
 
     forall f in files(FS) where inEncyptionZone(FS, f):
-      isEncrypted(data(f))
+      isEncrypted(data(FS, f))
 
 
 ## Notes

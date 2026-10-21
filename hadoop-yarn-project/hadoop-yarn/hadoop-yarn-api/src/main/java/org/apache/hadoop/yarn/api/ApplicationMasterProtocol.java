@@ -55,27 +55,32 @@ public interface ApplicationMasterProtocol {
    * The interface used by a new <code>ApplicationMaster</code> to register with
    * the <code>ResourceManager</code>.
    * </p>
-   * 
+   *
    * <p>
    * The <code>ApplicationMaster</code> needs to provide details such as RPC
    * Port, HTTP tracking url etc. as specified in
    * {@link RegisterApplicationMasterRequest}.
    * </p>
-   * 
+   *
    * <p>
    * The <code>ResourceManager</code> responds with critical details such as
    * maximum resource capabilities in the cluster as specified in
    * {@link RegisterApplicationMasterResponse}.
    * </p>
-   * 
-   * @param request
-   *          registration request
-   * @return registration respose
-   * @throws YarnException
-   * @throws IOException
-   * @throws InvalidApplicationMasterRequestException
-   *           The exception is thrown when an ApplicationMaster tries to
-   *           register more then once.
+   *
+   * <p>
+   * Re-register is only allowed for <code>Unmanaged Application Master</code>
+   * (UAM) HA, with
+   * {@link org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext#getKeepContainersAcrossApplicationAttempts()}
+   * set to true.
+   * </p>
+   *
+   * @param request registration request
+   * @return registration response
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
+   * @throws InvalidApplicationMasterRequestException The exception is thrown
+   *           when an ApplicationMaster tries to register more then once.
    * @see RegisterApplicationMasterRequest
    * @see RegisterApplicationMasterResponse
    */
@@ -99,8 +104,8 @@ public interface ApplicationMasterProtocol {
    * 
    * @param request completion request
    * @return completion response
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    * @see FinishApplicationMasterRequest
    * @see FinishApplicationMasterResponse
    */
@@ -149,8 +154,8 @@ public interface ApplicationMasterProtocol {
    * @param request
    *          allocation request
    * @return allocation response
-   * @throws YarnException
-   * @throws IOException
+   * @throws YarnException exceptions from yarn servers.
+   * @throws IOException io error occur.
    * @throws InvalidApplicationMasterRequestException
    *           This exception is thrown when an ApplicationMaster calls allocate
    *           without registering first.

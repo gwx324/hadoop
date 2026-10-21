@@ -23,6 +23,9 @@ import java.lang.reflect.UndeclaredThrowableException;
 import java.security.AccessControlException;
 import java.security.PrivilegedExceptionAction;
 
+import javax.inject.Inject;
+import javax.inject.Singleton;
+import javax.inject.Named;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.Consumes;
@@ -38,7 +41,9 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
 
+import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.mapreduce.JobACL;
+import org.apache.hadoop.mapreduce.JobID;
 import org.apache.hadoop.mapreduce.v2.api.protocolrecords.KillTaskAttemptRequest;
 import org.apache.hadoop.mapreduce.v2.api.protocolrecords.KillTaskAttemptResponse;
 import org.apache.hadoop.mapreduce.v2.api.protocolrecords.impl.pb.KillTaskAttemptRequestPBImpl;
@@ -64,6 +69,7 @@ import org.apache.hadoop.mapreduce.v2.app.webapp.dao.JobTaskAttemptCounterInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.JobTaskAttemptState;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.JobTaskCounterInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.JobsInfo;
+import org.apache.hadoop.mapreduce.v2.app.webapp.dao.MapTaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.ReduceTaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.TaskAttemptInfo;
 import org.apache.hadoop.mapreduce.v2.app.webapp.dao.TaskAttemptsInfo;
@@ -76,19 +82,21 @@ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.webapp.BadRequestException;
 import org.apache.hadoop.yarn.webapp.NotFoundException;
 
-import com.google.common.base.Preconditions;
-import com.google.inject.Inject;
+import org.apache.hadoop.util.Preconditions;
 
+
+@Singleton
 @Path("/ws/v1/mapreduce")
 public class AMWebServices {
   private final AppContext appCtx;
   private final App app;
   private final MRClientService service;
 
-  private @Context HttpServletResponse response;
+  @Context
+  private HttpServletResponse response;
   
   @Inject
-  public AMWebServices(final App app, final AppContext context) {
+  public AMWebServices(final @Named("app") App app, final @Named("am") AppContext context) {
     this.appCtx = context;
     this.app = app;
     this.service = new MRClientService(context);
@@ -111,9 +119,17 @@ public class AMWebServices {
     response.setContentType(null);
   }
 
-  /**
-   * convert a job id string to an actual job and handle all the error checking.
-   */
+  public static Job getJobFromContainerIdString(String cid, AppContext appCtx)
+      throws NotFoundException {
+    //example container_e06_1724414851587_0004_01_000001
+    String[] parts = cid.split("_");
+    return getJobFromJobIdString(JobID.JOB + "_" + parts[2] + "_" + parts[3], appCtx);
+  }
+
+
+    /**
+     * convert a job id string to an actual job and handle all the error checking.
+     */
  public static Job getJobFromJobIdString(String jid, AppContext appCtx) throws NotFoundException {
     JobId jobId;
     Job job;
@@ -221,14 +237,16 @@ public class AMWebServices {
   }
 
   @GET
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public AppInfo get() {
     return getAppInfo();
   }
 
   @GET
   @Path("/info")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public AppInfo getAppInfo() {
     init();
     return new AppInfo(this.app, this.app.context);
@@ -236,7 +254,8 @@ public class AMWebServices {
   
   @GET
   @Path("/blacklistednodes")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public BlacklistedNodesInfo getBlacklistedNodes() {
     init();
     return new BlacklistedNodesInfo(this.app.context);
@@ -244,7 +263,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public JobsInfo getJobs(@Context HttpServletRequest hsr) {
     init();
     JobsInfo allJobs = new JobsInfo();
@@ -261,7 +281,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs/{jobid}")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public JobInfo getJob(@Context HttpServletRequest hsr,
       @PathParam("jobid") String jid) {
     init();
@@ -271,7 +292,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs/{jobid}/jobattempts")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public AMAttemptsInfo getJobAttempts(@PathParam("jobid") String jid) {
     init();
     Job job = getJobFromJobIdString(jid, appCtx);
@@ -286,7 +308,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs/{jobid}/counters")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public JobCounterInfo getJobCounters(@Context HttpServletRequest hsr,
       @PathParam("jobid") String jid) {
     init();
@@ -297,7 +320,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs/{jobid}/conf")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public ConfInfo getJobConf(@Context HttpServletRequest hsr,
       @PathParam("jobid") String jid) {
 
@@ -316,7 +340,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs/{jobid}/tasks")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public TasksInfo getJobTasks(@Context HttpServletRequest hsr,
       @PathParam("jobid") String jid, @QueryParam("type") String type) {
 
@@ -343,7 +368,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs/{jobid}/tasks/{taskid}")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public TaskInfo getJobTask(@Context HttpServletRequest hsr,
       @PathParam("jobid") String jid, @PathParam("taskid") String tid) {
 
@@ -356,7 +382,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs/{jobid}/tasks/{taskid}/counters")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public JobTaskCounterInfo getSingleTaskCounters(
       @Context HttpServletRequest hsr, @PathParam("jobid") String jid,
       @PathParam("taskid") String tid) {
@@ -370,7 +397,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs/{jobid}/tasks/{taskid}/attempts")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public TaskAttemptsInfo getJobTaskAttempts(@Context HttpServletRequest hsr,
       @PathParam("jobid") String jid, @PathParam("taskid") String tid) {
 
@@ -383,9 +411,9 @@ public class AMWebServices {
     for (TaskAttempt ta : task.getAttempts().values()) {
       if (ta != null) {
         if (task.getType() == TaskType.REDUCE) {
-          attempts.add(new ReduceTaskAttemptInfo(ta, task.getType()));
+          attempts.add(new ReduceTaskAttemptInfo(ta));
         } else {
-          attempts.add(new TaskAttemptInfo(ta, task.getType(), true));
+          attempts.add(new MapTaskAttemptInfo(ta, true));
         }
       }
     }
@@ -394,7 +422,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs/{jobid}/tasks/{taskid}/attempts/{attemptid}")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public TaskAttemptInfo getJobTaskAttemptId(@Context HttpServletRequest hsr,
       @PathParam("jobid") String jid, @PathParam("taskid") String tid,
       @PathParam("attemptid") String attId) {
@@ -405,15 +434,16 @@ public class AMWebServices {
     Task task = getTaskFromTaskIdString(tid, job);
     TaskAttempt ta = getTaskAttemptFromTaskAttemptString(attId, task);
     if (task.getType() == TaskType.REDUCE) {
-      return new ReduceTaskAttemptInfo(ta, task.getType());
+      return new ReduceTaskAttemptInfo(ta);
     } else {
-      return new TaskAttemptInfo(ta, task.getType(), true);
+      return new MapTaskAttemptInfo(ta, true);
     }
   }
 
   @GET
   @Path("/jobs/{jobid}/tasks/{taskid}/attempts/{attemptid}/state")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public JobTaskAttemptState getJobTaskAttemptState(
       @Context HttpServletRequest hsr,
       @PathParam("jobid") String jid, @PathParam("taskid") String tid,
@@ -429,7 +459,8 @@ public class AMWebServices {
 
   @PUT
   @Path("/jobs/{jobid}/tasks/{taskid}/attempts/{attemptid}/state")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   @Consumes({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
   public Response updateJobTaskAttemptState(JobTaskAttemptState targetState,
       @Context HttpServletRequest hsr, @PathParam("jobid") String jid,
@@ -466,7 +497,8 @@ public class AMWebServices {
 
   @GET
   @Path("/jobs/{jobid}/tasks/{taskid}/attempts/{attemptid}/counters")
-  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public JobTaskAttemptCounterInfo getJobTaskAttemptIdCounters(
       @Context HttpServletRequest hsr, @PathParam("jobid") String jid,
       @PathParam("taskid") String tid, @PathParam("attemptid") String attId) {

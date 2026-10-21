@@ -18,7 +18,8 @@
 
 package org.apache.hadoop.security;
 
-import com.google.protobuf.ByteString;
+import org.apache.hadoop.ipc.internal.ShadedProtobufHelper;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
 
 import java.io.BufferedInputStream;
 import java.io.DataInput;
@@ -26,18 +27,16 @@ import java.io.DataInputStream;
 import java.io.DataOutput;
 import java.io.DataOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -52,15 +51,40 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.security.proto.SecurityProtos.CredentialsKVProto;
 import org.apache.hadoop.security.proto.SecurityProtos.CredentialsProto;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A class that provides the facilities of reading and writing
  * secret keys and Tokens.
  */
-@InterfaceAudience.LimitedPrivate({"HDFS", "MapReduce"})
+@InterfaceAudience.Public
 @InterfaceStability.Evolving
 public class Credentials implements Writable {
-  private static final Log LOG = LogFactory.getLog(Credentials.class);
+
+  public enum SerializedFormat {
+    WRITABLE((byte) 0x00),
+    PROTOBUF((byte) 0x01);
+
+    // Caching to avoid reconstructing the array each time.
+    private static final SerializedFormat[] FORMATS = values();
+
+    final byte value;
+
+    SerializedFormat(byte val) {
+      this.value = val;
+    }
+
+    public static SerializedFormat valueOf(int val) {
+      try {
+        return FORMATS[val];
+      } catch (ArrayIndexOutOfBoundsException e) {
+        throw new IllegalArgumentException("Unknown credential format: " + val);
+      }
+    }
+  }
+
+  private static final Logger LOG = LoggerFactory.getLogger(Credentials.class);
 
   private  Map<Text, byte[]> secretKeysMap = new HashMap<Text, byte[]>();
   private  Map<Text, Token<? extends TokenIdentifier>> tokenMap =
@@ -104,12 +128,8 @@ public class Credentials implements Writable {
       for (Map.Entry<Text, Token<? extends TokenIdentifier>> e :
           tokenMap.entrySet()) {
         Token<? extends TokenIdentifier> token = e.getValue();
-        if (token instanceof Token.PrivateToken &&
-            ((Token.PrivateToken) token).getPublicService().equals(alias)) {
-          Token<? extends TokenIdentifier> privateToken =
-              new Token.PrivateToken<>(t);
-          privateToken.setService(token.getService());
-          tokensToAdd.put(e.getKey(), privateToken);
+        if (token.isPrivateCloneOf(alias)) {
+          tokensToAdd.put(e.getKey(), t.privateClone(token.getService()));
         }
       }
       tokenMap.putAll(tokensToAdd);
@@ -117,10 +137,29 @@ public class Credentials implements Writable {
   }
 
   /**
+   * Remove a token from the storage (in memory).
+   * @param alias the alias for the key
+   */
+  public void removeToken(Text alias) {
+    tokenMap.remove(alias);
+  }
+
+  /**
    * Return all the tokens in the in-memory map.
+   *
+   * @return all the tokens in the in-memory map.
    */
   public Collection<Token<? extends TokenIdentifier>> getAllTokens() {
     return tokenMap.values();
+  }
+
+  /**
+   * Returns an unmodifiable version of the full map of aliases to Tokens.
+   *
+   * @return TokenMap.
+   */
+  public Map<Text, Token<? extends TokenIdentifier>> getTokenMap() {
+    return Collections.unmodifiableMap(tokenMap);
   }
 
   /**
@@ -165,6 +204,8 @@ public class Credentials implements Writable {
 
   /**
    * Return all the secret key entries in the in-memory map.
+   *
+   * @return Text List.
    */
   public List<Text> getAllSecretKeys() {
     List<Text> list = new java.util.ArrayList<Text>();
@@ -174,10 +215,20 @@ public class Credentials implements Writable {
   }
 
   /**
+   * Returns an unmodifiable version of the full map of aliases to secret keys.
+   *
+   * @return SecretKeyMap.
+   */
+  public Map<Text, byte[]> getSecretKeyMap() {
+    return Collections.unmodifiableMap(secretKeysMap);
+  }
+
+  /**
    * Convenience method for reading a token storage file and loading its Tokens.
-   * @param filename
-   * @param conf
-   * @throws IOException
+   * @param filename filename.
+   * @param conf configuration.
+   * @throws IOException  raised on errors performing I/O.
+   * @return Credentials.
    */
   public static Credentials readTokenStorageFile(Path filename,
                                                  Configuration conf)
@@ -190,17 +241,19 @@ public class Credentials implements Writable {
       in.close();
       return credentials;
     } catch(IOException ioe) {
-      throw new IOException("Exception reading " + filename, ioe);
+      throw IOUtils.wrapException(filename.toString(), "Credentials"
+          + ".readTokenStorageFile", ioe);
     } finally {
-      IOUtils.cleanup(LOG, in);
+      IOUtils.cleanupWithLogger(LOG, in);
     }
   }
 
   /**
    * Convenience method for reading a token storage file and loading its Tokens.
-   * @param filename
-   * @param conf
-   * @throws IOException
+   * @param filename filename.
+   * @param conf configuration.
+   * @throws IOException raised on errors performing I/O.
+   * @return Token.
    */
   public static Credentials readTokenStorageFile(File filename,
                                                  Configuration conf)
@@ -209,18 +262,21 @@ public class Credentials implements Writable {
     Credentials credentials = new Credentials();
     try {
       in = new DataInputStream(new BufferedInputStream(
-          new FileInputStream(filename)));
+          Files.newInputStream(filename.toPath())));
       credentials.readTokenStorageStream(in);
       return credentials;
     } catch(IOException ioe) {
       throw new IOException("Exception reading " + filename, ioe);
     } finally {
-      IOUtils.cleanup(LOG, in);
+      IOUtils.cleanupWithLogger(LOG, in);
     }
   }
 
   /**
    * Convenience method for reading a token from a DataInputStream.
+   *
+   * @param in DataInputStream.
+   * @throws IOException raised on errors performing I/O.
    */
   public void readTokenStorageStream(DataInputStream in) throws IOException {
     byte[] magic = new byte[TOKEN_STORAGE_MAGIC.length];
@@ -228,69 +284,80 @@ public class Credentials implements Writable {
     if (!Arrays.equals(magic, TOKEN_STORAGE_MAGIC)) {
       throw new IOException("Bad header found in token storage.");
     }
-    byte version = in.readByte();
-    if (version != TOKEN_STORAGE_VERSION &&
-        version != OLD_TOKEN_STORAGE_VERSION) {
-      throw new IOException("Unknown version " + version +
-                            " in token storage.");
+    SerializedFormat format;
+    try {
+      format = SerializedFormat.valueOf(in.readByte());
+    } catch (IllegalArgumentException e) {
+      throw new IOException(e);
     }
-    if (version == OLD_TOKEN_STORAGE_VERSION) {
+    switch (format) {
+    case WRITABLE:
       readFields(in);
-    } else if (version == TOKEN_STORAGE_VERSION) {
+      break;
+    case PROTOBUF:
       readProto(in);
+      break;
+    default:
+      throw new IOException("Unsupported format " + format);
     }
   }
 
   private static final byte[] TOKEN_STORAGE_MAGIC =
       "HDTS".getBytes(StandardCharsets.UTF_8);
-  private static final byte TOKEN_STORAGE_VERSION = 1;
-
-  /**
-   *  For backward compatibility.
-   */
-  private static final byte OLD_TOKEN_STORAGE_VERSION = 0;
-
 
   public void writeTokenStorageToStream(DataOutputStream os)
       throws IOException {
+    // by default store in the oldest supported format for compatibility
+    writeTokenStorageToStream(os, SerializedFormat.WRITABLE);
+  }
+
+  public void writeTokenStorageToStream(DataOutputStream os,
+      SerializedFormat format) throws IOException {
+    switch (format) {
+    case WRITABLE:
+      writeWritableOutputStream(os);
+      break;
+    case PROTOBUF:
+      writeProtobufOutputStream(os);
+      break;
+    default:
+      throw new IllegalArgumentException("Unsupported serialized format: "
+          + format);
+    }
+  }
+
+  private void writeWritableOutputStream(DataOutputStream os)
+      throws IOException {
     os.write(TOKEN_STORAGE_MAGIC);
-    os.write(TOKEN_STORAGE_VERSION);
+    os.write(SerializedFormat.WRITABLE.value);
+    write(os);
+  }
+
+  private void writeProtobufOutputStream(DataOutputStream os)
+      throws IOException {
+    os.write(TOKEN_STORAGE_MAGIC);
+    os.write(SerializedFormat.PROTOBUF.value);
     writeProto(os);
   }
 
   public void writeTokenStorageFile(Path filename,
                                     Configuration conf) throws IOException {
-    FSDataOutputStream os = filename.getFileSystem(conf).create(filename);
-    writeTokenStorageToStream(os);
-    os.close();
+    // by default store in the oldest supported format for compatibility
+    writeTokenStorageFile(filename, conf, SerializedFormat.WRITABLE);
   }
 
-  /**
-   *  For backward compatibility.
-   */
-  public void writeLegacyTokenStorageLocalFile(File f) throws IOException {
-    writeLegacyOutputStream(new DataOutputStream(new FileOutputStream(f)));
-  }
-
-  /**
-   *  For backward compatibility.
-   */
-  public void writeLegacyTokenStorageFile(Path filename, Configuration conf)
-      throws IOException {
-    writeLegacyOutputStream(filename.getFileSystem(conf).create(filename));
-  }
-
-  private void writeLegacyOutputStream(DataOutputStream os) throws IOException {
-    os.write(TOKEN_STORAGE_MAGIC);
-    os.write(OLD_TOKEN_STORAGE_VERSION);
-    write(os);
-    os.close();
+  public void writeTokenStorageFile(Path filename, Configuration conf,
+      SerializedFormat format) throws IOException {
+    try (FSDataOutputStream os =
+             filename.getFileSystem(conf).create(filename)) {
+      writeTokenStorageToStream(os, format);
+    }
   }
 
   /**
    * Stores all the keys to DataOutput.
-   * @param out
-   * @throws IOException
+   * @param out DataOutput.
+   * @throws IOException raised on errors performing I/O.
    */
   @Override
   public void write(DataOutput out) throws IOException {
@@ -316,14 +383,14 @@ public class Credentials implements Writable {
    * @param out
    * @throws IOException
    */
-  public void writeProto(DataOutput out) throws IOException {
+  void writeProto(DataOutput out) throws IOException {
     CredentialsProto.Builder storage = CredentialsProto.newBuilder();
     for (Map.Entry<Text, Token<? extends TokenIdentifier>> e :
                                                          tokenMap.entrySet()) {
       CredentialsKVProto.Builder kv = CredentialsKVProto.newBuilder().
           setAliasBytes(ByteString.copyFrom(
               e.getKey().getBytes(), 0, e.getKey().getLength())).
-          setToken(e.getValue().toTokenProto());
+          setToken(ShadedProtobufHelper.protoFromToken(e.getValue()));
       storage.addTokens(kv.build());
     }
 
@@ -341,11 +408,11 @@ public class Credentials implements Writable {
    * Populates keys/values from proto buffer storage.
    * @param in - stream ready to read a serialized proto buffer message
    */
-  public void readProto(DataInput in) throws IOException {
+  void readProto(DataInput in) throws IOException {
     CredentialsProto storage = CredentialsProto.parseDelimitedFrom((DataInputStream)in);
     for (CredentialsKVProto kv : storage.getTokensList()) {
       addToken(new Text(kv.getAliasBytes().toByteArray()),
-               (Token<? extends TokenIdentifier>) new Token(kv.getToken()));
+          ShadedProtobufHelper.tokenFromProto(kv.getToken()));
     }
     for (CredentialsKVProto kv : storage.getSecretsList()) {
       addSecretKey(new Text(kv.getAliasBytes().toByteArray()),
@@ -355,8 +422,8 @@ public class Credentials implements Writable {
 
   /**
    * Loads all the keys.
-   * @param in
-   * @throws IOException
+   * @param in DataInput.
+   * @throws IOException raised on errors performing I/O.
    */
   @Override
   public void readFields(DataInput in) throws IOException {

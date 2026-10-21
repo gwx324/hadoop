@@ -17,18 +17,17 @@
  */
 package org.apache.hadoop.mapred;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.util.Iterator;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -43,9 +42,11 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.v2.MiniMRYarnCluster;
 import org.apache.hadoop.util.Shell;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Class to test mapred task's 
@@ -53,8 +54,8 @@ import org.junit.Test;
  *   - child env
  */
 public class TestMiniMRChildTask {
-  private static final Log LOG =
-    LogFactory.getLog(TestMiniMRChildTask.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestMiniMRChildTask.class);
 
   private final static String OLD_CONFIGS = "test.old.configs";
   private final static String TASK_OPTS_VAL = "-Xmx200m";
@@ -75,8 +76,8 @@ public class TestMiniMRChildTask {
     }
   }
 
-  private static Path TEST_ROOT_DIR = new Path("target",
-      TestMiniMRChildTask.class.getName() + "-tmpDir").makeQualified(localFs);
+  private static Path TEST_ROOT_DIR = localFs.makeQualified(
+      new Path("target", TestMiniMRChildTask.class.getName() + "-tmpDir"));
   static Path APP_JAR = new Path(TEST_ROOT_DIR, "MRAppJar.jar");
 
   /**
@@ -169,18 +170,18 @@ public class TestMiniMRChildTask {
       boolean oldConfigs = job.getBoolean(OLD_CONFIGS, false);
       if (oldConfigs) {
         String javaOpts = job.get(JobConf.MAPRED_TASK_JAVA_OPTS);
-        assertNotNull(JobConf.MAPRED_TASK_JAVA_OPTS + " is null!", 
-                      javaOpts);
-        assertEquals(JobConf.MAPRED_TASK_JAVA_OPTS + " has value of: " + 
-                     javaOpts, 
-                     javaOpts, TASK_OPTS_VAL);
+        assertNotNull(javaOpts,
+            JobConf.MAPRED_TASK_JAVA_OPTS + " is null!");
+        assertThat(javaOpts)
+            .withFailMessage(JobConf.MAPRED_TASK_JAVA_OPTS + " has value of: "
+                + javaOpts)
+            .isEqualTo(TASK_OPTS_VAL);
       } else {
         String mapJavaOpts = job.get(JobConf.MAPRED_MAP_TASK_JAVA_OPTS);
-        assertNotNull(JobConf.MAPRED_MAP_TASK_JAVA_OPTS + " is null!", 
-                      mapJavaOpts);
-        assertEquals(JobConf.MAPRED_MAP_TASK_JAVA_OPTS + " has value of: " + 
-                     mapJavaOpts, 
-                     mapJavaOpts, MAP_OPTS_VAL);
+        assertNotNull(mapJavaOpts,
+            JobConf.MAPRED_MAP_TASK_JAVA_OPTS + " is null!");
+        assertEquals(mapJavaOpts, MAP_OPTS_VAL,
+            JobConf.MAPRED_MAP_TASK_JAVA_OPTS + " has value of: " + mapJavaOpts);
       }
 
       // check if X=y works for an already existing parameter
@@ -191,8 +192,7 @@ public class TestMiniMRChildTask {
       checkEnv("NEW_PATH", File.pathSeparator + "/tmp", "noappend");
 
       String jobLocalDir = job.get(MRJobConfig.JOB_LOCAL_DIR);
-      assertNotNull(MRJobConfig.JOB_LOCAL_DIR + " is null",
-                    jobLocalDir);
+      assertNotNull(jobLocalDir, MRJobConfig.JOB_LOCAL_DIR + " is null");
     }
 
     public void map(WritableComparable key, Writable value,
@@ -212,18 +212,19 @@ public class TestMiniMRChildTask {
       boolean oldConfigs = job.getBoolean(OLD_CONFIGS, false);
       if (oldConfigs) {
         String javaOpts = job.get(JobConf.MAPRED_TASK_JAVA_OPTS);
-        assertNotNull(JobConf.MAPRED_TASK_JAVA_OPTS + " is null!", 
-                      javaOpts);
-        assertEquals(JobConf.MAPRED_TASK_JAVA_OPTS + " has value of: " + 
-                     javaOpts, 
-                     javaOpts, TASK_OPTS_VAL);
+        assertNotNull(javaOpts, JobConf.MAPRED_TASK_JAVA_OPTS + " is null!");
+        assertThat(javaOpts)
+            .withFailMessage(JobConf.MAPRED_TASK_JAVA_OPTS + " has value of: "
+                + javaOpts)
+            .isEqualTo(TASK_OPTS_VAL);
       } else {
         String reduceJavaOpts = job.get(JobConf.MAPRED_REDUCE_TASK_JAVA_OPTS);
-        assertNotNull(JobConf.MAPRED_REDUCE_TASK_JAVA_OPTS + " is null!", 
-                      reduceJavaOpts);
-        assertEquals(JobConf.MAPRED_REDUCE_TASK_JAVA_OPTS + " has value of: " + 
-                     reduceJavaOpts, 
-                     reduceJavaOpts, REDUCE_OPTS_VAL);
+        assertNotNull(reduceJavaOpts,
+            JobConf.MAPRED_REDUCE_TASK_JAVA_OPTS + " is null!");
+        assertThat(reduceJavaOpts)
+            .withFailMessage(JobConf.MAPRED_REDUCE_TASK_JAVA_OPTS +
+                " has value of: " + reduceJavaOpts)
+            .isEqualTo(REDUCE_OPTS_VAL);
       }
 
       // check if X=y works for an already existing parameter
@@ -243,7 +244,7 @@ public class TestMiniMRChildTask {
     
   }
   
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws IOException {
     // create configuration, dfs, file system and mapred cluster 
     dfs = new MiniDFSCluster.Builder(conf).build();
@@ -268,7 +269,7 @@ public class TestMiniMRChildTask {
     localFs.setPermission(APP_JAR, new FsPermission("700"));
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     // close file system and shut down dfs and mapred cluster
     try {
@@ -374,7 +375,7 @@ public class TestMiniMRChildTask {
     job.setMaxMapAttempts(1); // speed up failures
     job.waitForCompletion(true);
     boolean succeeded = job.waitForCompletion(true);
-    assertTrue("The environment checker job failed.", succeeded);
+    assertTrue(succeeded, "The environment checker job failed.");
   }
   
 }

@@ -19,8 +19,17 @@
 package org.apache.hadoop.yarn.util.timeline;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.InetSocketAddress;
+import java.util.HashMap;
+import java.util.Map;
 
+import com.fasterxml.jackson.core.JsonGenerationException;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
@@ -28,13 +37,17 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.util.VersionInfo;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineAbout;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.server.metrics.ContainerMetricsConstants;
+import org.apache.hadoop.yarn.util.UnitsConversionUtil;
 import org.apache.hadoop.yarn.util.YarnVersionInfo;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.webapp.YarnJacksonJaxbJsonProvider;
-import org.codehaus.jackson.JsonGenerationException;
-import org.codehaus.jackson.map.JsonMappingException;
-import org.codehaus.jackson.map.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The helper class for the timeline module.
@@ -43,6 +56,8 @@ import org.codehaus.jackson.map.ObjectMapper;
 @Public
 @Evolving
 public class TimelineUtils {
+
+  private static final Logger LOG = LoggerFactory.getLogger(TimelineUtils.class);
 
   public static final String FLOW_NAME_TAG_PREFIX = "TIMELINE_FLOW_NAME_TAG";
   public static final String FLOW_VERSION_TAG_PREFIX =
@@ -59,14 +74,100 @@ public class TimelineUtils {
   }
 
   /**
+   * Returns custom allocations keyed by resource name. Each allocation has a
+   * {@code value} and {@code units}; memory, vcores, and zero values are omitted.
+   *
+   * @param resource the allocated container resource
+   * @return custom allocations for timeline storage
+   */
+  @Private
+  public static Map<String, Map<String, Object>> getCustomResourceInfo(
+      Resource resource) {
+    Map<String, Map<String, Object>> resources = new HashMap<>();
+    for (ResourceInformation information : resource.getResources()) {
+      String name = information.getName();
+      if (!ResourceInformation.MEMORY_URI.equals(name)
+          && !ResourceInformation.VCORES_URI.equals(name)
+          && information.getValue() != 0) {
+        Map<String, Object> allocation = new HashMap<>();
+        allocation.put(ContainerMetricsConstants.ALLOCATED_RESOURCE_VALUE_KEY,
+            information.getValue());
+        allocation.put(ContainerMetricsConstants.ALLOCATED_RESOURCE_UNITS_KEY,
+            information.getUnits());
+        resources.put(name, allocation);
+      }
+    }
+    return resources;
+  }
+
+  /**
+   * Reconstructs a container resource from timeline information. Unknown or
+   * malformed custom allocations are skipped; valid values are converted to
+   * the locally configured units.
+   *
+   * @param entityInfo container timeline information, or null
+   * @return the reconstructed resource
+   */
+  @Private
+  public static Resource getContainerResource(Map<String, Object> entityInfo) {
+    if (entityInfo == null) {
+      return Resource.newInstance(0, 0);
+    }
+    long memory = ((Number) entityInfo.getOrDefault(
+        ContainerMetricsConstants.ALLOCATED_MEMORY_INFO, 0L)).longValue();
+    int vcores = ((Number) entityInfo.getOrDefault(
+        ContainerMetricsConstants.ALLOCATED_VCORE_INFO, 0)).intValue();
+    Resource resource = Resource.newInstance(memory, vcores);
+    Object allocationInfo = entityInfo.get(
+        ContainerMetricsConstants.ALLOCATED_RESOURCES_INFO);
+    if (allocationInfo instanceof Map) {
+      Map<?, ?> allocations = (Map<?, ?>) allocationInfo;
+      for (Map.Entry<?, ?> entry : allocations.entrySet()) {
+        try {
+          String name = (String) entry.getKey();
+          if (ResourceInformation.MEMORY_URI.equals(name)
+              || ResourceInformation.VCORES_URI.equals(name)) {
+            continue;
+          }
+          if (!ResourceUtils.getResourceTypes().containsKey(name)) {
+            LOG.debug("Skipping unknown resource type {} in container history", name);
+            continue;
+          }
+          Map<?, ?> allocation = (Map<?, ?>) entry.getValue();
+          Number storedValue = (Number) allocation.get(
+              ContainerMetricsConstants.ALLOCATED_RESOURCE_VALUE_KEY);
+          if (storedValue instanceof Float || storedValue instanceof Double) {
+            throw new IllegalArgumentException("Floating-point resource value");
+          }
+          long value = storedValue instanceof Integer || storedValue instanceof Long
+              ? storedValue.longValue()
+              : new BigDecimal(storedValue.toString()).longValueExact();
+          String units = (String) allocation.get(
+              ContainerMetricsConstants.ALLOCATED_RESOURCE_UNITS_KEY);
+          String defaultUnits = resource.getResourceInformation(name).getUnits();
+          resource.setResourceValue(name,
+              UnitsConversionUtil.convert(units, defaultUnits, value));
+        } catch (ClassCastException | NullPointerException
+            | IllegalArgumentException | ArithmeticException e) {
+          LOG.debug("Skipping malformed allocation for resource type {}",
+              entry.getKey(), e);
+        }
+      }
+    } else if (allocationInfo != null) {
+      LOG.debug("Skipping malformed container resource allocations");
+    }
+    return resource;
+  }
+
+  /**
    * Serialize a POJO object into a JSON string not in a pretty format
    * 
    * @param o
    *          an object to serialize
    * @return a JSON string
-   * @throws IOException
-   * @throws JsonMappingException
-   * @throws JsonGenerationException
+   * @throws IOException io error occur.
+   * @throws JsonMappingException exception used to signal fatal problems with mapping of content.
+   * @throws JsonGenerationException exception type for exceptions during JSON writing.
    */
   public static String dumpTimelineRecordtoJSON(Object o)
       throws JsonGenerationException, JsonMappingException, IOException {
@@ -81,9 +182,9 @@ public class TimelineUtils {
    * @param pretty
    *          whether in a pretty format or not
    * @return a JSON string
-   * @throws IOException
-   * @throws JsonMappingException
-   * @throws JsonGenerationException
+   * @throws IOException io error occur.
+   * @throws JsonMappingException exception used to signal fatal problems with mapping of content.
+   * @throws JsonGenerationException exception type for exceptions during JSON writing.
    */
   public static String dumpTimelineRecordtoJSON(Object o, boolean pretty)
       throws JsonGenerationException, JsonMappingException, IOException {
@@ -118,15 +219,15 @@ public class TimelineUtils {
   }
 
   /**
-   * Returns whether the timeline service v.1.5 is enabled via configuration.
+   * Returns whether the timeline service v.1.5 is enabled by default via
+   * configuration.
    *
    * @param conf the configuration
    * @return whether the timeline service v.1.5 is enabled. V.1.5 refers to a
    * version equal to 1.5.
    */
   public static boolean timelineServiceV1_5Enabled(Configuration conf) {
-    return timelineServiceEnabled(conf) &&
-        Math.abs(getTimelineServiceVersion(conf) - 1.5) < 0.00001;
+    return YarnConfiguration.timelineServiceV15Enabled(conf);
   }
 
   public static TimelineAbout createTimelineAbout(String about) {
@@ -180,6 +281,36 @@ public class TimelineUtils {
    */
   public static String generateFlowNameTag(String flowName) {
     return FLOW_NAME_TAG_PREFIX + ":" + flowName;
+  }
+
+  /**
+   * Shortens the flow name for the configured size by removing UUID if present.
+   *
+   * @param flowName which has to be shortened
+   * @param conf to resize the flow name
+   * @return shortened flowName
+   */
+  public static String shortenFlowName(String flowName, Configuration conf) {
+    if (flowName == null) {
+      return null;
+    }
+    // remove UUID inside flowname if present
+    flowName = removeUUID(flowName);
+    // resize flowname
+    int length = conf.getInt(YarnConfiguration.FLOW_NAME_MAX_SIZE,
+        YarnConfiguration.FLOW_NAME_DEFAULT_MAX_SIZE);
+    if (length <= 0) {
+      return flowName;
+    }
+    return StringUtils.substring(flowName, 0, length);
+  }
+
+  @VisibleForTesting
+  static String removeUUID(String flowName) {
+    flowName = StringUtils.replaceAll(flowName,
+        "-?([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-" +
+        "[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}){1}", "");
+    return flowName;
   }
 
   /**

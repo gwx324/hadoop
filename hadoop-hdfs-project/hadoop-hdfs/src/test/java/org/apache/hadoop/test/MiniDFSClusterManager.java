@@ -29,16 +29,16 @@ import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.GnuParser;
 import org.apache.commons.cli.HelpFormatter;
-import org.apache.commons.cli.OptionBuilder;
+import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
-import org.mortbay.util.ajax.JSON;
+import org.apache.hadoop.util.JsonUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class drives the creation of a mini-cluster on the local machine. By
@@ -58,8 +58,8 @@ import org.mortbay.util.ajax.JSON;
  * $HADOOP_HOME/bin/hadoop jar $HADOOP_HOME/share/hadoop/hdfs/hadoop-hdfs-0.24.0-SNAPSHOT-tests.jar org.apache.hadoop.test.MiniDFSClusterManager -options...
  */
 public class MiniDFSClusterManager {
-  private static final Log LOG =
-    LogFactory.getLog(MiniDFSClusterManager.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(MiniDFSClusterManager.class);
 
   private MiniDFSCluster dfs;
   private String writeDetails;
@@ -88,23 +88,23 @@ public class MiniDFSClusterManager {
         .addOption("httpport", true, "NameNode http port (default 0--we choose)")
         .addOption("namenode", true, "URL of the namenode (default "
             + "is either the DFS cluster or a temporary dir)")     
-        .addOption(OptionBuilder
+        .addOption(Option.builder("D")
             .hasArgs()
-            .withArgName("property=value")
-            .withDescription("Options to pass into configuration object")
-            .create("D"))
-        .addOption(OptionBuilder
+            .argName("property=value")
+            .desc("Options to pass into configuration object")
+            .build())
+        .addOption(Option.builder("writeConfig")
             .hasArg()
-            .withArgName("path")
-            .withDescription("Save configuration to this XML file.")
-            .create("writeConfig"))
-         .addOption(OptionBuilder
+            .argName("path")
+            .desc("Save configuration to this XML file.")
+            .build())
+         .addOption(Option.builder("writeDetails")
             .hasArg()
-            .withArgName("path")
-            .withDescription("Write basic information to this JSON file.")
-            .create("writeDetails"))
-        .addOption(OptionBuilder.withDescription("Prints option help.")
-            .create("help"));
+            .argName("path")
+            .desc("Write basic information to this JSON file.")
+            .build())
+        .addOption(Option.builder("help").desc("Prints option help.")
+            .build());
     return options;
   }
 
@@ -127,7 +127,7 @@ public class MiniDFSClusterManager {
           LOG.info("Cluster is no longer up, exiting");
           return;
         }
-      } catch (InterruptedException _) {
+      } catch (InterruptedException e) {
         // nothing
       }
     }
@@ -146,8 +146,8 @@ public class MiniDFSClusterManager {
                                           .build();
     dfs.waitActive();
     
-    LOG.info("Started MiniDFSCluster -- namenode on port "
-        + dfs.getNameNodePort());
+    LOG.info("Started MiniDFSCluster -- namenode on port {}",
+        dfs.getNameNodePort());
 
     if (writeConfig != null) {
       FileOutputStream fos = new FileOutputStream(new File(writeConfig));
@@ -162,7 +162,7 @@ public class MiniDFSClusterManager {
       }
 
       FileWriter fw = new FileWriter(new File(writeDetails));
-      fw.write(new JSON().toJSON(map));
+      fw.write(JsonUtils.toString(map));
       fw.close();
     }
   }
@@ -180,7 +180,7 @@ public class MiniDFSClusterManager {
       CommandLineParser parser = new GnuParser();
       cli = parser.parse(options, args);
     } catch(ParseException e) {
-      LOG.warn("options parsing failed:  "+e.getMessage());
+      LOG.warn("options parsing failed", e);
       new HelpFormatter().printHelp("...", options);
       return false;
     }
@@ -192,7 +192,7 @@ public class MiniDFSClusterManager {
     
     if (cli.getArgs().length > 0) {
       for (String arg : cli.getArgs()) {
-        LOG.error("Unrecognized option: " + arg);
+        LOG.error("Unrecognized option: {}", arg);
         new HelpFormatter().printHelp("...", options);
         return false;
       }
@@ -236,12 +236,12 @@ public class MiniDFSClusterManager {
           conf2.set(keyval[0], keyval[1]);
           num_confs_updated++;
         } else {
-          LOG.warn("Ignoring -D option " + prop);
+          LOG.warn("Ignoring -D option {}", prop);
         }
       }
     }
-    LOG.info("Updated " + num_confs_updated +
-        " configuration settings from command line.");
+    LOG.info("Updated {} configuration settings from command line.",
+        num_confs_updated);
   }
 
   /**
@@ -254,8 +254,8 @@ public class MiniDFSClusterManager {
         return Integer.parseInt(o);
       } 
     } catch (NumberFormatException ex) {
-      LOG.error("Couldn't parse value (" + o + ") for option " 
-          + argName + ". Using default: " + defaultValue);
+      LOG.error("Couldn't parse value ({}) for option {}. " +
+          "Using default: {}", o, argName, defaultValue);
     }
     
     return defaultValue;    

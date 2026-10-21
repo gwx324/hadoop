@@ -28,9 +28,9 @@ import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_WRIT
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_WRITE_PACKET_SIZE_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_REPLICATION_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_REPLICATION_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.net.URI;
@@ -49,9 +49,9 @@ import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests for viewfs implementation of default fs level values.
@@ -63,6 +63,7 @@ public class TestViewFsDefaultValue {
   
   static final String testFileDir = "/tmp/test/";
   static final String testFileName = testFileDir + "testFileStatusSerialziation";
+  static final String NOT_IN_MOUNTPOINT_FILENAME = "/NotInMountpointFile";
   private static MiniDFSCluster cluster;
   private static final FileSystemTestHelper fileSystemTestHelper = new FileSystemTestHelper(); 
   private static final Configuration CONF = new Configuration();
@@ -70,8 +71,10 @@ public class TestViewFsDefaultValue {
   private static FileSystem vfs;
   private static Path testFilePath;
   private static Path testFileDirPath;
+  // Use NotInMountpoint path to trigger the exception
+  private static Path notInMountpointPath;
 
-  @BeforeClass
+  @BeforeAll
   public static void clusterSetupAtBegining() throws IOException,
       LoginException, URISyntaxException {
 
@@ -86,12 +89,15 @@ public class TestViewFsDefaultValue {
     cluster.waitClusterUp();
     fHdfs = cluster.getFileSystem();
     fileSystemTestHelper.createFile(fHdfs, testFileName);
+    fileSystemTestHelper.createFile(fHdfs, NOT_IN_MOUNTPOINT_FILENAME);
     Configuration conf = ViewFileSystemTestSetup.createConfig();
+    conf.setInt(DFS_REPLICATION_KEY, DFS_REPLICATION_DEFAULT + 1);
     ConfigUtil.addLink(conf, "/tmp", new URI(fHdfs.getUri().toString() +
       "/tmp"));
     vfs = FileSystem.get(FsConstants.VIEWFS_URI, conf);
     testFileDirPath = new Path (testFileDir);
     testFilePath = new Path (testFileName);
+    notInMountpointPath = new Path(NOT_IN_MOUNTPOINT_FILENAME);
   }
 
 
@@ -105,7 +111,7 @@ public class TestViewFsDefaultValue {
     // but we are only looking at the defaultBlockSize, so this 
     // test should still pass
     try {
-      vfs.getDefaultBlockSize();
+      vfs.getDefaultBlockSize(notInMountpointPath);
       fail("getServerDefaults on viewFs did not throw excetion!");
     } catch (NotInMountpointException e) {
       assertEquals(vfs.getDefaultBlockSize(testFilePath), 
@@ -120,7 +126,7 @@ public class TestViewFsDefaultValue {
   public void testGetDefaultReplication()
       throws IOException, URISyntaxException {
     try {
-      vfs.getDefaultReplication();
+      vfs.getDefaultReplication(notInMountpointPath);
       fail("getDefaultReplication on viewFs did not throw excetion!");
     } catch (NotInMountpointException e) {
       assertEquals(vfs.getDefaultReplication(testFilePath), 
@@ -135,7 +141,7 @@ public class TestViewFsDefaultValue {
   @Test
   public void testServerDefaults() throws IOException {
     try {
-      FsServerDefaults serverDefaults = vfs.getServerDefaults();
+      vfs.getServerDefaults(notInMountpointPath);
       fail("getServerDefaults on viewFs did not throw excetion!");
     } catch (NotInMountpointException e) {
       FsServerDefaults serverDefaults = vfs.getServerDefaults(testFilePath);
@@ -212,9 +218,17 @@ public class TestViewFsDefaultValue {
     assertTrue(qu.getSpaceConsumed() > 0);
   }
 
-  @AfterClass
+  @AfterAll
   public static void cleanup() throws IOException {
-    fHdfs.delete(new Path(testFileName), true);
+    try {
+      fHdfs.delete(new Path(testFileName), true);
+      fHdfs.delete(notInMountpointPath, true);
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+        cluster = null;
+      }
+    }
   }
 
 }

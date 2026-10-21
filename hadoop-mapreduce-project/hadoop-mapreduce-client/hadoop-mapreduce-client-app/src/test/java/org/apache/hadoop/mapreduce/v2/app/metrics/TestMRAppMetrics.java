@@ -23,20 +23,27 @@ import org.apache.hadoop.mapreduce.v2.app.job.Task;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 
 import static org.apache.hadoop.test.MetricsAsserts.*;
-import static org.apache.hadoop.test.MockitoMaker.*;
 
-import org.junit.Test;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class TestMRAppMetrics {
 
+  @AfterEach
+  public void tearDown() {
+    DefaultMetricsSystem.shutdown();
+  }
+
   @Test public void testNames() {
     Job job = mock(Job.class);
-    Task mapTask = make(stub(Task.class).returning(TaskType.MAP).
-                        from.getType());
-    Task reduceTask = make(stub(Task.class).returning(TaskType.REDUCE).
-                           from.getType());
+    Task mapTask = mock(Task.class);
+    when(mapTask.getType()).thenReturn(TaskType.MAP);
+    Task reduceTask = mock(Task.class);
+    when(reduceTask.getType()).thenReturn(TaskType.REDUCE);
     MRAppMetrics metrics = MRAppMetrics.create();
 
     metrics.submittedJob(job);

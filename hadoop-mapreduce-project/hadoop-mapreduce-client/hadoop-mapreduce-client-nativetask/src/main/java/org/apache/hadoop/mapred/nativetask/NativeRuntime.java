@@ -19,10 +19,8 @@
 package org.apache.hadoop.mapred.nativetask;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
-import com.google.common.base.Charsets;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.DataInputBuffer;
@@ -33,6 +31,8 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.Task.TaskReporter;
 import org.apache.hadoop.mapred.nativetask.util.ConfigUtil;
 import org.apache.hadoop.util.VersionInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class stands for the native runtime It has three functions:
@@ -42,7 +42,8 @@ import org.apache.hadoop.util.VersionInfo;
  */
 @InterfaceAudience.Private
 public class NativeRuntime {
-  private static Log LOG = LogFactory.getLog(NativeRuntime.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(NativeRuntime.class);
   private static boolean nativeLibraryLoaded = false;
 
   private static Configuration conf = new Configuration();
@@ -82,7 +83,7 @@ public class NativeRuntime {
    */
   public synchronized static long createNativeObject(String clazz) {
     assertNativeLibraryLoaded();
-    final long ret = JNICreateNativeObject(clazz.getBytes(Charsets.UTF_8));
+    final long ret = JNICreateNativeObject(clazz.getBytes(StandardCharsets.UTF_8));
     if (ret == 0) {
       LOG.warn("Can't create NativeObject for class " + clazz + ", probably not exist.");
     }
@@ -94,8 +95,8 @@ public class NativeRuntime {
    */
   public synchronized static long registerLibrary(String libraryName, String clazz) {
     assertNativeLibraryLoaded();
-    final long ret = JNIRegisterModule(libraryName.getBytes(Charsets.UTF_8),
-                                       clazz.getBytes(Charsets.UTF_8));
+    final long ret = JNIRegisterModule(libraryName.getBytes(StandardCharsets.UTF_8),
+                                       clazz.getBytes(StandardCharsets.UTF_8));
     if (ret != 0) {
       LOG.warn("Can't create NativeObject for class " + clazz + ", probably not exist.");
     }
@@ -103,7 +104,7 @@ public class NativeRuntime {
   }
 
   /**
-   * destroy native object We use to destory native handlers
+   * destroy native object We use to destroy native handlers
    */
   public synchronized static void releaseNativeObject(long addr) {
     assertNativeLibraryLoaded();

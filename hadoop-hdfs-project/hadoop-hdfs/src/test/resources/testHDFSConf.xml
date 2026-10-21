@@ -1060,9 +1060,9 @@
         <comparator>
           <type>RegexpAcrossOutputComparator</type>
           <expected-output>Found 3 items
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file1
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file2
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file3</expected-output>
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file1
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file2
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file3</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -1081,9 +1081,9 @@
         <comparator>
           <type>RegexpAcrossOutputComparator</type>
           <expected-output>Found 3 items
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file3
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file2
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file1</expected-output>
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file3
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file2
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/file1</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -1105,10 +1105,10 @@
         <comparator>
           <type>RegexpAcrossOutputComparator</type>
           <expected-output>Found 4 items
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*120( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data120bytes
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*60( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data60bytes
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*30( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data30bytes
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*15( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data15bytes</expected-output>
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*120( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data120bytes
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*60( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data60bytes
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*30( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data30bytes
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*15( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data15bytes</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -1130,10 +1130,10 @@
         <comparator>
           <type>RegexpAcrossOutputComparator</type>
           <expected-output>Found 4 items
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*15( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data15bytes
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*30( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data30bytes
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*60( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data60bytes
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*120( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data120bytes</expected-output>
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*15( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data15bytes
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*30( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data30bytes
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*60( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data60bytes
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*120( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/data120bytes</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -1157,11 +1157,11 @@
         <comparator>
           <type>RegexpAcrossOutputComparator</type>
           <expected-output>Found 5 items
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/fifth
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/fourth
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/third
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/second
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/first</expected-output>
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/fifth
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/fourth
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/third
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/second
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/first</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -1185,11 +1185,11 @@
         <comparator>
           <type>RegexpAcrossOutputComparator</type>
           <expected-output>Found 5 items
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/first
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/second
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/third
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/fourth
--rw-r--r--( )*1( )*[a-zA-z0-9]*( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/fifth</expected-output>
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/first
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/second
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/third
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/fourth
+-rw-r--r--( )*1( )*USERNAME( )*supergroup( )*0( )*[0-9]{4,}-[0-9]{2,}-[0-9]{2,} [0-9]{2,}:[0-9]{2,}( )*/dir/fifth</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -6183,11 +6183,11 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>mkdir: `dir0/dir1': No such file or directory</expected-output>
+          <expected-output>.*mkdir:.*dir0': No such file or directory$</expected-output>
         </comparator>
       </comparators>
     </test>
-    
+
     <test> <!-- TESTED -->
       <description>mkdir: Test recreate of existing directory fails</description>
       <test-commands>
@@ -7203,7 +7203,130 @@
         </comparator>
       </comparators>
     </test>
-  
+
+    <test> <!-- TESTED -->
+      <description>stat: Test for hdfs:// path - user/group name for directory</description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir hdfs:///dirtest</command>
+        <command>-fs NAMENODE -chown hadoop:hadoopgrp hdfs:///dirtest</command>
+        <command>-fs NAMENODE -stat "%u-%g" hdfs:///dirtest</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r hdfs:///dirtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>TokenComparator</type>
+          <expected-output>hadoop-hadoopgrp</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+
+    <test> <!-- TESTED -->
+      <description>stat: Test for hdfs:// path - user/group name for file</description>
+      <test-commands>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes hdfs:///data60bytes</command>
+        <command>-fs NAMENODE -chown hadoop:hadoopgrp hdfs:////data60bytes</command>
+        <command>-fs NAMENODE -stat "%u-%g" hdfs:////data60bytes</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r hdfs:///data60bytes</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>TokenComparator</type>
+          <expected-output>hadoop-hadoopgrp</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+
+    <test> <!-- TESTED -->
+      <description>stat: Test for hdfs:// path - user/group name for multiple files</description>
+      <test-commands>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes hdfs:///data60bytes</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data30bytes hdfs:///data30bytes</command>
+        <command>-fs NAMENODE -chown hadoop:hadoopgrp hdfs:///data60bytes</command>
+        <command>-fs NAMENODE -chown hdfs:hdfs hdfs:///data30bytes</command>
+        <command>-fs NAMENODE -stat "%u-%g" hdfs:///data*</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r hdfs:///data60bytes</command>
+        <command>-fs NAMENODE -rm -r hdfs:////data30bytes</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>TokenComparator</type>
+          <expected-output>hadoop-hadoopgrp</expected-output>
+        </comparator>
+        <comparator>
+          <type>TokenComparator</type>
+          <expected-output>hdfs-hdfs</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+
+    <test> <!-- TESTED -->
+      <description>stat: Test for Namenode's path - user/group name for directory</description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /dir0</command>
+        <command>-fs NAMENODE -chown hadoop:hadoopgrp NAMENODE/dir0/</command>
+        <command>-fs NAMENODE -stat "%u-%g" NAMENODE/dir0/</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r NAMENODE/dir0</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>TokenComparator</type>
+          <expected-output>hadoop-hadoopgrp</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+
+    <test> <!-- TESTED -->
+    <description>stat: Test for Namenode's path - user/group name for file </description>
+    <test-commands>
+    <command>-fs NAMENODE -mkdir /dir0</command>
+    <command>-fs NAMENODE -put CLITEST_DATA/data15bytes NAMENODE/dir0/data15bytes</command>
+    <command>-fs NAMENODE -chown hadoop:hadoopgrp NAMENODE/dir0/data15bytes</command>
+    <command>-fs NAMENODE -stat "%u-%g" NAMENODE/dir0/data15bytes</command>
+    </test-commands>
+    <cleanup-commands>
+      <command>-fs NAMENODE -rm -r NAMENODE/dir0</command>
+    </cleanup-commands>
+    <comparators>
+      <comparator>
+        <type>TokenComparator</type>
+        <expected-output>hadoop-hadoopgrp</expected-output>
+      </comparator>
+    </comparators>
+    </test>
+
+    <test> <!-- TESTED -->
+      <description>stat: Test for Namenode's path - user/group name for multiple files </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /dir0</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data15bytes NAMENODE/dir0/data15bytes</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data30bytes NAMENODE/dir0/data30bytes</command>
+        <command>-fs NAMENODE -chown hadoop:hadoopgrp NAMENODE/dir0/data15bytes</command>
+        <command>-fs NAMENODE -chown hdfs:hdfs NAMENODE/dir0/data30bytes</command>
+        <command>-fs NAMENODE -stat "%u-%g" NAMENODE/dir0/data*</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r NAMENODE/dir0</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>TokenComparator</type>
+          <expected-output>hadoop-hadoopgrp</expected-output>
+        </comparator>
+        <comparator>
+          <type>TokenComparator</type>
+          <expected-output>hdfs-hdfs</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+
     <!-- Tests for tail -->
     <test> <!-- TESTED -->
       <description>tail: contents of file(absolute path)</description>
@@ -15665,7 +15788,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-report \[-live\] \[-dead\] \[-decommissioning\]:(.)*</expected-output>
+          <expected-output>^-report \[-live\] \[-dead\] \[-decommissioning\] \[-enteringmaintenance\] \[-inmaintenance\] \[-slownodes\]:(.)*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -15985,10 +16108,6 @@
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*- RAM_DISK( )*</expected-output>
-        </comparator>
-        <comparator>
-          <type>RegexpComparator</type>
           <expected-output>^( |\t)*- DISK( )*</expected-output>
         </comparator>
         <comparator>
@@ -15998,6 +16117,10 @@
         <comparator>
           <type>RegexpComparator</type>
           <expected-output>^( |\t)*- ARCHIVE( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*- PROVIDED( )*</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -16428,6 +16551,10 @@
           <expected-output>Last contact: [a-zA-Z]+ [a-zA-Z]+ [0-9]+ [0-9:]+ [A-Z\-\+\:0-9]+ [0-9]+</expected-output>
         </comparator>
         <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>Num of Blocks: [0-9]+</expected-output>
+        </comparator>
+        <comparator>
           <type>TokenComparator</type>
           <expected-output>Live datanodes</expected-output>
         </comparator>
@@ -16596,19 +16723,19 @@
         <!-- miniDFS cluster started in CLITestHelper is set to match this output -->
         <comparator>
           <type>RegexpAcrossOutputComparator</type>
-          <expected-output>^Rack: \/rack1\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)</expected-output>
+          <expected-output>^Rack: \/rack1\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\sIn Service\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\sIn Service</expected-output>
         </comparator>
         <comparator>
           <type>RegexpAcrossOutputComparator</type>
-          <expected-output>Rack: \/rack2\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)</expected-output>
+          <expected-output>Rack: \/rack2\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\sIn Service\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\sIn Service\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\sIn Service</expected-output>
         </comparator>
         <comparator>
           <type>RegexpAcrossOutputComparator</type>
-          <expected-output>Rack: \/rack3\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)</expected-output>
+          <expected-output>Rack: \/rack3\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\sIn Service</expected-output>
         </comparator>
         <comparator>
           <type>RegexpAcrossOutputComparator</type>
-          <expected-output>Rack: \/rack4\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)</expected-output>
+          <expected-output>Rack: \/rack4\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\sIn Service\s*127\.0\.0\.1:\d+\s\([-.a-zA-Z0-9]+\)\sIn Service</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -16740,7 +16867,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>Allowing snaphot on /user/USERNAME/dir1 succeeded</expected-output>
+          <expected-output>Allowing snapshot on /user/USERNAME/dir1 succeeded</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -16758,7 +16885,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>Disallowing snaphot on /user/USERNAME/dir1 succeeded</expected-output>
+          <expected-output>Disallowing snapshot on /user/USERNAME/dir1 succeeded</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -17490,6 +17617,475 @@ $</expected-output>
           <expected-output>^/findtest/item1/item1a
 /findtest/item1/item1a/item1aa
 /findtest/item4/item4a
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -atime </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -touch -a /findtest</command>
+        <command>-fs NAMENODE -touch -a /findtest/item1</command>
+        <command>-fs NAMENODE -touch -a /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touch -a /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -touch -a -t 20060401:195000 /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -touch -a /findtest/item2</command>
+        <command>-fs NAMENODE -touch -a /findtest/item3</command>
+        <command>-fs NAMENODE -touch -a /findtest/item4</command>
+        <command>-fs NAMENODE -touch -a /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -touch -a /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -touch -a -t 20060401:195000 /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -atime +1</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1/item1b
+/findtest/item5
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -amin </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -touch -a /findtest</command>
+        <command>-fs NAMENODE -touch -a /findtest/item1</command>
+        <command>-fs NAMENODE -touch -a /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touch -a /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -touch -a -t 20060401:195000 /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -touch -a /findtest/item2</command>
+        <command>-fs NAMENODE -touch -a /findtest/item3</command>
+        <command>-fs NAMENODE -touch -a /findtest/item4</command>
+        <command>-fs NAMENODE -touch -a /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -touch -a /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -touch -a -t 20060401:195000 /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -amin +1</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1/item1b
+/findtest/item5
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -blocksize </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -Ddfs.blocksize=268435456 -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -Ddfs.blocksize=134217728 -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -Ddfs.blocksize=268435456 -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -Ddfs.blocksize=268435456 -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -Ddfs.blocksize=134217728 -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -stat /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -blocksize 268435456</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1/item1a/item1aa
+/findtest/item2
+/findtest/item4/item4b
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -empty </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -empty</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1/item1a/item1aa
+/findtest/item3
+/findtest/item4/item4a
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -user </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -chown newowner:newgroup /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -chown newowner:newgroup /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -find /findtest -user newowner</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1/item1b
+/findtest/item4/item4a
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -group </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -chown newowner:newgroup /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -chown newowner:newgroup /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -find /findtest -group newgroup</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1/item1b
+/findtest/item4/item4a
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -mtime </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -touch -m -t 20060401:195000 /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -touch -m -t 20060401:195000 /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -mtime +1</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1/item1b
+/findtest/item5
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -mmin </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -touch -m -t 20060401:195000 /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -touch -m -t 20060401:195000 /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -mmin +1</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1/item1b
+/findtest/item5
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -newer </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -newer /findtest/item4/item4a</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest
+/findtest/item4
+/findtest/item4/item4b
+/findtest/item5
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -perm </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -chmod 700 /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -chmod 600 /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -chmod 400 /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -perm 600</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item4/item4b
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -replicas </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -setrep 3 /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -setrep 3 /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -setrep 2 /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -replicas 3</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1/item1a/item1aa
+/findtest/item4/item4b
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -size </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -size +1</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item5
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -type </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -type d</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /donotfind</command>
+        <command>-fs NAMENODE -rm -r donotfind</command>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest
+/findtest/item1
+/findtest/item1/item1a
+/findtest/item3
+/findtest/item4
+/findtest/item4/item4a
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -regex </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -regex .*item1.*</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1
+/findtest/item1/item1a
+/findtest/item1/item1a/item1aa
+/findtest/item1/item1b
+$</expected-output>
+        </comparator>
+      </comparators>
+    </test>
+    <test> <!-- TESTED -->
+      <description>find: -iregex </description>
+      <test-commands>
+        <command>-fs NAMENODE -mkdir /findtest</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1</command>
+        <command>-fs NAMENODE -mkdir /findtest/item1/item1a</command>
+        <command>-fs NAMENODE -touchz /findtest/item1/item1a/item1aa</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item1/item1b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data60bytes /findtest/item2</command>
+        <command>-fs NAMENODE -mkdir /findtest/item3</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4</command>
+        <command>-fs NAMENODE -mkdir /findtest/item4/item4a</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data120bytes /findtest/item4/item4b</command>
+        <command>-fs NAMENODE -put CLITEST_DATA/data1k /findtest/item5</command>
+        <command>-fs NAMENODE -find /findtest -iregex .*ITEM1.*</command>
+      </test-commands>
+      <cleanup-commands>
+        <command>-fs NAMENODE -rm -r /findtest</command>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpAcrossOutputComparator</type>
+          <expected-output>^/findtest/item1
+/findtest/item1/item1a
+/findtest/item1/item1a/item1aa
+/findtest/item1/item1b
 $</expected-output>
         </comparator>
       </comparators>

@@ -29,6 +29,7 @@ import org.apache.hadoop.ipc.CallerContext;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+import org.apache.hadoop.yarn.api.records.ApplicationTimeoutType;
 import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ApplicationStateDataProto;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 import org.apache.hadoop.yarn.util.Records;
@@ -46,7 +47,8 @@ public abstract class ApplicationStateData {
   public static ApplicationStateData newInstance(long submitTime,
       long startTime, String user,
       ApplicationSubmissionContext submissionContext, RMAppState state,
-      String diagnostics, long finishTime, CallerContext callerContext) {
+      String diagnostics, long launchTime, long finishTime,
+      CallerContext callerContext) {
     ApplicationStateData appState = Records.newRecord(ApplicationStateData.class);
     appState.setSubmitTime(submitTime);
     appState.setStartTime(startTime);
@@ -54,23 +56,82 @@ public abstract class ApplicationStateData {
     appState.setApplicationSubmissionContext(submissionContext);
     appState.setState(state);
     appState.setDiagnostics(diagnostics);
+    appState.setLaunchTime(launchTime);
     appState.setFinishTime(finishTime);
     appState.setCallerContext(callerContext);
     return appState;
   }
 
   public static ApplicationStateData newInstance(long submitTime,
+      long startTime, String user,
+      ApplicationSubmissionContext submissionContext, RMAppState state,
+      String diagnostics, long launchTime, long finishTime,
+      CallerContext callerContext,
+      Map<ApplicationTimeoutType, Long> applicationTimeouts) {
+    ApplicationStateData appState =
+        Records.newRecord(ApplicationStateData.class);
+    appState.setSubmitTime(submitTime);
+    appState.setStartTime(startTime);
+    appState.setUser(user);
+    appState.setApplicationSubmissionContext(submissionContext);
+    appState.setState(state);
+    appState.setDiagnostics(diagnostics);
+    appState.setLaunchTime(launchTime);
+    appState.setFinishTime(finishTime);
+    appState.setCallerContext(callerContext);
+    appState.setApplicationTimeouts(applicationTimeouts);
+    return appState;
+  }
+
+  public static ApplicationStateData newInstance(long submitTime,
       long startTime, ApplicationSubmissionContext context, String user,
       CallerContext callerContext) {
-    return newInstance(submitTime, startTime, user, context, null, "", 0,
+    return newInstance(submitTime, startTime, user, context, null, "", 0, 0,
         callerContext);
   }
   
   public static ApplicationStateData newInstance(long submitTime,
       long startTime, ApplicationSubmissionContext context, String user) {
-    return newInstance(submitTime, startTime, context, user, null);
+    return newInstance(submitTime, startTime, context, user,
+        (CallerContext) null);
   }
-  
+
+  public static ApplicationStateData newInstance(long submitTime,
+      long startTime, String user, String realUser,
+      ApplicationSubmissionContext submissionContext, RMAppState state,
+      String diagnostics, long launchTime, long finishTime,
+      CallerContext callerContext) {
+    ApplicationStateData appState =
+        newInstance(submitTime, startTime, user, submissionContext, state,
+            diagnostics, launchTime, finishTime, callerContext);
+    if (realUser != null) {
+      appState.setRealUser(realUser);
+    }
+    return appState;
+  }
+
+  public static ApplicationStateData newInstance(long submitTime,
+      long startTime, String user, String realUser,
+      ApplicationSubmissionContext submissionContext, RMAppState state,
+      String diagnostics, long launchTime, long finishTime,
+      CallerContext callerContext,
+      Map<ApplicationTimeoutType, Long> applicationTimeouts) {
+    ApplicationStateData appState =
+        newInstance(submitTime, startTime, user, submissionContext, state,
+            diagnostics, launchTime, finishTime, callerContext, applicationTimeouts);
+    if (realUser != null) {
+      appState.setRealUser(realUser);
+    }
+    return appState;
+  }
+
+  public static ApplicationStateData newInstance(long submitTime,
+      long startTime, ApplicationSubmissionContext context, String user,
+      String realUser, CallerContext callerContext) {
+    return newInstance(submitTime, startTime, user, realUser, context, null, "",
+        0, 0, callerContext);
+  }
+
   public int getAttemptCount() {
     return attempts.size();
   }
@@ -116,8 +177,23 @@ public abstract class ApplicationStateData {
   @Unstable
   public abstract void setStartTime(long startTime);
 
+
+
   /**
-   * The application submitter
+   * Get the <em>launch time</em> of the application.
+   * @return <em>launch time</em> of the application
+   */
+  @Public
+  @Stable
+  public abstract long getLaunchTime();
+
+  @Private
+  @Unstable
+  public abstract void setLaunchTime(long launchTime);
+
+  /**
+   * The application submitter.
+   * @param user submitter user name.
    */
   @Public
   @Unstable
@@ -168,4 +244,15 @@ public abstract class ApplicationStateData {
   public abstract CallerContext getCallerContext();
   
   public abstract void setCallerContext(CallerContext callerContext);
+
+  @Public
+  public abstract Map<ApplicationTimeoutType, Long> getApplicationTimeouts();
+
+  @Public
+  public abstract void setApplicationTimeouts(
+      Map<ApplicationTimeoutType, Long> applicationTimeouts);
+
+  public abstract String getRealUser();
+
+  public abstract void setRealUser(String realUser);
 }

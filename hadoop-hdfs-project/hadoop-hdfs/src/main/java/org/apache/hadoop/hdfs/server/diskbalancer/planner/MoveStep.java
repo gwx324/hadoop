@@ -17,13 +17,9 @@
 
 package org.apache.hadoop.hdfs.server.diskbalancer.planner;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.hadoop.hdfs.server.diskbalancer.datamodel.DiskBalancerVolume;
 import org.apache.hadoop.util.StringUtils;
-import org.apache.htrace.fasterxml.jackson.annotation.JsonInclude;
-
-
-
-
 
 /**
  * Ignore fields with default values. In most cases Throughtput, diskErrors
@@ -221,7 +217,7 @@ public class MoveStep implements Step {
    *
    * For example : if the ideal amount on each disk was 1 TB and the
    * tolerance was 10%, then getting to 900 GB on the destination disk is
-   * considerd good enough.
+   * considered good enough.
    *
    * @return tolerance percentage.
    */

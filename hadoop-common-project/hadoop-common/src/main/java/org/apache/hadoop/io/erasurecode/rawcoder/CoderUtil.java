@@ -28,7 +28,7 @@ import java.util.Arrays;
  * Helpful utilities for implementing some raw erasure coders.
  */
 @InterfaceAudience.Private
-final class CoderUtil {
+public final class CoderUtil {
 
   private CoderUtil() {
     // No called
@@ -42,15 +42,25 @@ final class CoderUtil {
    * @return empty chunk of zero bytes
    */
   static byte[] getEmptyChunk(int leastLength) {
-    if (emptyChunk.length >= leastLength) {
-      return emptyChunk; // In most time
+    byte[] chunk = emptyChunk;
+    if (chunk.length >= leastLength) {
+      return chunk; // In most time
     }
 
     synchronized (CoderUtil.class) {
-      emptyChunk = new byte[leastLength];
+      /*
+       * Recheck under the lock: another caller may already have grown the
+       * cache while this caller waited. A larger cached chunk is valid for a
+       * smaller request, so only allocate when the cache is still too small.
+       */
+      chunk = emptyChunk;
+      if (chunk.length < leastLength) {
+        chunk = new byte[leastLength];
+        emptyChunk = chunk;
+      }
     }
 
-    return emptyChunk;
+    return chunk;
   }
 
   /**
@@ -115,6 +125,9 @@ final class CoderUtil {
         buffers[i] = null;
       } else {
         buffers[i] = chunk.getBuffer();
+        if (chunk.isAllZero()) {
+          CoderUtil.resetBuffer(buffers[i], buffers[i].remaining());
+        }
       }
     }
 

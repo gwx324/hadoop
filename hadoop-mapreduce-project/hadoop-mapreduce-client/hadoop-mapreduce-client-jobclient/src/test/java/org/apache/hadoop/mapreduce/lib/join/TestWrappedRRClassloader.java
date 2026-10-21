@@ -31,9 +31,9 @@ import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestWrappedRRClassloader {
   /**
@@ -50,8 +50,8 @@ public class TestWrappedRRClassloader {
     assertTrue(conf.getClassLoader() instanceof Fake_ClassLoader);
 
     FileSystem fs = FileSystem.get(conf);
-    Path testdir = new Path(System.getProperty("test.build.data", "/tmp"))
-        .makeQualified(fs);
+    Path testdir = fs.makeQualified(new Path(
+        System.getProperty("test.build.data", "/tmp")));
 
     Path base = new Path(testdir, "/empty");
     Path[] src = { new Path(base, "i0"), new Path("i1"), new Path("i2") };
@@ -87,9 +87,9 @@ public class TestWrappedRRClassloader {
 
     @SuppressWarnings("unchecked")
     public RR_ClassLoaderChecker(Configuration conf) {
-      assertTrue("The class loader has not been inherited from "
-          + CompositeRecordReader.class.getSimpleName(),
-          conf.getClassLoader() instanceof Fake_ClassLoader);
+      assertTrue(conf.getClassLoader() instanceof Fake_ClassLoader,
+          "The class loader has not been inherited from "
+          + CompositeRecordReader.class.getSimpleName());
 
     }
   }

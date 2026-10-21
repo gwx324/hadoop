@@ -20,8 +20,11 @@ package org.apache.hadoop.hdfs.util;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 
 
 import org.apache.commons.io.FileUtils;
@@ -37,7 +40,7 @@ import org.apache.hadoop.hdfs.server.blockmanagement.HostFileManager;
 import org.apache.hadoop.hdfs.protocol.DatanodeAdminProperties;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo.AdminStates;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class HostsFileWriter {
   private FileSystem localFileSys;
@@ -51,6 +54,7 @@ public class HostsFileWriter {
     localFileSys = FileSystem.getLocal(conf);
     Path workingDir = new Path(MiniDFSCluster.getBaseDirectory());
     this.fullDir = new Path(workingDir, dir);
+    cleanup(); // In case there is some left over from previous run.
     assertTrue(localFileSys.mkdirs(this.fullDir));
 
     if (conf.getClass(
@@ -73,28 +77,62 @@ public class HostsFileWriter {
   }
 
   public void initExcludeHost(String hostNameAndPort) throws IOException {
-    initExcludeHosts(hostNameAndPort);
+    ArrayList<String> nodes = new ArrayList<>();
+    nodes.add(hostNameAndPort);
+    initExcludeHosts(nodes);
   }
 
-  public void initExcludeHosts(String... hostNameAndPorts) throws IOException {
+  public void initExcludeHosts(List<String> hostNameAndPorts)
+      throws IOException {
+    initOutOfServiceHosts(hostNameAndPorts, null);
+  }
+
+  public void initOutOfServiceHosts(List<String> decommissionHostNameAndPorts,
+      Map<String, Long> maintenanceHosts) throws IOException {
     StringBuilder excludeHosts = new StringBuilder();
     if (isLegacyHostsFile) {
-      for (String hostNameAndPort : hostNameAndPorts) {
+      if (maintenanceHosts != null && maintenanceHosts.size() > 0) {
+        throw new UnsupportedOperationException(
+            "maintenance support isn't supported by legacy hosts file");
+      }
+      for (String hostNameAndPort : decommissionHostNameAndPorts) {
         excludeHosts.append(hostNameAndPort).append("\n");
       }
-      DFSTestUtil.writeFile(localFileSys, excludeFile, excludeHosts.toString());
+      DFSTestUtil.writeFile(localFileSys, excludeFile,
+          excludeHosts.toString());
     } else {
       HashSet<DatanodeAdminProperties> allDNs = new HashSet<>();
-      for (String hostNameAndPort : hostNameAndPorts) {
-        DatanodeAdminProperties dn = new DatanodeAdminProperties();
-        String[] hostAndPort = hostNameAndPort.split(":");
-        dn.setHostName(hostAndPort[0]);
-        dn.setPort(Integer.parseInt(hostAndPort[1]));
-        dn.setAdminState(AdminStates.DECOMMISSIONED);
-        allDNs.add(dn);
+      if (decommissionHostNameAndPorts != null) {
+        for (String hostNameAndPort : decommissionHostNameAndPorts) {
+          DatanodeAdminProperties dn = new DatanodeAdminProperties();
+          String[] hostAndPort = hostNameAndPort.split(":");
+          if (hostAndPort.length != 2) {
+            throw new IllegalArgumentException("The decommision host name and port format is "
+                + "invalid. The format should be in <host>:<port>, not " + hostNameAndPort);
+          }
+          dn.setHostName(hostAndPort[0]);
+          dn.setPort(Integer.parseInt(hostAndPort[1]));
+          dn.setAdminState(AdminStates.DECOMMISSIONED);
+          allDNs.add(dn);
+        }
+      }
+      if (maintenanceHosts != null) {
+        for (Map.Entry<String, Long> hostEntry : maintenanceHosts.entrySet()) {
+          DatanodeAdminProperties dn = new DatanodeAdminProperties();
+          String[] hostAndPort = hostEntry.getKey().split(":");
+          dn.setHostName(hostAndPort[0]);
+          dn.setPort(Integer.parseInt(hostAndPort[1]));
+          dn.setAdminState(AdminStates.IN_MAINTENANCE);
+          dn.setMaintenanceExpireTimeInMS(hostEntry.getValue());
+          allDNs.add(dn);
+        }
       }
       CombinedHostsFileWriter.writeFile(combinedFile.toString(), allDNs);
     }
+  }
+
+  public void initIncludeHost(String hostNameAndPort) throws IOException {
+    initIncludeHosts(new String[]{hostNameAndPort});
   }
 
   public void initIncludeHosts(String[] hostNameAndPorts) throws IOException {

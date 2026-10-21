@@ -26,6 +26,7 @@ import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlElement;
 import javax.xml.bind.annotation.XmlRootElement;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
@@ -38,12 +39,13 @@ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 @XmlAccessorType(XmlAccessType.NONE)
 @InterfaceAudience.Public
 @InterfaceStability.Unstable
+@JsonIgnoreProperties(ignoreUnknown = true, value = {"valuesJAXB"})
 public class TimelineMetric {
 
   /**
    * Type of metric.
    */
-  public static enum Type {
+  public enum Type {
     SINGLE_VALUE,
     TIME_SERIES
   }
@@ -231,8 +233,9 @@ public class TimelineMetric {
         return values.firstKey();
       }
     } else {
-      throw new YarnRuntimeException("Type for this timeline metric is not " +
-          "SINGLE_VALUE.");
+      return -1L;
+      // throw new YarnRuntimeException("Type for this timeline metric is not " +
+      //    "SINGLE_VALUE.");
     }
   }
 
@@ -249,8 +252,9 @@ public class TimelineMetric {
         return values.get(values.firstKey());
       }
     } else {
-      throw new YarnRuntimeException("Type for this timeline metric is not " +
-          "SINGLE_VALUE.");
+      return -1L;
+      // throw new YarnRuntimeException("Type for this timeline metric is not " +
+      //    "SINGLE_VALUE.");
     }
   }
 

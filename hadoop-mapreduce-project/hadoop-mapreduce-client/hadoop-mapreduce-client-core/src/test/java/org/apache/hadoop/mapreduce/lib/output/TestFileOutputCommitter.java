@@ -23,22 +23,22 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
-import junit.framework.TestCase;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.apache.hadoop.util.concurrent.HadoopExecutors;
-import org.junit.Assert;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RawLocalFileSystem;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.MapFile;
 import org.apache.hadoop.io.NullWritable;
@@ -53,9 +53,21 @@ import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.task.JobContextImpl;
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 
 @SuppressWarnings("unchecked")
-public class TestFileOutputCommitter extends TestCase {
+public class TestFileOutputCommitter {
   private static final Path outDir = new Path(
       System.getProperty("test.build.data",
           System.getProperty("java.io.tmpdir")),
@@ -64,8 +76,8 @@ public class TestFileOutputCommitter extends TestCase {
   private final static String SUB_DIR = "SUB_DIR";
   private final static Path OUT_SUB_DIR = new Path(outDir, SUB_DIR);
 
-  private static final Log LOG =
-      LogFactory.getLog(TestFileOutputCommitter.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestFileOutputCommitter.class);
 
   // A random task attempt id for testing.
   private static final String attempt = "attempt_200707121733_0001_m_000000_0";
@@ -87,12 +99,12 @@ public class TestFileOutputCommitter extends TestCase {
     fs.delete(outDir, true);
   }
   
-  @Override
+  @BeforeEach
   public void setUp() throws IOException {
     cleanup();
   }
-  
-  @Override
+
+  @AfterEach
   public void tearDown() throws IOException {
     cleanup();
   }
@@ -158,10 +170,10 @@ public class TestFileOutputCommitter extends TestCase {
     Path jobTempDir1 = committer.getCommittedTaskPath(tContext);
     File jtd = new File(jobTempDir1.toUri().getPath());
     if (commitVersion == 1) {
-      assertTrue("Version 1 commits to temporary dir " + jtd, jtd.exists());
+      assertTrue(jtd.exists(), "Version 1 commits to temporary dir " + jtd);
       validateContent(jtd);
     } else {
-      assertFalse("Version 2 commits to output dir " + jtd, jtd.exists());
+      assertFalse(jtd.exists(), "Version 2 commits to output dir " + jtd);
     }
 
     //now while running the second app attempt, 
@@ -180,13 +192,12 @@ public class TestFileOutputCommitter extends TestCase {
 
     committer2.recoverTask(tContext2);
     if (recoveryVersion == 1) {
-      assertTrue("Version 1 recovers to " + jtd2, jtd2.exists());
+      assertTrue(jtd2.exists(), "Version 1 recovers to " + jtd2);
       validateContent(jtd2);
     } else {
-      assertFalse("Version 2 commits to output dir " + jtd2, jtd2.exists());
+      assertFalse(jtd2.exists(), "Version 2 commits to output dir " + jtd2);
       if (commitVersion == 1) {
-        assertTrue("Version 2  recovery moves to output dir from "
-            + jtd , jtd.list().length == 0);
+        assertEquals(0, jtd.list().length, "Version 2  recovery moves to output dir from " + jtd);
       }
     }
 
@@ -195,14 +206,17 @@ public class TestFileOutputCommitter extends TestCase {
     FileUtil.fullyDelete(new File(outDir.toString()));
   }
 
+  @Test
   public void testRecoveryV1() throws Exception {
     testRecoveryInternal(1, 1);
   }
 
+  @Test
   public void testRecoveryV2() throws Exception {
     testRecoveryInternal(2, 2);
   }
 
+  @Test
   public void testRecoveryUpgradeV1V2() throws Exception {
     testRecoveryInternal(1, 2);
   }
@@ -213,8 +227,8 @@ public class TestFileOutputCommitter extends TestCase {
   
   private void validateContent(File dir) throws IOException {
     File expectedFile = new File(dir, partFile);
-    assertTrue("Could not find "+expectedFile, expectedFile.exists());
-    StringBuffer expectedOutput = new StringBuffer();
+    assertTrue(expectedFile.exists(), "Could not find "+expectedFile);
+    StringBuilder expectedOutput = new StringBuilder();
     expectedOutput.append(key1).append('\t').append(val1).append("\n");
     expectedOutput.append(val1).append("\n");
     expectedOutput.append(val2).append("\n");
@@ -222,7 +236,7 @@ public class TestFileOutputCommitter extends TestCase {
     expectedOutput.append(key1).append("\n");
     expectedOutput.append(key2).append('\t').append(val2).append("\n");
     String output = slurp(expectedFile);
-    assertEquals(output, expectedOutput.toString());
+    assertThat(output).isEqualTo(expectedOutput.toString());
   }
 
   private void validateMapFileOutputContent(
@@ -249,13 +263,18 @@ public class TestFileOutputCommitter extends TestCase {
     assert(dataFileFound && indexFileFound);
   }
 
-  private void testCommitterInternal(int version) throws Exception {
+  private void testCommitterInternal(int version, boolean taskCleanup)
+      throws Exception {
     Job job = Job.getInstance();
     FileOutputFormat.setOutputPath(job, outDir);
     Configuration conf = job.getConfiguration();
     conf.set(MRJobConfig.TASK_ATTEMPT_ID, attempt);
-    conf.setInt(FileOutputCommitter.FILEOUTPUTCOMMITTER_ALGORITHM_VERSION,
+    conf.setInt(
+        FileOutputCommitter.FILEOUTPUTCOMMITTER_ALGORITHM_VERSION,
         version);
+    conf.setBoolean(
+        FileOutputCommitter.FILEOUTPUTCOMMITTER_TASK_CLEANUP_ENABLED,
+        taskCleanup);
     JobContext jContext = new JobContextImpl(conf, taskID.getJobID());
     TaskAttemptContext tContext = new TaskAttemptContextImpl(conf, taskID);
     FileOutputCommitter committer = new FileOutputCommitter(outDir, tContext);
@@ -269,27 +288,57 @@ public class TestFileOutputCommitter extends TestCase {
     RecordWriter theRecordWriter = theOutputFormat.getRecordWriter(tContext);
     writeOutput(theRecordWriter, tContext);
 
+    // check task and job temp directories exist
+    File jobOutputDir = new File(
+        new Path(outDir, FileOutputCommitter.PENDING_DIR_NAME).toString());
+    File taskOutputDir = new File(Path.getPathWithoutSchemeAndAuthority(
+        committer.getWorkPath()).toString());
+    assertTrue(jobOutputDir.exists(), "job temp dir does not exist");
+    assertTrue(taskOutputDir.exists(), "task temp dir does not exist");
+
     // do commit
     committer.commitTask(tContext);
+    assertTrue(jobOutputDir.exists(), "job temp dir does not exist");
+    if (version == 1 || taskCleanup) {
+      // Task temp dir gets renamed in v1 and deleted if taskCleanup is
+      // enabled in v2
+      assertFalse(taskOutputDir.exists(), "task temp dir still exists");
+    } else {
+      // By default, in v2 the task temp dir is only deleted during commitJob
+      assertTrue(taskOutputDir.exists(), "task temp dir does not exist");
+    }
+
+    // Entire job temp directory gets deleted, including task temp dir
     committer.commitJob(jContext);
+    assertFalse(jobOutputDir.exists(), "job temp dir still exists");
+    assertFalse(taskOutputDir.exists(), "task temp dir still exists");
 
     // validate output
     validateContent(outDir);
     FileUtil.fullyDelete(new File(outDir.toString()));
   }
 
+  @Test
   public void testCommitterV1() throws Exception {
-    testCommitterInternal(1);
+    testCommitterInternal(1, false);
   }
 
+  @Test
   public void testCommitterV2() throws Exception {
-    testCommitterInternal(2);
+    testCommitterInternal(2, false);
   }
-  
+
+  @Test
+  public void testCommitterV2TaskCleanupEnabled() throws Exception {
+    testCommitterInternal(2, true);
+  }
+
+  @Test
   public void testCommitterWithDuplicatedCommitV1() throws Exception {
     testCommitterWithDuplicatedCommitInternal(1);
   }
 
+  @Test
   public void testCommitterWithDuplicatedCommitV2() throws Exception {
     testCommitterWithDuplicatedCommitInternal(2);
   }
@@ -326,21 +375,23 @@ public class TestFileOutputCommitter extends TestCase {
     try {
       committer.commitJob(jContext);
       if (version == 1) {
-        Assert.fail("Duplicate commit success: wrong behavior for version 1.");
+        fail("Duplicate commit success: wrong behavior for version 1.");
       }
     } catch (IOException e) {
       if (version == 2) {
-        Assert.fail("Duplicate commit failed: wrong behavior for version 2.");
+        fail("Duplicate commit failed: wrong behavior for version 2.");
       }
     }
     FileUtil.fullyDelete(new File(outDir.toString()));
   }
 
+  @Test
   public void testCommitterWithFailureV1() throws Exception {
     testCommitterWithFailureInternal(1, 1);
     testCommitterWithFailureInternal(1, 2);
   }
 
+  @Test
   public void testCommitterWithFailureV2() throws Exception {
     testCommitterWithFailureInternal(2, 1);
     testCommitterWithFailureInternal(2, 2);
@@ -378,22 +429,53 @@ public class TestFileOutputCommitter extends TestCase {
       committer.commitJob(jContext);
       // (1,1), (1,2), (2,1) shouldn't reach to here.
       if (version == 1 || maxAttempts <= 1) {
-        Assert.fail("Commit successful: wrong behavior for version 1.");
+        fail("Commit successful: wrong behavior for version 1.");
       }
     } catch (IOException e) {
       // (2,2) shouldn't reach to here.
       if (version == 2 && maxAttempts > 2) {
-        Assert.fail("Commit failed: wrong behavior for version 2.");
+        fail("Commit failed: wrong behavior for version 2.");
       }
     }
 
     FileUtil.fullyDelete(new File(outDir.toString()));
   }
 
+  @Test
+  public void testProgressDuringMerge() throws Exception {
+    Job job = Job.getInstance();
+    FileOutputFormat.setOutputPath(job, outDir);
+    Configuration conf = job.getConfiguration();
+    conf.set(MRJobConfig.TASK_ATTEMPT_ID, attempt);
+    conf.setInt(FileOutputCommitter.FILEOUTPUTCOMMITTER_ALGORITHM_VERSION,
+        2);
+    JobContext jContext = new JobContextImpl(conf, taskID.getJobID());
+    TaskAttemptContext tContext = spy(new TaskAttemptContextImpl(conf, taskID));
+    FileOutputCommitter committer = new FileOutputCommitter(outDir, tContext);
+
+    // setup
+    committer.setupJob(jContext);
+    committer.setupTask(tContext);
+
+    // write output
+    MapFileOutputFormat theOutputFormat = new MapFileOutputFormat();
+    RecordWriter theRecordWriter = theOutputFormat.getRecordWriter(tContext);
+    writeMapFileOutput(theRecordWriter, tContext);
+
+    // do commit
+    committer.commitTask(tContext);
+    //make sure progress flag was set.
+    // The first time it is set is during commit but ensure that
+    // mergePaths call makes it go again.
+    verify(tContext, atLeast(2)).progress();
+  }
+
+  @Test
   public void testCommitterRepeatableV1() throws Exception {
     testCommitterRetryInternal(1);
   }
 
+  @Test
   public void testCommitterRepeatableV2() throws Exception {
     testCommitterRetryInternal(2);
   }
@@ -430,7 +512,7 @@ public class TestFileOutputCommitter extends TestCase {
 
     try {
       committer.commitJob(jContext);
-      Assert.fail("Commit successful: wrong behavior for the first time " +
+      fail("Commit successful: wrong behavior for the first time " +
           "commit.");
     } catch (IOException e) {
       // commit again.
@@ -438,12 +520,12 @@ public class TestFileOutputCommitter extends TestCase {
         committer.commitJob(jContext);
         // version 1 shouldn't reach to here.
         if (version == 1) {
-          Assert.fail("Commit successful after retry: wrong behavior for " +
+          fail("Commit successful after retry: wrong behavior for " +
               "version 1.");
         }
       } catch (FileNotFoundException ex) {
         if (version == 2) {
-          Assert.fail("Commit failed after retry: wrong behavior for" +
+          fail("Commit failed after retry: wrong behavior for" +
               " version 2.");
         }
         assertTrue(ex.getMessage().contains(committer.getJobAttemptPath(
@@ -481,26 +563,28 @@ public class TestFileOutputCommitter extends TestCase {
 
     // Ensure getReaders call works and also ignores
     // hidden filenames (_ or . prefixes)
+    MapFile.Reader[] readers = {};
     try {
-      MapFileOutputFormat.getReaders(outDir, conf);
-    } catch (Exception e) {
-      fail("Fail to read from MapFileOutputFormat: " + e);
-      e.printStackTrace();
+      readers = MapFileOutputFormat.getReaders(outDir, conf);
+      // validate output
+      validateMapFileOutputContent(FileSystem.get(job.getConfiguration()), outDir);
+    } finally {
+      IOUtils.cleanupWithLogger(null, readers);
+      FileUtil.fullyDelete(new File(outDir.toString()));
     }
-
-    // validate output
-    validateMapFileOutputContent(FileSystem.get(job.getConfiguration()), outDir);
-    FileUtil.fullyDelete(new File(outDir.toString()));
   }
 
+  @Test
   public void testMapFileOutputCommitterV1() throws Exception {
     testMapFileOutputCommitterInternal(1);
   }
-  
+
+  @Test
   public void testMapFileOutputCommitterV2() throws Exception {
     testMapFileOutputCommitterInternal(2);
   }
 
+  @Test
   public void testInvalidVersionNumber() throws IOException {
     Job job = Job.getInstance();
     FileOutputFormat.setOutputPath(job, outDir);
@@ -541,21 +625,23 @@ public class TestFileOutputCommitter extends TestCase {
     committer.abortTask(tContext);
     File expectedFile = new File(new Path(committer.getWorkPath(), partFile)
         .toString());
-    assertFalse("task temp dir still exists", expectedFile.exists());
+    assertFalse(expectedFile.exists(), "task temp dir still exists");
 
     committer.abortJob(jContext, JobStatus.State.FAILED);
     expectedFile = new File(new Path(outDir, FileOutputCommitter.PENDING_DIR_NAME)
         .toString());
-    assertFalse("job temp dir still exists", expectedFile.exists());
-    assertEquals("Output directory not empty", 0, new File(outDir.toString())
-        .listFiles().length);
+    assertFalse(expectedFile.exists(), "job temp dir still exists");
+    assertEquals(0, new File(outDir.toString())
+        .listFiles().length, "Output directory not empty");
     FileUtil.fullyDelete(new File(outDir.toString()));
   }
 
+  @Test
   public void testAbortV1() throws IOException, InterruptedException {
     testAbortInternal(1);
   }
 
+  @Test
   public void testAbortV2() throws IOException, InterruptedException {
     testAbortInternal(2);
   }
@@ -575,7 +661,7 @@ public class TestFileOutputCommitter extends TestCase {
     }
   }
 
-  
+
   private void testFailAbortInternal(int version)
       throws IOException, InterruptedException {
     Job job = Job.getInstance();
@@ -616,7 +702,7 @@ public class TestFileOutputCommitter extends TestCase {
     Path ttd = committer.getTaskAttemptPath(tContext);
     File taskTmpDir = new File(ttd.toUri().getPath());
     File expectedFile = new File(taskTmpDir, partFile);
-    assertTrue(expectedFile + " does not exists", expectedFile.exists());
+    assertTrue(expectedFile.exists(), expectedFile + " does not exists");
 
     th = null;
     try {
@@ -627,14 +713,16 @@ public class TestFileOutputCommitter extends TestCase {
     assertNotNull(th);
     assertTrue(th instanceof IOException);
     assertTrue(th.getMessage().contains("fake delete failed"));
-    assertTrue("job temp dir does not exists", jobTmpDir.exists());
+    assertTrue(jobTmpDir.exists(), "job temp dir does not exists");
     FileUtil.fullyDelete(new File(outDir.toString()));
   }
 
+  @Test
   public void testFailAbortV1() throws Exception {
     testFailAbortInternal(1);
   }
 
+  @Test
   public void testFailAbortV2() throws Exception {
     testFailAbortInternal(2);
   }
@@ -670,72 +758,82 @@ public class TestFileOutputCommitter extends TestCase {
     conf.setInt(FileOutputCommitter.FILEOUTPUTCOMMITTER_ALGORITHM_VERSION,
         version);
 
-    conf.setClass("fs.file.impl", RLFS.class, FileSystem.class);
+    final String fileImpl = "fs.file.impl";
+    final String fileImplClassname = "org.apache.hadoop.fs.LocalFileSystem";
+    conf.setClass(fileImpl, RLFS.class, FileSystem.class);
     FileSystem.closeAll();
 
-    final JobContext jContext = new JobContextImpl(conf, taskID.getJobID());
-    final FileOutputCommitter amCommitter =
-        new FileOutputCommitter(outDir, jContext);
-    amCommitter.setupJob(jContext);
-
-    final TaskAttemptContext[] taCtx = new TaskAttemptContextImpl[2];
-    taCtx[0] = new TaskAttemptContextImpl(conf, taskID);
-    taCtx[1] = new TaskAttemptContextImpl(conf, taskID1);
-
-    final TextOutputFormat[] tof = new TextOutputFormat[2];
-    for (int i = 0; i < tof.length; i++) {
-      tof[i] = new TextOutputFormat() {
-        @Override
-        public Path getDefaultWorkFile(TaskAttemptContext context,
-            String extension) throws IOException {
-          final FileOutputCommitter foc = (FileOutputCommitter)
-              getOutputCommitter(context);
-          return new Path(new Path(foc.getWorkPath(), SUB_DIR),
-              getUniqueFile(context, getOutputName(context), extension));
-        }
-      };
-    }
-
-    final ExecutorService executor = HadoopExecutors.newFixedThreadPool(2);
     try {
-      for (int i = 0; i < taCtx.length; i++) {
-        final int taskIdx = i;
-        executor.submit(new Callable<Void>() {
+      final JobContext jContext = new JobContextImpl(conf, taskID.getJobID());
+      final FileOutputCommitter amCommitter =
+          new FileOutputCommitter(outDir, jContext);
+      amCommitter.setupJob(jContext);
+
+      final TaskAttemptContext[] taCtx = new TaskAttemptContextImpl[2];
+      taCtx[0] = new TaskAttemptContextImpl(conf, taskID);
+      taCtx[1] = new TaskAttemptContextImpl(conf, taskID1);
+
+      final TextOutputFormat[] tof = new TextOutputFormat[2];
+      for (int i = 0; i < tof.length; i++) {
+        tof[i] = new TextOutputFormat() {
           @Override
-          public Void call() throws IOException, InterruptedException {
-            final OutputCommitter outputCommitter =
-                tof[taskIdx].getOutputCommitter(taCtx[taskIdx]);
-            outputCommitter.setupTask(taCtx[taskIdx]);
-            final RecordWriter rw =
-                tof[taskIdx].getRecordWriter(taCtx[taskIdx]);
-            writeOutput(rw, taCtx[taskIdx]);
-            outputCommitter.commitTask(taCtx[taskIdx]);
-            return null;
+          public Path getDefaultWorkFile(TaskAttemptContext context,
+              String extension) throws IOException {
+            final FileOutputCommitter foc = (FileOutputCommitter)
+                getOutputCommitter(context);
+            return new Path(new Path(foc.getWorkPath(), SUB_DIR),
+                getUniqueFile(context, getOutputName(context), extension));
           }
-        });
+        };
       }
+
+      final ExecutorService executor = HadoopExecutors.newFixedThreadPool(2);
+      try {
+        for (int i = 0; i < taCtx.length; i++) {
+          final int taskIdx = i;
+          executor.submit(new Callable<Void>() {
+            @Override
+            public Void call() throws IOException, InterruptedException {
+              final OutputCommitter outputCommitter =
+                  tof[taskIdx].getOutputCommitter(taCtx[taskIdx]);
+              outputCommitter.setupTask(taCtx[taskIdx]);
+              final RecordWriter rw =
+                  tof[taskIdx].getRecordWriter(taCtx[taskIdx]);
+              writeOutput(rw, taCtx[taskIdx]);
+              outputCommitter.commitTask(taCtx[taskIdx]);
+              return null;
+            }
+          });
+        }
+      } finally {
+        executor.shutdown();
+        while (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
+          LOG.info("Awaiting thread termination!");
+        }
+      }
+
+      amCommitter.commitJob(jContext);
+      final RawLocalFileSystem lfs = new RawLocalFileSystem();
+      lfs.setConf(conf);
+      assertFalse(lfs.exists(new Path(OUT_SUB_DIR, SUB_DIR)),
+          "Must not end up with sub_dir/sub_dir");
+
+      // validate output
+      validateContent(OUT_SUB_DIR);
+      FileUtil.fullyDelete(new File(outDir.toString()));
     } finally {
-      executor.shutdown();
-      while (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
-        LOG.info("Awaiting thread termination!");
-      }
+      // needed to avoid this test contaminating others in the same JVM
+      FileSystem.closeAll();
+      conf.set(fileImpl, fileImplClassname);
     }
-
-    amCommitter.commitJob(jContext);
-    final RawLocalFileSystem lfs = new RawLocalFileSystem();
-    lfs.setConf(conf);
-    assertFalse("Must not end up with sub_dir/sub_dir",
-        lfs.exists(new Path(OUT_SUB_DIR, SUB_DIR)));
-
-    // validate output
-    validateContent(OUT_SUB_DIR);
-    FileUtil.fullyDelete(new File(outDir.toString()));
   }
 
+  @Test
   public void testConcurrentCommitTaskWithSubDirV1() throws Exception {
     testConcurrentCommitTaskWithSubDir(1);
   }
 
+  @Test
   public void testConcurrentCommitTaskWithSubDirV2() throws Exception {
     testConcurrentCommitTaskWithSubDir(2);
   }
@@ -747,7 +845,7 @@ public class TestFileOutputCommitter extends TestCase {
     String contents = null;
     try {
       in.read(buf, 0, len);
-      contents = new String(buf, "UTF-8");
+      contents = new String(buf, StandardCharsets.UTF_8);
     } finally {
       in.close();
     }

@@ -17,35 +17,39 @@
 */
 package org.apache.hadoop.hdfs;
 
-import static org.apache.hadoop.test.MetricsAsserts.assertGauge;
+import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.DatanodeAdminProperties;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.blockmanagement.CombinedHostFileManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.HostConfigManager;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.util.HostsFileWriter;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 /**
  * This test ensures the all types of data node report work correctly.
  */
 public class TestDatanodeReport {
-  static final Log LOG = LogFactory.getLog(TestDatanodeReport.class);
+  static final Logger LOG = LoggerFactory.getLogger(TestDatanodeReport.class);
   final static private Configuration conf = new HdfsConfiguration();
   final static private int NUM_OF_DATANODES = 4;
 
@@ -77,21 +81,21 @@ public class TestDatanodeReport {
       datanode.setUpgradeDomain(ud1);
       hostsFileWriter.initIncludeHosts(
           new DatanodeAdminProperties[]{datanode});
-      client.refreshNodes();
+      cluster.getNamesystem().getBlockManager().getDatanodeManager().refreshNodes(conf);
       DatanodeInfo[] all = client.datanodeReport(DatanodeReportType.ALL);
       assertEquals(all[0].getUpgradeDomain(), ud1);
 
       datanode.setUpgradeDomain(null);
       hostsFileWriter.initIncludeHosts(
           new DatanodeAdminProperties[]{datanode});
-      client.refreshNodes();
+      cluster.getNamesystem().getBlockManager().getDatanodeManager().refreshNodes(conf);
       all = client.datanodeReport(DatanodeReportType.ALL);
       assertEquals(all[0].getUpgradeDomain(), null);
 
       datanode.setUpgradeDomain(ud2);
       hostsFileWriter.initIncludeHosts(
           new DatanodeAdminProperties[]{datanode});
-      client.refreshNodes();
+      cluster.getNamesystem().getBlockManager().getDatanodeManager().refreshNodes(conf);
       all = client.datanodeReport(DatanodeReportType.ALL);
       assertEquals(all[0].getUpgradeDomain(), ud2);
     } finally {
@@ -139,12 +143,42 @@ public class TestDatanodeReport {
       assertReports(1, DatanodeReportType.DEAD, client, datanodes, null);
 
       Thread.sleep(5000);
-      assertGauge("ExpiredHeartbeats", 1, getMetrics("FSNamesystem"));
+      assertCounter("ExpiredHeartbeats", 1, getMetrics("FSNamesystem"));
     } finally {
       cluster.shutdown();
     }
   }
-  
+
+  @Test
+  public void testDatanodeReportMissingBlock() throws Exception {
+    conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1L);
+    conf.setLong(HdfsClientConfigKeys.Retry.WINDOW_BASE_KEY, 1);
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(NUM_OF_DATANODES).build();
+    try {
+      // wait until the cluster is up
+      cluster.waitActive();
+      DistributedFileSystem fs = cluster.getFileSystem();
+      Path p = new Path("/testDatanodeReportMissingBlock");
+      DFSTestUtil.writeFile(fs, p, "testdata");
+      LocatedBlock lb = fs.getClient().getLocatedBlocks(p.toString(), 0).get(0);
+      assertEquals(3, lb.getLocations().length);
+      ExtendedBlock b = lb.getBlock();
+      cluster.corruptBlockOnDataNodesByDeletingBlockFile(b);
+      try {
+        DFSTestUtil.readFile(fs, p);
+        fail("Must throw exception as the block doesn't exists on disk");
+      } catch (IOException e) {
+        // all bad datanodes
+      }
+      cluster.triggerHeartbeats(); // IBR delete ack
+      lb = fs.getClient().getLocatedBlocks(p.toString(), 0).get(0);
+      assertEquals(0, lb.getLocations().length);
+    } finally {
+      cluster.shutdown();
+    }
+  }
+
   final static Comparator<StorageReport> CMP = new Comparator<StorageReport>() {
     @Override
     public int compare(StorageReport left, StorageReport right) {

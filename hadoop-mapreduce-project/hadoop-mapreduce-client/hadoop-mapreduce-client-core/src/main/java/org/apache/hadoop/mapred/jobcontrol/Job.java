@@ -23,19 +23,19 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.mapred.JobClient;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.JobID;
 import org.apache.hadoop.mapreduce.lib.jobcontrol.ControlledJob;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @InterfaceAudience.Public
 @InterfaceStability.Stable
 public class Job extends ControlledJob {
-  static final Log LOG = LogFactory.getLog(Job.class);
+  static final Logger LOG = LoggerFactory.getLogger(Job.class);
 
   final public static int SUCCESS = 0;
   final public static int WAITING = 1;
@@ -143,7 +143,7 @@ public class Job extends ControlledJob {
    * is waiting to run, not during or afterwards.
    * 
    * @param dependingJob Job that this Job depends on.
-   * @return <tt>true</tt> if the Job was added.
+   * @return <code>true</code> if the Job was added.
    */
   public synchronized boolean addDependingJob(Job dependingJob) {
     return super.addDependingJob(dependingJob);

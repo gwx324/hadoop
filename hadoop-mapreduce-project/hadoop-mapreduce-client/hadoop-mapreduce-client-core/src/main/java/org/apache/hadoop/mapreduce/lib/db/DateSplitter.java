@@ -20,15 +20,13 @@ package org.apache.hadoop.mapreduce.lib.db;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Time;
-import java.sql.Timestamp;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -45,7 +43,7 @@ import org.apache.hadoop.mapreduce.MRJobConfig;
 @InterfaceStability.Evolving
 public class DateSplitter extends IntegerSplitter {
 
-  private static final Log LOG = LogFactory.getLog(DateSplitter.class);
+  private static final Logger LOG = LoggerFactory.getLogger(DateSplitter.class);
 
   public List<InputSplit> split(Configuration conf, ResultSet results, String colName)
       throws SQLException {

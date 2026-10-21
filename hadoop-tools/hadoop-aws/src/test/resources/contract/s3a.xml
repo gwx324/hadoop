@@ -38,13 +38,33 @@
   </property>
 
   <property>
+    <name>fs.contract.create-visibility-delayed</name>
+    <value>true</value>
+  </property>
+
+  <property>
     <name>fs.contract.is-case-sensitive</name>
     <value>true</value>
   </property>
 
   <property>
-    <name>fs.contract.rename-returns-false-if-source-missing</name>
+    <name>fs.contract.rename-creates-dest-dirs</name>
     <value>true</value>
+  </property>
+
+  <property>
+    <name>fs.contract.rename-returns-false-if-source-missing</name>
+    <value>false</value>
+  </property>
+
+  <property>
+    <name>fs.contract.rename-overwrites-dest</name>
+    <value>false</value>
+  </property>
+
+  <property>
+    <name>fs.contract.rename-returns-false-if-dest-exists</name>
+    <value>false</value>
   </property>
 
   <property>
@@ -103,12 +123,32 @@
   </property>
 
   <property>
+    <name>fs.contract.supports-multipartuploader</name>
+    <value>true</value>
+  </property>
+
+  <property>
     <name>fs.contract.supports-unix-permissions</name>
     <value>false</value>
   </property>
 
   <property>
     <name>fs.contract.rename-overwrites-dest</name>
+    <value>false</value>
+  </property>
+
+  <property>
+    <name>fs.contract.supports-unbuffer</name>
+    <value>true</value>
+  </property>
+
+  <property>
+    <name>fs.contract.create-file-under-file-allowed</name>
+    <value>true</value>
+  </property>
+
+  <property>
+    <name>fs.contract.vector-io-early-eof-check</name>
     <value>true</value>
   </property>
 

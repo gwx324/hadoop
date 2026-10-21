@@ -21,8 +21,6 @@ package org.apache.hadoop.yarn.client.api.impl;
 import java.io.IOException;
 import java.util.ArrayList;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.yarn.api.ApplicationMasterProtocol;
@@ -44,29 +42,44 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.MiniYARNCluster;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairSchedulerConfiguration;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * End-to-End test cases for the AMRMProxy Service.
  */
 public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
 
-  private static final Log LOG = LogFactory.getLog(TestAMRMProxy.class);
+  private static final Logger LOG = LoggerFactory
+          .getLogger(TestAMRMProxy.class);
 
   /*
    * This test validates register, allocate and finish of an application through
    * the AMRMPRoxy.
    */
-  @Test(timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testAMRMProxyE2E() throws Exception {
-    MiniYARNCluster cluster = new MiniYARNCluster("testAMRMProxyE2E", 1, 1, 1);
-    YarnClient rmClient = null;
     ApplicationMasterProtocol client;
 
-    try {
+    try (MiniYARNCluster cluster = new MiniYARNCluster("testAMRMProxyE2E",
+        1, 1, 1);
+            YarnClient rmClient = YarnClient.createYarnClient()) {
       Configuration conf = new YarnConfiguration();
       conf.setBoolean(YarnConfiguration.AMRM_PROXY_ENABLED, true);
+      // Make sure if using FairScheduler that we can assign multiple containers
+      // in a single heartbeat later
+      conf.setBoolean(FairSchedulerConfiguration.ASSIGN_MULTIPLE, true);
       cluster.init(conf);
       cluster.start();
       final Configuration yarnConf = cluster.getConfig();
@@ -75,7 +88,6 @@ public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
 
       yarnConf.set(YarnConfiguration.RM_SCHEDULER_ADDRESS,
           YarnConfiguration.DEFAULT_AMRM_PROXY_ADDRESS);
-      rmClient = YarnClient.createYarnClient();
       rmClient.init(yarnConf);
       rmClient.start();
 
@@ -92,18 +104,17 @@ public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
           client.registerApplicationMaster(RegisterApplicationMasterRequest
               .newInstance(NetUtils.getHostname(), 1024, ""));
 
-      Assert.assertNotNull(responseRegister);
-      Assert.assertNotNull(responseRegister.getQueue());
-      Assert.assertNotNull(responseRegister.getApplicationACLs());
-      Assert.assertNotNull(responseRegister.getClientToAMTokenMasterKey());
-      Assert
-          .assertNotNull(responseRegister.getContainersFromPreviousAttempts());
-      Assert.assertNotNull(responseRegister.getSchedulerResourceTypes());
-      Assert.assertNotNull(responseRegister.getMaximumResourceCapability());
+      assertNotNull(responseRegister);
+      assertNotNull(responseRegister.getQueue());
+      assertNotNull(responseRegister.getApplicationACLs());
+      assertNotNull(responseRegister.getClientToAMTokenMasterKey());
+      assertNotNull(responseRegister.getContainersFromPreviousAttempts());
+      assertNotNull(responseRegister.getSchedulerResourceTypes());
+      assertNotNull(responseRegister.getMaximumResourceCapability());
 
       RMApp rmApp =
           cluster.getResourceManager().getRMContext().getRMApps().get(appId);
-      Assert.assertEquals(RMAppState.RUNNING, rmApp.getState());
+      assertEquals(RMAppState.RUNNING, rmApp.getState());
 
       LOG.info("testAMRMProxyE2E - Allocate Resources Application Master");
 
@@ -111,8 +122,8 @@ public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
           createAllocateRequest(rmClient.getNodeReports(NodeState.RUNNING));
 
       AllocateResponse allocResponse = client.allocate(request);
-      Assert.assertNotNull(allocResponse);
-      Assert.assertEquals(0, allocResponse.getAllocatedContainers().size());
+      assertNotNull(allocResponse);
+      assertEquals(0, allocResponse.getAllocatedContainers().size());
 
       request.setAskList(new ArrayList<ResourceRequest>());
       request.setResponseId(request.getResponseId() + 1);
@@ -121,8 +132,8 @@ public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
 
       // RM should allocate container within 2 calls to allocate()
       allocResponse = client.allocate(request);
-      Assert.assertNotNull(allocResponse);
-      Assert.assertEquals(2, allocResponse.getAllocatedContainers().size());
+      assertNotNull(allocResponse);
+      assertEquals(2, allocResponse.getAllocatedContainers().size());
 
       LOG.info("testAMRMPRoxy - Finish Application Master");
 
@@ -130,47 +141,41 @@ public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
           client.finishApplicationMaster(FinishApplicationMasterRequest
               .newInstance(FinalApplicationStatus.SUCCEEDED, "success", null));
 
-      Assert.assertNotNull(responseFinish);
+      assertNotNull(responseFinish);
 
       Thread.sleep(500);
-      Assert.assertNotEquals(RMAppState.FINISHED, rmApp.getState());
+      assertNotEquals(RMAppState.FINISHED, rmApp.getState());
 
-    } finally {
-      if (rmClient != null) {
-        rmClient.stop();
-      }
-      cluster.stop();
     }
   }
 
   /*
    * This test validates the token renewal from the AMRMPRoxy. The test verifies
-   * that the received token it is different from the previous one within 5
-   * requests.
+   * that the received token from AMRMProxy is different from the previous one
+   * within 5 requests.
    */
-  @Test(timeout = 120000)
-  public void testE2ETokenRenewal() throws Exception {
-    MiniYARNCluster cluster =
-        new MiniYARNCluster("testE2ETokenRenewal", 1, 1, 1);
-    YarnClient rmClient = null;
+  @Test
+  @Timeout(value = 120)
+  public void testAMRMProxyTokenRenewal() throws Exception {
     ApplicationMasterProtocol client;
 
-    try {
+    try (MiniYARNCluster cluster =
+        new MiniYARNCluster("testE2ETokenRenewal", 1, 1, 1);
+           YarnClient rmClient = YarnClient.createYarnClient()) {
       Configuration conf = new YarnConfiguration();
       conf.setBoolean(YarnConfiguration.AMRM_PROXY_ENABLED, true);
-      conf.setInt(YarnConfiguration.RM_NM_EXPIRY_INTERVAL_MS, 1500);
-      conf.setInt(YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_MS, 1500);
-      conf.setInt(YarnConfiguration.RM_AM_EXPIRY_INTERVAL_MS, 1500);
+      conf.setInt(YarnConfiguration.RM_NM_EXPIRY_INTERVAL_MS, 8000);
+      conf.setInt(YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_MS, 8000);
+      conf.setInt(YarnConfiguration.RM_AM_EXPIRY_INTERVAL_MS, 12000);
       // RM_AMRM_TOKEN_MASTER_KEY_ROLLING_INTERVAL_SECS should be at least
       // RM_AM_EXPIRY_INTERVAL_MS * 1.5 *3
       conf.setInt(
-          YarnConfiguration.RM_AMRM_TOKEN_MASTER_KEY_ROLLING_INTERVAL_SECS, 6);
+          YarnConfiguration.RM_AMRM_TOKEN_MASTER_KEY_ROLLING_INTERVAL_SECS, 37);
       cluster.init(conf);
       cluster.start();
       final Configuration yarnConf = cluster.getConfig();
       yarnConf.set(YarnConfiguration.RM_SCHEDULER_ADDRESS,
           YarnConfiguration.DEFAULT_AMRM_PROXY_ADDRESS);
-      rmClient = YarnClient.createYarnClient();
       rmClient.init(yarnConf);
       rmClient.start();
 
@@ -184,7 +189,8 @@ public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
       client.registerApplicationMaster(RegisterApplicationMasterRequest
           .newInstance(NetUtils.getHostname(), 1024, ""));
 
-      LOG.info("testAMRMPRoxy - Allocate Resources Application Master");
+      LOG.info(
+          "testAMRMProxyTokenRenewal - Allocate Resources Application Master");
 
       AllocateRequest request =
           createAllocateRequest(rmClient.getNodeReports(NodeState.RUNNING));
@@ -204,23 +210,18 @@ public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
 
         lastToken = response.getAMRMToken();
 
-        // Time slot to be sure the RM renew the token
-        Thread.sleep(1500);
+        // Time slot to be sure the AMRMProxy renew the token
+        Thread.sleep(9000);
 
       }
 
-      Assert.assertFalse(response.getAMRMToken().equals(lastToken));
+      assertFalse(response.getAMRMToken().equals(lastToken));
 
       LOG.info("testAMRMPRoxy - Finish Application Master");
 
       client.finishApplicationMaster(FinishApplicationMasterRequest
           .newInstance(FinalApplicationStatus.SUCCEEDED, "success", null));
 
-    } finally {
-      if (rmClient != null) {
-        rmClient.stop();
-      }
-      cluster.stop();
     }
   }
 
@@ -228,13 +229,14 @@ public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
    * This test validates that an AM cannot register directly to the RM, with the
    * token provided by the AMRMProxy.
    */
-  @Test(timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testE2ETokenSwap() throws Exception {
-    MiniYARNCluster cluster = new MiniYARNCluster("testE2ETokenSwap", 1, 1, 1);
-    YarnClient rmClient = null;
     ApplicationMasterProtocol client;
 
-    try {
+    try (MiniYARNCluster cluster = new MiniYARNCluster("testE2ETokenSwap",
+        1, 1, 1);
+            YarnClient rmClient = YarnClient.createYarnClient()) {
       Configuration conf = new YarnConfiguration();
       conf.setBoolean(YarnConfiguration.AMRM_PROXY_ENABLED, true);
       cluster.init(conf);
@@ -242,7 +244,6 @@ public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
 
       // the client will connect to the RM with the token provided by AMRMProxy
       final Configuration yarnConf = cluster.getConfig();
-      rmClient = YarnClient.createYarnClient();
       rmClient.init(yarnConf);
       rmClient.start();
 
@@ -254,17 +255,12 @@ public class TestAMRMProxy extends BaseAMRMProxyE2ETest {
       try {
         client.registerApplicationMaster(RegisterApplicationMasterRequest
             .newInstance(NetUtils.getHostname(), 1024, ""));
-        Assert.fail();
+        fail();
       } catch (IOException e) {
-        Assert.assertTrue(
+        assertTrue(
             e.getMessage().startsWith("Invalid AMRMToken from appattempt_"));
       }
 
-    } finally {
-      if (rmClient != null) {
-        rmClient.stop();
-      }
-      cluster.stop();
     }
   }
 }

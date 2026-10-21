@@ -24,12 +24,13 @@ import java.io.IOException;
 
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
-import org.junit.Before;
-import org.junit.Test;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.fail;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * TestCase for {@link GenericWritable} class.
@@ -41,7 +42,7 @@ public class TestGenericWritable {
   public static final String CONF_TEST_KEY = "test.generic.writable";
   public static final String CONF_TEST_VALUE = "dummy";
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new Configuration();
     //set the configuration parameter
@@ -100,8 +101,8 @@ public class TestGenericWritable {
     public void readFields(DataInput in) throws IOException {
       super.readFields(in);
       //needs a configuration parameter
-      assertEquals("Configuration is not set for the wrapped object", 
-          CONF_TEST_VALUE, getConf().get(CONF_TEST_KEY)); 
+      assertEquals(CONF_TEST_VALUE, getConf().get(CONF_TEST_KEY),
+          "Configuration is not set for the wrapped object");
     }
     @Override
     public void write(DataOutput out) throws IOException {
@@ -187,6 +188,24 @@ public class TestGenericWritable {
     FooGenericWritable generic = new FooGenericWritable();
     generic.set(foo);
     assertEquals(foo, generic.get());
+  }
+
+  /**
+   * A type index that falls outside the registered types array is reported as
+   * an {@link IOException}.
+   */
+  @Test
+  public void testReadFieldsRejectsOutOfRangeType() throws Exception {
+    DataOutputBuffer out = new DataOutputBuffer();
+    out.writeByte(0xff);
+    out.close();
+    try (DataInputBuffer in = new DataInputBuffer()) {
+      in.reset(out.getData(), out.getLength());
+      FooGenericWritable generic = new FooGenericWritable();
+      generic.setConf(conf);
+      intercept(IOException.class, "out of range", () ->
+          generic.readFields(in));
+    }
   }
 
 }

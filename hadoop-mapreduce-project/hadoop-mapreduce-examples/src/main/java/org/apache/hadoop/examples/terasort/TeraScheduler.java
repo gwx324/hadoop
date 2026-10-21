@@ -19,19 +19,20 @@
 package org.apache.hadoop.examples.terasort;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.lib.input.FileSplit;
 import org.apache.hadoop.mapreduce.server.tasktracker.TTConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Charsets;
 
 class TeraScheduler {
-  private static final Log LOG = LogFactory.getLog(TeraScheduler.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TeraScheduler.class);
   private Split[] splits;
   private List<Host> hosts = new ArrayList<Host>();
   private int slotsPerHost;
@@ -46,7 +47,7 @@ class TeraScheduler {
       this.filename = filename;
     }
     public String toString() {
-      StringBuffer result = new StringBuffer();
+      StringBuilder result = new StringBuilder();
       result.append(filename);
       result.append(" on ");
       for(Host host: locations) {
@@ -63,7 +64,7 @@ class TeraScheduler {
       this.hostname = hostname;
     }
     public String toString() {
-      StringBuffer result = new StringBuffer();
+      StringBuilder result = new StringBuilder();
       result.append(splits.size());
       result.append(" ");
       result.append(hostname);
@@ -73,14 +74,14 @@ class TeraScheduler {
 
   List<String> readFile(String filename) throws IOException {
     List<String> result = new ArrayList<String>(10000);
-    BufferedReader in = new BufferedReader(
-        new InputStreamReader(new FileInputStream(filename), Charsets.UTF_8));
-    String line = in.readLine();
-    while (line != null) {
-      result.add(line);
-      line = in.readLine();
+    try (BufferedReader in = new BufferedReader(
+        new InputStreamReader(new FileInputStream(filename), StandardCharsets.UTF_8))) {
+      String line = in.readLine();
+      while (line != null) {
+        result.add(line);
+        line = in.readLine();
+      }
     }
-    in.close();
     return result;
   }
 

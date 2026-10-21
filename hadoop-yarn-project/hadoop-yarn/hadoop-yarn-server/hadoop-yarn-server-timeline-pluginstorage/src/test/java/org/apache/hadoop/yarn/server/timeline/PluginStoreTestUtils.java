@@ -17,6 +17,13 @@
  */
 package org.apache.hadoop.yarn.server.timeline;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.util.MinimalPrettyPrinter;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.type.TypeFactory;
+import com.fasterxml.jackson.module.jaxb.JaxbAnnotationIntrospector;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -30,15 +37,9 @@ import org.apache.hadoop.yarn.api.records.timeline.TimelineEvent;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.timeline.security.TimelineACLsManager;
-import org.codehaus.jackson.JsonFactory;
-import org.codehaus.jackson.JsonGenerator;
-import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.jackson.map.SerializationConfig;
-import org.codehaus.jackson.map.annotate.JsonSerialize;
-import org.codehaus.jackson.util.MinimalPrettyPrinter;
-import org.codehaus.jackson.xc.JaxbAnnotationIntrospector;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -48,8 +49,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Utility methods related to the ATS v1.5 plugin storage tests.
@@ -108,9 +109,9 @@ public class PluginStoreTestUtils {
 
   static ObjectMapper createObjectMapper() {
     ObjectMapper mapper = new ObjectMapper();
-    mapper.setAnnotationIntrospector(new JaxbAnnotationIntrospector());
-    mapper.setSerializationInclusion(JsonSerialize.Inclusion.NON_NULL);
-    mapper.configure(SerializationConfig.Feature.CLOSE_CLOSEABLE, false);
+    mapper.setAnnotationIntrospector(
+        new JaxbAnnotationIntrospector(TypeFactory.defaultInstance()));
+    mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
     return mapper;
   }
 
@@ -175,10 +176,8 @@ public class PluginStoreTestUtils {
         UserGroupInformation.getLoginUser());
     assertNotNull(entity1);
     assertNotNull(entity2);
-    assertEquals("Failed to read out entity 1",
-        (Long) 123l, entity1.getStartTime());
-    assertEquals("Failed to read out entity 2",
-        (Long) 456l, entity2.getStartTime());
+    assertEquals((Long) 123l, entity1.getStartTime(), "Failed to read out entity 1");
+    assertEquals((Long) 456l, entity2.getStartTime(), "Failed to read out entity 2");
   }
 
   /**
@@ -232,7 +231,7 @@ public class PluginStoreTestUtils {
       FileSystem fs) throws IOException {
     FSDataOutputStream outStream = createLogFile(logPath, fs);
     JsonGenerator jsonGenerator
-        = (new JsonFactory()).createJsonGenerator(outStream);
+        = new JsonFactory().createGenerator((OutputStream)outStream);
     jsonGenerator.setPrettyPrinter(new MinimalPrettyPrinter("\n"));
     ObjectMapper objMapper = createObjectMapper();
     for (TimelineEntity entity : entities.getEntities()) {

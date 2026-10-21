@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.crypto.key.kms.server;
 
+import org.apache.commons.lang3.reflect.FieldUtils;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
 import org.apache.curator.test.TestingServer;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.KeyProviderFactory;
@@ -28,28 +30,36 @@ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.CryptoExtension;
 import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.EncryptedKeyVersion;
 import org.apache.hadoop.crypto.key.KeyProviderDelegationTokenExtension;
 import org.apache.hadoop.crypto.key.kms.KMSClientProvider;
+import org.apache.hadoop.crypto.key.kms.KMSDelegationToken;
 import org.apache.hadoop.crypto.key.kms.LoadBalancingKMSClientProvider;
+import org.apache.hadoop.crypto.key.kms.ValueQueue;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.MultipleIOException;
 import org.apache.hadoop.minikdc.MiniKdc;
+import org.apache.hadoop.security.AuthenticationFilterInitializer;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
+import org.apache.hadoop.security.ssl.SSLFactory;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenIdentifier;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Time;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.apache.http.client.utils.URIBuilder;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.event.Level;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.net.ssl.HttpsURLConnection;
 import javax.security.auth.login.AppConfigurationEntry;
 
 import java.io.ByteArrayInputStream;
@@ -57,6 +67,7 @@ import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.Writer;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -64,25 +75,50 @@ import java.net.ServerSocket;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URL;
+import java.net.URLConnection;
+import java.security.GeneralSecurityException;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+@Timeout(180)
 public class TestKMS {
   private static final Logger LOG = LoggerFactory.getLogger(TestKMS.class);
 
-  @Rule
-  public final Timeout testTimeout = new Timeout(180000);
+  private SSLFactory sslFactory;
 
-  @Before
+  // Keep track of all key providers created during a test case, so they can be
+  // closed at test tearDown.
+  private List<KeyProvider> providersCreated = new LinkedList<>();
+
+  @BeforeEach
   public void setUp() throws Exception {
     setUpMiniKdc();
     // resetting kerberos security
@@ -103,17 +139,83 @@ public class TestKMS {
   }
 
   public static abstract class KMSCallable<T> implements Callable<T> {
-    private URL kmsUrl;
+    private List<URL> kmsUrl;
 
     protected URL getKMSUrl() {
-      return kmsUrl;
+      return kmsUrl.get(0);
+    }
+
+    protected URL[] getKMSHAUrl() {
+      URL[] urls = new URL[kmsUrl.size()];
+      return kmsUrl.toArray(urls);
+    }
+
+    protected void addKMSUrl(URL url) {
+      if (kmsUrl == null) {
+        kmsUrl = new ArrayList<URL>();
+      }
+      kmsUrl.add(url);
+    }
+
+    /*
+     * The format of the returned value will be
+     * kms://http:kms1.example1.com:port1,kms://http:kms2.example2.com:port2
+     */
+    protected String generateLoadBalancingKeyProviderUriString() {
+      if (kmsUrl == null || kmsUrl.size() == 0) {
+        return null;
+      }
+      StringBuilder sb = new StringBuilder();
+
+      for (int i = 0; i < kmsUrl.size(); i++) {
+        sb.append(KMSClientProvider.SCHEME_NAME + "://" +
+            kmsUrl.get(0).getProtocol() + "@");
+        URL url = kmsUrl.get(i);
+        sb.append(url.getAuthority());
+        if (url.getPath() != null) {
+          sb.append(url.getPath());
+        }
+        if (i < kmsUrl.size() - 1) {
+          sb.append(",");
+        }
+      }
+      return sb.toString();
     }
   }
 
   protected KeyProvider createProvider(URI uri, Configuration conf)
       throws IOException {
-    return new LoadBalancingKMSClientProvider(
-        new KMSClientProvider[] { new KMSClientProvider(uri, conf) }, conf);
+    final KeyProvider ret = new LoadBalancingKMSClientProvider(uri,
+        new KMSClientProvider[] {new KMSClientProvider(uri, conf)}, conf);
+    providersCreated.add(ret);
+    return ret;
+  }
+
+  /**
+  * create a LoadBalancingKMSClientProvider from an array of URIs.
+  * @param uris an array of KMS URIs
+  * @param conf configuration object
+  * @return a LoadBalancingKMSClientProvider object
+  * @throws IOException
+  */
+  protected LoadBalancingKMSClientProvider createHAProvider(URI lbUri,
+      URI[] uris, Configuration conf) throws IOException {
+    KMSClientProvider[] providers = new KMSClientProvider[uris.length];
+    for (int i = 0; i < providers.length; i++) {
+      providers[i] =
+          new KMSClientProvider(uris[i], conf);
+    }
+    final LoadBalancingKMSClientProvider ret =
+        new LoadBalancingKMSClientProvider(lbUri, providers, conf);
+    providersCreated.add(ret);
+    return ret;
+  }
+
+  private KMSClientProvider createKMSClientProvider(URI uri, Configuration conf)
+      throws IOException {
+    final KMSClientProvider ret = new KMSClientProvider(uri, conf);
+    providersCreated.add(ret);
+    return ret;
   }
 
   protected <T> T runServer(String keystore, String password, File confDir,
@@ -123,31 +225,63 @@ public class TestKMS {
 
   protected <T> T runServer(int port, String keystore, String password, File confDir,
       KMSCallable<T> callable) throws Exception {
+    return runServer(new int[] {port}, keystore, password, confDir, callable);
+  }
+
+  protected <T> T runServer(int[] ports, String keystore, String password,
+      File confDir, KMSCallable<T> callable) throws Exception {
     MiniKMS.Builder miniKMSBuilder = new MiniKMS.Builder().setKmsConfDir(confDir)
         .setLog4jConfFile("log4j.properties");
     if (keystore != null) {
       miniKMSBuilder.setSslConf(new File(keystore), password);
     }
-    if (port > 0) {
-      miniKMSBuilder.setPort(port);
+    final List<MiniKMS> kmsList = new ArrayList<>();
+
+    for (int i = 0; i < ports.length; i++) {
+      if (ports[i] > 0) {
+        miniKMSBuilder.setPort(ports[i]);
+      }
+      MiniKMS miniKMS = miniKMSBuilder.build();
+      kmsList.add(miniKMS);
+      miniKMS.start();
+      LOG.info("Test KMS running at: " + miniKMS.getKMSUrl());
+      callable.addKMSUrl(miniKMS.getKMSUrl());
     }
-    MiniKMS miniKMS = miniKMSBuilder.build();
-    miniKMS.start();
     try {
-      System.out.println("Test KMS running at: " + miniKMS.getKMSUrl());
-      callable.kmsUrl = miniKMS.getKMSUrl();
       return callable.call();
     } finally {
-      miniKMS.stop();
+      for (MiniKMS miniKMS: kmsList) {
+        miniKMS.stop();
+      }
     }
   }
 
   protected Configuration createBaseKMSConf(File keyStoreDir) throws Exception {
-    Configuration conf = new Configuration(false);
-    conf.set(KMSConfiguration.KEY_PROVIDER_URI,
+    return createBaseKMSConf(keyStoreDir, null);
+  }
+
+  /**
+   * The Configuration object is shared by both KMS client and server in unit
+   * tests because UGI gets/sets it to a static variable.
+   * As a workaround, make sure the client configurations are copied to server
+   * so that client can read them.
+   * @param keyStoreDir where keystore is located.
+   * @param conf KMS client configuration
+   * @return KMS server configuration based on client.
+   * @throws Exception
+   */
+  protected Configuration createBaseKMSConf(File keyStoreDir,
+      Configuration conf) throws Exception {
+    Configuration newConf;
+    if (conf == null) {
+      newConf = new Configuration(false);
+    } else {
+      newConf = new Configuration(conf);
+    }
+    newConf.set(KMSConfiguration.KEY_PROVIDER_URI,
         "jceks://file@" + new Path(keyStoreDir.getAbsolutePath(), "kms.keystore").toUri());
-    conf.set("hadoop.kms.authentication.type", "simple");
-    return conf;
+    newConf.set("hadoop.kms.authentication.type", "simple");
+    return newConf;
   }
 
   public static void writeConf(File confDir, Configuration conf)
@@ -173,6 +307,13 @@ public class TestKMS {
     return new URI("kms://" + str);
   }
 
+  public static URI[] createKMSHAUri(URL[] kmsUrls) throws Exception {
+    URI[] uris = new URI[kmsUrls.length];
+    for (int i=0; i< kmsUrls.length; i++) {
+      uris[i] = createKMSUri(kmsUrls[i]);
+    }
+    return uris;
+  }
 
   private static class KerberosConfiguration
       extends javax.security.auth.login.Configuration {
@@ -239,6 +380,7 @@ public class TestKMS {
     principals.add("otheradmin");
     principals.add("client/host");
     principals.add("client1");
+    principals.add("foo");
     for (KMSACLs.Type type : KMSACLs.Type.values()) {
       principals.add(type.toString());
     }
@@ -253,14 +395,29 @@ public class TestKMS {
     setUpMiniKdc(kdcConf);
   }
 
-  @After
-  public void tearDownMiniKdc() throws Exception {
+  @AfterEach
+  public void tearDown() throws Exception {
     if (kdc != null) {
       kdc.stop();
       kdc = null;
     }
     UserGroupInformation.setShouldRenewImmediatelyForTests(false);
     UserGroupInformation.reset();
+    if (!providersCreated.isEmpty()) {
+      final MultipleIOException.Builder b = new MultipleIOException.Builder();
+      for (KeyProvider kp : providersCreated) {
+        try {
+          kp.close();
+        } catch (IOException e) {
+          LOG.error("Failed to close key provider.", e);
+          b.add(e);
+        }
+      }
+      providersCreated.clear();
+      if (!b.isEmpty()) {
+        throw b.build();
+      }
+    }
   }
 
   private <T> T doAs(String user, final PrivilegedExceptionAction<T> action)
@@ -274,15 +431,65 @@ public class TestKMS {
     }
   }
 
+  /**
+   * Read in the content from an URL connection.
+   * @param conn URLConnection To read
+   * @return the text from the output
+   * @throws IOException if something went wrong
+   */
+  private static String readOutput(URLConnection conn) throws IOException {
+    StringBuilder out = new StringBuilder();
+    InputStream in = conn.getInputStream();
+    byte[] buffer = new byte[64 * 1024];
+    int len = in.read(buffer);
+    while (len > 0) {
+      out.append(new String(buffer, 0, len));
+      len = in.read(buffer);
+    }
+    return out.toString();
+  }
+
+  private static void assertReFind(String re, String value) {
+    Pattern p = Pattern.compile(re);
+    Matcher m = p.matcher(value);
+    assertTrue(m.find(), "'" + p + "' does not match " + value);
+  }
+
+  private URLConnection openJMXConnection(URL baseUrl, boolean kerberos)
+      throws Exception {
+    URIBuilder b = new URIBuilder(baseUrl + "/jmx");
+    if (!kerberos) {
+      b.addParameter("user.name", "dr.who");
+    }
+    URL url = b.build().toURL();
+    LOG.info("JMX URL " + url);
+    URLConnection conn = url.openConnection();
+    if (sslFactory != null) {
+      HttpsURLConnection httpsConn = (HttpsURLConnection) conn;
+      try {
+        httpsConn.setSSLSocketFactory(sslFactory.createSSLSocketFactory());
+      } catch (GeneralSecurityException ex) {
+        throw new IOException(ex);
+      }
+      httpsConn.setHostnameVerifier(sslFactory.getHostnameVerifier());
+    }
+    return conn;
+  }
+
+  private void testJMXQuery(URL baseUrl, boolean kerberos) throws Exception {
+    LOG.info("Testing JMX");
+    assertReFind("\"name\"\\s*:\\s*\"java.lang:type=Memory\"",
+        readOutput(openJMXConnection(baseUrl, kerberos)));
+  }
+
   public void testStartStop(final boolean ssl, final boolean kerberos)
       throws Exception {
     Configuration conf = new Configuration();
     if (kerberos) {
       conf.set("hadoop.security.authentication", "kerberos");
     }
-    UserGroupInformation.setConfiguration(conf);
     File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
 
     final String keystore;
     final String password;
@@ -308,80 +515,83 @@ public class TestKMS {
 
     writeConf(testDir, conf);
 
+    if (ssl) {
+      sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
+      try {
+        sslFactory.init();
+      } catch (GeneralSecurityException ex) {
+        throw new IOException(ex);
+      }
+    }
+
     runServer(keystore, password, testDir, new KMSCallable<Void>() {
       @Override
       public Void call() throws Exception {
         final Configuration conf = new Configuration();
         URL url = getKMSUrl();
-        Assert.assertEquals(keystore != null,
+        assertEquals(keystore != null,
             url.getProtocol().equals("https"));
         final URI uri = createKMSUri(getKMSUrl());
-
-        if (ssl) {
-          KeyProvider testKp = createProvider(uri, conf);
-          ThreadGroup threadGroup = Thread.currentThread().getThreadGroup();
-          while (threadGroup.getParent() != null) {
-            threadGroup = threadGroup.getParent();
-          }
-          Thread[] threads = new Thread[threadGroup.activeCount()];
-          threadGroup.enumerate(threads);
-          Thread reloaderThread = null;
-          for (Thread thread : threads) {
-            if ((thread.getName() != null)
-                && (thread.getName().contains("Truststore reloader thread"))) {
-              reloaderThread = thread;
-            }
-          }
-          Assert.assertTrue("Reloader is not alive", reloaderThread.isAlive());
-          testKp.close();
-          boolean reloaderStillAlive = true;
-          for (int i = 0; i < 10; i++) {
-            reloaderStillAlive = reloaderThread.isAlive();
-            if (!reloaderStillAlive) break;
-            Thread.sleep(1000);
-          }
-          Assert.assertFalse("Reloader is still alive", reloaderStillAlive);
-        }
 
         if (kerberos) {
           for (String user : new String[]{"client", "client/host"}) {
             doAs(user, new PrivilegedExceptionAction<Void>() {
               @Override
               public Void run() throws Exception {
+                testJMXQuery(url, kerberos);
+
                 final KeyProvider kp = createProvider(uri, conf);
                 // getKeys() empty
-                Assert.assertTrue(kp.getKeys().isEmpty());
+                assertTrue(kp.getKeys().isEmpty());
 
                 Thread.sleep(4000);
                 Token<?>[] tokens =
                     ((KeyProviderDelegationTokenExtension.DelegationTokenExtension)kp)
                     .addDelegationTokens("myuser", new Credentials());
-                Assert.assertEquals(1, tokens.length);
-                Assert.assertEquals("kms-dt", tokens[0].getKind().toString());
+                assertEquals(1, tokens.length);
+                assertEquals("kms-dt", tokens[0].getKind().toString());
                 return null;
               }
             });
           }
         } else {
+          testJMXQuery(url, kerberos);
+
           KeyProvider kp = createProvider(uri, conf);
           // getKeys() empty
-          Assert.assertTrue(kp.getKeys().isEmpty());
+          assertTrue(kp.getKeys().isEmpty());
 
           Thread.sleep(4000);
           Token<?>[] tokens =
               ((KeyProviderDelegationTokenExtension.DelegationTokenExtension)kp)
               .addDelegationTokens("myuser", new Credentials());
-          Assert.assertEquals(1, tokens.length);
-          Assert.assertEquals("kms-dt", tokens[0].getKind().toString());
+          assertEquals(1, tokens.length);
+          assertEquals("kms-dt", tokens[0].getKind().toString());
         }
         return null;
       }
     });
+
+    if (sslFactory != null) {
+      sslFactory.destroy();
+      sslFactory = null;
+    }
   }
 
   @Test
   public void testStartStopHttpPseudo() throws Exception {
-    testStartStop(false, false);
+    // Make sure bogus errors don't get emitted.
+    // Jersey2 does not have a method similar to AbstractWadlGeneratorGrammarGenerator.
+    GenericTestUtils.LogCapturer logs =
+        GenericTestUtils.LogCapturer.captureLogs(LOG);
+    try {
+      testStartStop(false, false);
+    } finally {
+      logs.stopCapturing();
+    }
+    assertFalse(logs.getOutput().contains(
+        "Couldn't find grammar element for class"));
+
   }
 
   @Test
@@ -399,14 +609,14 @@ public class TestKMS {
     testStartStop(true, true);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testSpecialKeyNames() throws Exception {
     final String specialKey = "key %^[\n{]}|\"<>\\";
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     File confDir = getTestDir();
-    conf = createBaseKMSConf(confDir);
+    conf = createBaseKMSConf(confDir, conf);
     conf.set(KeyAuthorizationKeyProvider.KEY_ACL + specialKey + ".ALL", "*");
     writeConf(confDir, conf);
 
@@ -416,8 +626,8 @@ public class TestKMS {
         Configuration conf = new Configuration();
         URI uri = createKMSUri(getKMSUrl());
         KeyProvider kp = createProvider(uri, conf);
-        Assert.assertTrue(kp.getKeys().isEmpty());
-        Assert.assertEquals(0, kp.getKeysMetadata().length);
+        assertTrue(kp.getKeys().isEmpty());
+        assertEquals(0, kp.getKeysMetadata().length);
 
         KeyProvider.Options options = new KeyProvider.Options(conf);
         options.setCipher("AES/CTR/NoPadding");
@@ -426,22 +636,22 @@ public class TestKMS {
         LOG.info("Creating key with name '{}'", specialKey);
 
         KeyProvider.KeyVersion kv0 = kp.createKey(specialKey, options);
-        Assert.assertNotNull(kv0);
-        Assert.assertEquals(specialKey, kv0.getName());
-        Assert.assertNotNull(kv0.getVersionName());
-        Assert.assertNotNull(kv0.getMaterial());
+        assertNotNull(kv0);
+        assertEquals(specialKey, kv0.getName());
+        assertNotNull(kv0.getVersionName());
+        assertNotNull(kv0.getMaterial());
         return null;
       }
     });
   }
 
   @Test
+  @SuppressWarnings("checkstyle:methodlength")
   public void testKMSProvider() throws Exception {
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     File confDir = getTestDir();
-    conf = createBaseKMSConf(confDir);
+    conf = createBaseKMSConf(confDir, conf);
     conf.set(KeyAuthorizationKeyProvider.KEY_ACL + "k1.ALL", "*");
     conf.set(KeyAuthorizationKeyProvider.KEY_ACL + "k2.MANAGEMENT", "*");
     conf.set(KeyAuthorizationKeyProvider.KEY_ACL + "k2.READ", "*");
@@ -460,10 +670,10 @@ public class TestKMS {
         KeyProvider kp = createProvider(uri, conf);
 
         // getKeys() empty
-        Assert.assertTrue(kp.getKeys().isEmpty());
+        assertTrue(kp.getKeys().isEmpty());
 
         // getKeysMetadata() empty
-        Assert.assertEquals(0, kp.getKeysMetadata().length);
+        assertEquals(0, kp.getKeysMetadata().length);
 
         // createKey()
         KeyProvider.Options options = new KeyProvider.Options(conf);
@@ -471,39 +681,39 @@ public class TestKMS {
         options.setBitLength(128);
         options.setDescription("l1");
         KeyProvider.KeyVersion kv0 = kp.createKey("k1", options);
-        Assert.assertNotNull(kv0);
-        Assert.assertNotNull(kv0.getVersionName());
-        Assert.assertNotNull(kv0.getMaterial());
+        assertNotNull(kv0);
+        assertNotNull(kv0.getVersionName());
+        assertNotNull(kv0.getMaterial());
 
         // getKeyVersion()
         KeyProvider.KeyVersion kv1 = kp.getKeyVersion(kv0.getVersionName());
-        Assert.assertEquals(kv0.getVersionName(), kv1.getVersionName());
-        Assert.assertNotNull(kv1.getMaterial());
+        assertEquals(kv0.getVersionName(), kv1.getVersionName());
+        assertNotNull(kv1.getMaterial());
 
         // getCurrent()
         KeyProvider.KeyVersion cv1 = kp.getCurrentKey("k1");
-        Assert.assertEquals(kv0.getVersionName(), cv1.getVersionName());
-        Assert.assertNotNull(cv1.getMaterial());
+        assertEquals(kv0.getVersionName(), cv1.getVersionName());
+        assertNotNull(cv1.getMaterial());
 
         // getKeyMetadata() 1 version
         KeyProvider.Metadata m1 = kp.getMetadata("k1");
-        Assert.assertEquals("AES/CTR/NoPadding", m1.getCipher());
-        Assert.assertEquals("AES", m1.getAlgorithm());
-        Assert.assertEquals(128, m1.getBitLength());
-        Assert.assertEquals(1, m1.getVersions());
-        Assert.assertNotNull(m1.getCreated());
-        Assert.assertTrue(started.before(m1.getCreated()));
+        assertEquals("AES/CTR/NoPadding", m1.getCipher());
+        assertEquals("AES", m1.getAlgorithm());
+        assertEquals(128, m1.getBitLength());
+        assertEquals(1, m1.getVersions());
+        assertNotNull(m1.getCreated());
+        assertTrue(started.before(m1.getCreated()));
 
         // getKeyVersions() 1 version
         List<KeyProvider.KeyVersion> lkv1 = kp.getKeyVersions("k1");
-        Assert.assertEquals(1, lkv1.size());
-        Assert.assertEquals(kv0.getVersionName(), lkv1.get(0).getVersionName());
-        Assert.assertNotNull(kv1.getMaterial());
+        assertEquals(1, lkv1.size());
+        assertEquals(kv0.getVersionName(), lkv1.get(0).getVersionName());
+        assertNotNull(kv1.getMaterial());
 
         // rollNewVersion()
         KeyProvider.KeyVersion kv2 = kp.rollNewVersion("k1");
-        Assert.assertNotSame(kv0.getVersionName(), kv2.getVersionName());
-        Assert.assertNotNull(kv2.getMaterial());
+        assertNotSame(kv0.getVersionName(), kv2.getVersionName());
+        assertNotNull(kv2.getMaterial());
 
         // getKeyVersion()
         kv2 = kp.getKeyVersion(kv2.getVersionName());
@@ -511,49 +721,49 @@ public class TestKMS {
         for (int i = 0; i < kv1.getMaterial().length; i++) {
           eq = eq && kv1.getMaterial()[i] == kv2.getMaterial()[i];
         }
-        Assert.assertFalse(eq);
+        assertFalse(eq);
 
         // getCurrent()
         KeyProvider.KeyVersion cv2 = kp.getCurrentKey("k1");
-        Assert.assertEquals(kv2.getVersionName(), cv2.getVersionName());
-        Assert.assertNotNull(cv2.getMaterial());
+        assertEquals(kv2.getVersionName(), cv2.getVersionName());
+        assertNotNull(cv2.getMaterial());
         eq = true;
         for (int i = 0; i < kv1.getMaterial().length; i++) {
           eq = eq && cv2.getMaterial()[i] == kv2.getMaterial()[i];
         }
-        Assert.assertTrue(eq);
+        assertTrue(eq);
 
         // getKeyVersions() 2 versions
         List<KeyProvider.KeyVersion> lkv2 = kp.getKeyVersions("k1");
-        Assert.assertEquals(2, lkv2.size());
-        Assert.assertEquals(kv1.getVersionName(), lkv2.get(0).getVersionName());
-        Assert.assertNotNull(lkv2.get(0).getMaterial());
-        Assert.assertEquals(kv2.getVersionName(), lkv2.get(1).getVersionName());
-        Assert.assertNotNull(lkv2.get(1).getMaterial());
+        assertEquals(2, lkv2.size());
+        assertEquals(kv1.getVersionName(), lkv2.get(0).getVersionName());
+        assertNotNull(lkv2.get(0).getMaterial());
+        assertEquals(kv2.getVersionName(), lkv2.get(1).getVersionName());
+        assertNotNull(lkv2.get(1).getMaterial());
 
         // getKeyMetadata() 2 version
         KeyProvider.Metadata m2 = kp.getMetadata("k1");
-        Assert.assertEquals("AES/CTR/NoPadding", m2.getCipher());
-        Assert.assertEquals("AES", m2.getAlgorithm());
-        Assert.assertEquals(128, m2.getBitLength());
-        Assert.assertEquals(2, m2.getVersions());
-        Assert.assertNotNull(m2.getCreated());
-        Assert.assertTrue(started.before(m2.getCreated()));
+        assertEquals("AES/CTR/NoPadding", m2.getCipher());
+        assertEquals("AES", m2.getAlgorithm());
+        assertEquals(128, m2.getBitLength());
+        assertEquals(2, m2.getVersions());
+        assertNotNull(m2.getCreated());
+        assertTrue(started.before(m2.getCreated()));
 
         // getKeys() 1 key
         List<String> ks1 = kp.getKeys();
-        Assert.assertEquals(1, ks1.size());
-        Assert.assertEquals("k1", ks1.get(0));
+        assertEquals(1, ks1.size());
+        assertEquals("k1", ks1.get(0));
 
         // getKeysMetadata() 1 key 2 versions
         KeyProvider.Metadata[] kms1 = kp.getKeysMetadata("k1");
-        Assert.assertEquals(1, kms1.length);
-        Assert.assertEquals("AES/CTR/NoPadding", kms1[0].getCipher());
-        Assert.assertEquals("AES", kms1[0].getAlgorithm());
-        Assert.assertEquals(128, kms1[0].getBitLength());
-        Assert.assertEquals(2, kms1[0].getVersions());
-        Assert.assertNotNull(kms1[0].getCreated());
-        Assert.assertTrue(started.before(kms1[0].getCreated()));
+        assertEquals(1, kms1.length);
+        assertEquals("AES/CTR/NoPadding", kms1[0].getCipher());
+        assertEquals("AES", kms1[0].getAlgorithm());
+        assertEquals(128, kms1[0].getBitLength());
+        assertEquals(2, kms1[0].getVersions());
+        assertNotNull(kms1[0].getCreated());
+        assertTrue(started.before(kms1[0].getCreated()));
 
         // test generate and decryption of EEK
         KeyProvider.KeyVersion kv = kp.getCurrentKey("k1");
@@ -561,16 +771,16 @@ public class TestKMS {
             KeyProviderCryptoExtension.createKeyProviderCryptoExtension(kp);
 
         EncryptedKeyVersion ek1 = kpExt.generateEncryptedKey(kv.getName());
-        Assert.assertEquals(KeyProviderCryptoExtension.EEK,
+        assertEquals(KeyProviderCryptoExtension.EEK,
             ek1.getEncryptedKeyVersion().getVersionName());
-        Assert.assertNotNull(ek1.getEncryptedKeyVersion().getMaterial());
-        Assert.assertEquals(kv.getMaterial().length,
+        assertNotNull(ek1.getEncryptedKeyVersion().getMaterial());
+        assertEquals(kv.getMaterial().length,
             ek1.getEncryptedKeyVersion().getMaterial().length);
         KeyProvider.KeyVersion k1 = kpExt.decryptEncryptedKey(ek1);
-        Assert.assertEquals(KeyProviderCryptoExtension.EK, k1.getVersionName());
+        assertEquals(KeyProviderCryptoExtension.EK, k1.getVersionName());
         KeyProvider.KeyVersion k1a = kpExt.decryptEncryptedKey(ek1);
-        Assert.assertArrayEquals(k1.getMaterial(), k1a.getMaterial());
-        Assert.assertEquals(kv.getMaterial().length, k1.getMaterial().length);
+        assertArrayEquals(k1.getMaterial(), k1a.getMaterial());
+        assertEquals(kv.getMaterial().length, k1.getMaterial().length);
 
         EncryptedKeyVersion ek2 = kpExt.generateEncryptedKey(kv.getName());
         KeyProvider.KeyVersion k2 = kpExt.decryptEncryptedKey(ek2);
@@ -579,7 +789,42 @@ public class TestKMS {
             .getMaterial().length; i++) {
           isEq = k2.getMaterial()[i] == k1.getMaterial()[i];
         }
-        Assert.assertFalse(isEq);
+        assertFalse(isEq);
+
+        // test re-encrypt
+        kpExt.rollNewVersion(ek1.getEncryptionKeyName());
+        EncryptedKeyVersion ek1r = kpExt.reencryptEncryptedKey(ek1);
+        assertEquals(KeyProviderCryptoExtension.EEK,
+            ek1r.getEncryptedKeyVersion().getVersionName());
+        assertFalse(Arrays.equals(ek1.getEncryptedKeyVersion().getMaterial(),
+            ek1r.getEncryptedKeyVersion().getMaterial()));
+        assertEquals(kv.getMaterial().length,
+            ek1r.getEncryptedKeyVersion().getMaterial().length);
+        assertEquals(ek1.getEncryptionKeyName(), ek1r.getEncryptionKeyName());
+        assertArrayEquals(ek1.getEncryptedKeyIv(), ek1r.getEncryptedKeyIv());
+        assertNotEquals(ek1.getEncryptionKeyVersionName(),
+            ek1r.getEncryptionKeyVersionName());
+
+        KeyProvider.KeyVersion k1r = kpExt.decryptEncryptedKey(ek1r);
+        assertEquals(KeyProviderCryptoExtension.EK, k1r.getVersionName());
+        assertArrayEquals(k1.getMaterial(), k1r.getMaterial());
+        assertEquals(kv.getMaterial().length, k1r.getMaterial().length);
+
+        // test re-encrypt batch
+        EncryptedKeyVersion ek3 = kpExt.generateEncryptedKey(kv.getName());
+        KeyVersion latest = kpExt.rollNewVersion(kv.getName());
+        List<EncryptedKeyVersion> ekvs = new ArrayList<>(3);
+        ekvs.add(ek1);
+        ekvs.add(ek2);
+        ekvs.add(ek3);
+        ekvs.add(ek1);
+        ekvs.add(ek2);
+        ekvs.add(ek3);
+        kpExt.reencryptEncryptedKeys(ekvs);
+        for (EncryptedKeyVersion ekv: ekvs) {
+          assertEquals(latest.getVersionName(),
+              ekv.getEncryptionKeyVersionName());
+        }
 
         // deleteKey()
         kp.deleteKey("k1");
@@ -587,25 +832,25 @@ public class TestKMS {
         // Check decryption after Key deletion
         try {
           kpExt.decryptEncryptedKey(ek1);
-          Assert.fail("Should not be allowed !!");
+          fail("Should not be allowed !!");
         } catch (Exception e) {
-          Assert.assertTrue(e.getMessage().contains("'k1@1' not found"));
+          assertTrue(e.getMessage().contains("'k1@1' not found"));
         }
 
         // getKey()
-        Assert.assertNull(kp.getKeyVersion("k1"));
+        assertNull(kp.getKeyVersion("k1"));
 
         // getKeyVersions()
-        Assert.assertNull(kp.getKeyVersions("k1"));
+        assertNull(kp.getKeyVersions("k1"));
 
         // getMetadata()
-        Assert.assertNull(kp.getMetadata("k1"));
+        assertNull(kp.getMetadata("k1"));
 
         // getKeys() empty
-        Assert.assertTrue(kp.getKeys().isEmpty());
+        assertTrue(kp.getKeys().isEmpty());
 
         // getKeysMetadata() empty
-        Assert.assertEquals(0, kp.getKeysMetadata().length);
+        assertEquals(0, kp.getKeysMetadata().length);
 
         // createKey() no description, no tags
         options = new KeyProvider.Options(conf);
@@ -613,15 +858,15 @@ public class TestKMS {
         options.setBitLength(128);
         KeyVersion kVer2 = kp.createKey("k2", options);
         KeyProvider.Metadata meta = kp.getMetadata("k2");
-        Assert.assertNull(meta.getDescription());
-        Assert.assertEquals("k2", meta.getAttributes().get("key.acl.name"));
+        assertNull(meta.getDescription());
+        assertEquals("k2", meta.getAttributes().get("key.acl.name"));
 
         // test key ACL.. k2 is granted only MANAGEMENT Op access
         try {
           kpExt =
               KeyProviderCryptoExtension.createKeyProviderCryptoExtension(kp);
           kpExt.generateEncryptedKey(kVer2.getName());
-          Assert.fail("User should not be allowed to encrypt !!");
+          fail("User should not be allowed to encrypt !!");
         } catch (Exception ex) {
           // 
         }
@@ -633,8 +878,8 @@ public class TestKMS {
         options.setDescription("d");
         kp.createKey("k3", options);
         meta = kp.getMetadata("k3");
-        Assert.assertEquals("d", meta.getDescription());
-        Assert.assertEquals("k3", meta.getAttributes().get("key.acl.name"));
+        assertEquals("d", meta.getDescription());
+        assertEquals("k3", meta.getAttributes().get("key.acl.name"));
 
         Map<String, String> attributes = new HashMap<String, String>();
         attributes.put("a", "A");
@@ -647,8 +892,8 @@ public class TestKMS {
         options.setAttributes(attributes);
         kp.createKey("k4", options);
         meta = kp.getMetadata("k4");
-        Assert.assertNull(meta.getDescription());
-        Assert.assertEquals(attributes, meta.getAttributes());
+        assertNull(meta.getDescription());
+        assertEquals(attributes, meta.getAttributes());
 
         // createKey() description, tags
         options = new KeyProvider.Options(conf);
@@ -659,8 +904,8 @@ public class TestKMS {
         options.setAttributes(attributes);
         kp.createKey("k5", options);
         meta = kp.getMetadata("k5");
-        Assert.assertEquals("d", meta.getDescription());
-        Assert.assertEquals(attributes, meta.getAttributes());
+        assertEquals("d", meta.getDescription());
+        assertEquals(attributes, meta.getAttributes());
 
         // test rollover draining
         KeyProviderCryptoExtension kpce = KeyProviderCryptoExtension.
@@ -672,36 +917,83 @@ public class TestKMS {
 
         EncryptedKeyVersion ekv1 = kpce.generateEncryptedKey("k6");
         kpce.rollNewVersion("k6");
-
-        /**
-         * due to the cache on the server side, client may get old keys.
-         * @see EagerKeyGeneratorKeyProviderCryptoExtension#rollNewVersion(String)
-         */
-        boolean rollSucceeded = false;
-        for (int i = 0; i <= EagerKeyGeneratorKeyProviderCryptoExtension
-            .KMS_KEY_CACHE_SIZE_DEFAULT + CommonConfigurationKeysPublic.
-            KMS_CLIENT_ENC_KEY_CACHE_SIZE_DEFAULT; ++i) {
-          EncryptedKeyVersion ekv2 = kpce.generateEncryptedKey("k6");
-          if (!(ekv1.getEncryptionKeyVersionName()
-              .equals(ekv2.getEncryptionKeyVersionName()))) {
-            rollSucceeded = true;
-            break;
-          }
-        }
-        Assert.assertTrue("rollover did not generate a new key even after"
-            + " queue is drained", rollSucceeded);
+        kpce.invalidateCache("k6");
+        EncryptedKeyVersion ekv2 = kpce.generateEncryptedKey("k6");
+        assertNotEquals(ekv1.getEncryptionKeyVersionName(),
+            ekv2.getEncryptionKeyVersionName(),
+            "rollover did not generate a new key even after"
+            + " queue is drained");
         return null;
       }
     });
   }
 
   @Test
+  @SuppressWarnings("unchecked")
+  public void testKMSProviderCaching() throws Exception {
+    Configuration conf = new Configuration();
+    File confDir = getTestDir();
+    conf = createBaseKMSConf(confDir, conf);
+    conf.set(KeyAuthorizationKeyProvider.KEY_ACL + "k1.ALL", "*");
+    writeConf(confDir, conf);
+
+    runServer(null, null, confDir, new KMSCallable<Void>() {
+      @Override
+      public Void call() throws Exception {
+        final String keyName = "k1";
+        final String mockVersionName = "mock";
+        final Configuration conf = new Configuration();
+        final URI uri = createKMSUri(getKMSUrl());
+        KMSClientProvider kmscp = createKMSClientProvider(uri, conf);
+
+        // get the reference to the internal cache, to test invalidation.
+        ValueQueue vq = (ValueQueue) FieldUtils.getField(KMSClientProvider.class,
+            "encKeyVersionQueue", true).get(kmscp);
+        LoadingCache<String, LinkedBlockingQueue<EncryptedKeyVersion>> kq =
+            (LoadingCache<String, LinkedBlockingQueue<EncryptedKeyVersion>>)
+                 FieldUtils.getField(ValueQueue.class, "keyQueues", true).get(vq);
+
+        EncryptedKeyVersion mockEKV = mock(EncryptedKeyVersion.class);
+        when(mockEKV.getEncryptionKeyName()).thenReturn(keyName);
+        when(mockEKV.getEncryptionKeyVersionName()).thenReturn(mockVersionName);
+
+        // createKey()
+        KeyProvider.Options options = new KeyProvider.Options(conf);
+        options.setCipher("AES/CTR/NoPadding");
+        options.setBitLength(128);
+        options.setDescription("l1");
+        KeyProvider.KeyVersion kv0 = kmscp.createKey(keyName, options);
+        assertNotNull(kv0.getVersionName());
+
+        assertEquals("k1@0", kmscp.generateEncryptedKey(keyName).getEncryptionKeyVersionName(),
+            "Default key version name is incorrect.");
+
+        kmscp.invalidateCache(keyName);
+        kq.get(keyName).put(mockEKV);
+        assertEquals(mockVersionName,
+            kmscp.generateEncryptedKey(keyName).getEncryptionKeyVersionName(),
+            "Key version incorrect after invalidating cache + putting"
+            + " mock key.");
+
+        // test new version is returned after invalidation.
+        for (int i = 0; i < 100; ++i) {
+          kq.get(keyName).put(mockEKV);
+          kmscp.invalidateCache(keyName);
+          assertEquals("k1@0", kmscp.generateEncryptedKey(keyName)
+              .getEncryptionKeyVersionName(), "Cache invalidation guarantee failed.");
+        }
+        return null;
+      }
+    });
+  }
+
+  @Test
+  @SuppressWarnings("checkstyle:methodlength")
   public void testKeyACLs() throws Exception {
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     final File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
     conf.set("hadoop.kms.authentication.type", "kerberos");
     conf.set("hadoop.kms.authentication.kerberos.keytab",
         keytab.getAbsolutePath());
@@ -748,14 +1040,14 @@ public class TestKMS {
               newAttribs.put("key.acl.name", "test_key");
               options.setAttributes(newAttribs);
               KeyProvider.KeyVersion kv = kp.createKey("k0", options);
-              Assert.assertNull(kv.getMaterial());
+              assertNull(kv.getMaterial());
               KeyVersion rollVersion = kp.rollNewVersion("k0");
-              Assert.assertNull(rollVersion.getMaterial());
+              assertNull(rollVersion.getMaterial());
               KeyProviderCryptoExtension kpce =
                   KeyProviderCryptoExtension.createKeyProviderCryptoExtension(kp);
               try {
                 kpce.generateEncryptedKey("k0");
-                Assert.fail("User [CREATE] should not be allowed to generate_eek on k0");
+                fail("User [CREATE] should not be allowed to generate_eek on k0");
               } catch (Exception e) {
                 // Ignore
               }
@@ -764,12 +1056,12 @@ public class TestKMS {
               options.setAttributes(newAttribs);
               try {
                 kp.createKey("kx", options);
-                Assert.fail("User [CREATE] should not be allowed to create kx");
+                fail("User [CREATE] should not be allowed to create kx");
               } catch (Exception e) {
                 // Ignore
               }
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -788,14 +1080,14 @@ public class TestKMS {
               newAttribs.put("key.acl.name", "some_key");
               options.setAttributes(newAttribs);
               KeyProvider.KeyVersion kv = kp.createKey("kk0", options);
-              Assert.assertNull(kv.getMaterial());
+              assertNull(kv.getMaterial());
               KeyVersion rollVersion = kp.rollNewVersion("kk0");
-              Assert.assertNull(rollVersion.getMaterial());
+              assertNull(rollVersion.getMaterial());
               KeyProviderCryptoExtension kpce =
                   KeyProviderCryptoExtension.createKeyProviderCryptoExtension(kp);
               try {
                 kpce.generateEncryptedKey("kk0");
-                Assert.fail("User [DECRYPT_EEK] should not be allowed to generate_eek on kk0");
+                fail("User [DECRYPT_EEK] should not be allowed to generate_eek on kk0");
               } catch (Exception e) {
                 // Ignore
               }
@@ -804,7 +1096,7 @@ public class TestKMS {
               options.setAttributes(newAttribs);
               kp.createKey("kkx", options);
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -821,12 +1113,12 @@ public class TestKMS {
               newAttribs.put("key.acl.name", "test_key2");
               options.setAttributes(newAttribs);
               KeyProvider.KeyVersion kv = kp.createKey("k1", options);
-              Assert.assertNull(kv.getMaterial());
+              assertNull(kv.getMaterial());
               KeyVersion rollVersion = kp.rollNewVersion("k1");
-              Assert.assertNull(rollVersion.getMaterial());
+              assertNull(rollVersion.getMaterial());
               try {
                 kp.rollNewVersion("k0");
-                Assert.fail("User [ROLLOVER] should not be allowed to rollover k0");
+                fail("User [ROLLOVER] should not be allowed to rollover k0");
               } catch (Exception e) {
                 // Ignore
               }
@@ -834,7 +1126,7 @@ public class TestKMS {
                   KeyProviderCryptoExtension.createKeyProviderCryptoExtension(kp);
               try {
                 kpce.generateEncryptedKey("k1");
-                Assert.fail("User [ROLLOVER] should not be allowed to generate_eek on k1");
+                fail("User [ROLLOVER] should not be allowed to generate_eek on k1");
               } catch (Exception e) {
                 // Ignore
               }
@@ -843,12 +1135,12 @@ public class TestKMS {
               options.setAttributes(newAttribs);
               try {
                 kp.createKey("kx", options);
-                Assert.fail("User [ROLLOVER] should not be allowed to create kx");
+                fail("User [ROLLOVER] should not be allowed to create kx");
               } catch (Exception e) {
                 // Ignore
               }
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -866,7 +1158,7 @@ public class TestKMS {
               options.setAttributes(newAttribs);
               try {
                 kp.createKey("k2", options);
-                Assert.fail("User [GET] should not be allowed to create key..");
+                fail("User [GET] should not be allowed to create key..");
               } catch (Exception e) {
                 // Ignore
               }
@@ -875,12 +1167,12 @@ public class TestKMS {
               options.setAttributes(newAttribs);
               try {
                 kp.createKey("kx", options);
-                Assert.fail("User [GET] should not be allowed to create kx");
+                fail("User [GET] should not be allowed to create kx");
               } catch (Exception e) {
                 // Ignore
               }
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -902,10 +1194,10 @@ public class TestKMS {
               try {
                 return kpce.generateEncryptedKey("kx");
               } catch (Exception e) {
-                Assert.fail("User [GENERATE_EEK] should be allowed to generate_eek on kx");
+                fail("User [GENERATE_EEK] should be allowed to generate_eek on kx");
               }
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -920,7 +1212,7 @@ public class TestKMS {
                   KeyProviderCryptoExtension.createKeyProviderCryptoExtension(kp);
               kpce.decryptEncryptedKey(ekv);
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -945,17 +1237,14 @@ public class TestKMS {
           @Override
           public Void run() throws Exception {
             KeyProvider kp = createProvider(uri, conf);
-            try {
-              KeyProviderCryptoExtension kpce =
-                  KeyProviderCryptoExtension.createKeyProviderCryptoExtension(kp);
-              try {
-                kpce.generateEncryptedKey("k1");
-              } catch (Exception e) {
-                Assert.fail("User [GENERATE_EEK] should be allowed to generate_eek on k1");
-              }
-            } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
-            }
+            KeyProviderCryptoExtension kpce =
+                KeyProviderCryptoExtension.createKeyProviderCryptoExtension(kp);
+            EncryptedKeyVersion ekv = kpce.generateEncryptedKey("k1");
+            kpce.reencryptEncryptedKey(ekv);
+            List<EncryptedKeyVersion> ekvs = new ArrayList<>(2);
+            ekvs.add(ekv);
+            ekvs.add(ekv);
+            kpce.reencryptEncryptedKeys(ekvs);
             return null;
           }
         });
@@ -977,9 +1266,8 @@ public class TestKMS {
   public void doKMSRestart(boolean useKrb) throws Exception {
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     final File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
     if (useKrb) {
       conf.set("hadoop.kms.authentication.type", "kerberos");
     }
@@ -1057,9 +1345,8 @@ public class TestKMS {
   public void testKMSAuthFailureRetry() throws Exception {
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     final File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
     conf.set("hadoop.kms.authentication.kerberos.keytab",
         keytab.getAbsolutePath());
     conf.set("hadoop.kms.authentication.kerberos.principal", "HTTP/localhost");
@@ -1133,11 +1420,10 @@ public class TestKMS {
                     try {
                       kp.createKey("k4", new byte[16],
                           new KeyProvider.Options(conf));
-                      Assert.fail("This should not succeed..");
+                      fail("This should not succeed..");
                     } catch (IOException e) {
-                      Assert.assertTrue(
-                          "HTTP exception must be a 401 : " + e.getMessage(), e
-                              .getMessage().contains("401"));
+                      assertTrue(e.getMessage().contains("401"),
+                          "HTTP exception must be a 401 : " + e.getMessage());
                     }
                     return null;
                   }
@@ -1148,12 +1434,12 @@ public class TestKMS {
   }
 
   @Test
+  @SuppressWarnings("checkstyle:methodlength")
   public void testACLs() throws Exception {
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     final File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
     conf.set("hadoop.kms.authentication.type", "kerberos");
     conf.set("hadoop.kms.authentication.kerberos.keytab",
         keytab.getAbsolutePath());
@@ -1188,85 +1474,85 @@ public class TestKMS {
             KeyProvider kp = createProvider(uri, conf);
             try {
               kp.createKey("k", new KeyProvider.Options(conf));
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             try {
               kp.createKey("k", new byte[16], new KeyProvider.Options(conf));
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             try {
               kp.rollNewVersion("k");
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             try {
               kp.rollNewVersion("k", new byte[16]);
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             try {
               kp.getKeys();
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             try {
               kp.getKeysMetadata("k");
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             try {
               // we are using JavaKeyStoreProvider for testing, so we know how
               // the keyversion is created.
               kp.getKeyVersion("k@0");
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             try {
               kp.getCurrentKey("k");
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             try {
               kp.getMetadata("k");
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             try {
               kp.getKeyVersions("k");
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
 
             return null;
@@ -1280,9 +1566,9 @@ public class TestKMS {
             try {
               KeyProvider.KeyVersion kv = kp.createKey("k0",
                   new KeyProvider.Options(conf));
-              Assert.assertNull(kv.getMaterial());
+              assertNull(kv.getMaterial());
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1295,7 +1581,7 @@ public class TestKMS {
             try {
               kp.deleteKey("k0");
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1308,9 +1594,9 @@ public class TestKMS {
             try {
               KeyProvider.KeyVersion kv = kp.createKey("k1", new byte[16],
                   new KeyProvider.Options(conf));
-              Assert.assertNull(kv.getMaterial());
+              assertNull(kv.getMaterial());
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1322,9 +1608,9 @@ public class TestKMS {
             KeyProvider kp = createProvider(uri, conf);
             try {
               KeyProvider.KeyVersion kv = kp.rollNewVersion("k1");
-              Assert.assertNull(kv.getMaterial());
+              assertNull(kv.getMaterial());
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1337,9 +1623,9 @@ public class TestKMS {
             try {
               KeyProvider.KeyVersion kv =
                   kp.rollNewVersion("k1", new byte[16]);
-              Assert.assertNull(kv.getMaterial());
+              assertNull(kv.getMaterial());
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1347,35 +1633,50 @@ public class TestKMS {
 
         final KeyVersion currKv =
             doAs("GET", new PrivilegedExceptionAction<KeyVersion>() {
-          @Override
-          public KeyVersion run() throws Exception {
-            KeyProvider kp = createProvider(uri, conf);
-            try {
-              kp.getKeyVersion("k1@0");
-              KeyVersion kv = kp.getCurrentKey("k1");
-              return kv;
-            } catch (Exception ex) {
-              Assert.fail(ex.toString());
-            }
-            return null;
-          }
-        });
+              @Override
+              public KeyVersion run() throws Exception {
+                KeyProvider kp = createProvider(uri, conf);
+                try {
+                  kp.getKeyVersion("k1@0");
+                  KeyVersion kv = kp.getCurrentKey("k1");
+                  return kv;
+                } catch (Exception ex) {
+                    fail(ex.toString());
+                }
+                return null;
+              }
+            });
 
         final EncryptedKeyVersion encKv =
             doAs("GENERATE_EEK",
                 new PrivilegedExceptionAction<EncryptedKeyVersion>() {
+                @Override
+                public EncryptedKeyVersion run() throws Exception {
+                  KeyProvider kp = createProvider(uri, conf);
+                  try {
+                    KeyProviderCryptoExtension kpCE = KeyProviderCryptoExtension.
+                            createKeyProviderCryptoExtension(kp);
+                    EncryptedKeyVersion ek1 =
+                        kpCE.generateEncryptedKey(currKv.getName());
+                    return ek1;
+                  } catch (Exception ex) {
+                    fail(ex.toString());
+                  }
+                  return null;
+                }
+            });
+
+        doAs("GENERATE_EEK", new PrivilegedExceptionAction<Void>() {
           @Override
-          public EncryptedKeyVersion run() throws Exception {
+          public Void run() throws Exception {
             KeyProvider kp = createProvider(uri, conf);
-            try {
-              KeyProviderCryptoExtension kpCE = KeyProviderCryptoExtension.
-                      createKeyProviderCryptoExtension(kp);
-              EncryptedKeyVersion ek1 =
-                  kpCE.generateEncryptedKey(currKv.getName());
-              return ek1;
-            } catch (Exception ex) {
-              Assert.fail(ex.toString());
-            }
+            KeyProviderCryptoExtension kpCE = KeyProviderCryptoExtension.
+                createKeyProviderCryptoExtension(kp);
+            kpCE.reencryptEncryptedKey(encKv);
+            List<EncryptedKeyVersion> ekvs = new ArrayList<>(2);
+            ekvs.add(encKv);
+            ekvs.add(encKv);
+            kpCE.reencryptEncryptedKeys(ekvs);
             return null;
           }
         });
@@ -1389,7 +1690,7 @@ public class TestKMS {
                       createKeyProviderCryptoExtension(kp);
               kpCE.decryptEncryptedKey(encKv);
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1402,7 +1703,7 @@ public class TestKMS {
             try {
               kp.getKeys();
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1416,7 +1717,7 @@ public class TestKMS {
               kp.getMetadata("k1");
               kp.getKeysMetadata("k1");
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1425,12 +1726,12 @@ public class TestKMS {
         //stop the reloader, to avoid running while we are writing the new file
         KMSWebApp.getACLs().stopReloader();
 
+        GenericTestUtils.setLogLevel(KMSConfiguration.LOG, Level.TRACE);
         // test ACL reloading
-        Thread.sleep(10); // to ensure the ACLs file modifiedTime is newer
         conf.set(KMSACLs.Type.CREATE.getAclConfigKey(), "foo");
+        conf.set(KMSACLs.Type.GENERATE_EEK.getAclConfigKey(), "foo");
         writeConf(testDir, conf);
-        Thread.sleep(1000);
-
+        KMSWebApp.getACLs().forceNextReloadForTesting();
         KMSWebApp.getACLs().run(); // forcing a reload by hand.
 
         // should not be able to create a key now
@@ -1441,17 +1742,71 @@ public class TestKMS {
               KeyProvider kp = createProvider(uri, conf);
               KeyProvider.KeyVersion kv = kp.createKey("k2",
                   new KeyProvider.Options(conf));
-              Assert.fail();
+              fail();
             } catch (AuthorizationException ex) {
               //NOP
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
 
             return null;
           }
         });
 
+        doAs("GENERATE_EEK", new PrivilegedExceptionAction<Void>() {
+          @Override
+          public Void run() throws Exception {
+            KeyProvider kp = createProvider(uri, conf);
+            try {
+              KeyProviderCryptoExtension kpCE = KeyProviderCryptoExtension.
+                  createKeyProviderCryptoExtension(kp);
+              kpCE.generateEncryptedKey("k1");
+            } catch (IOException ex) {
+              // This isn't an AuthorizationException because generate goes
+              // through the ValueQueue. See KMSCP#generateEncryptedKey.
+              if (ex.getCause().getCause() instanceof AuthorizationException) {
+                LOG.info("Caught expected exception.", ex);
+              } else {
+                throw ex;
+              }
+            }
+            return null;
+          }
+        });
+
+        doAs("GENERATE_EEK", new PrivilegedExceptionAction<Void>() {
+          @Override
+          public Void run() throws Exception {
+            KeyProvider kp = createProvider(uri, conf);
+            try {
+              KeyProviderCryptoExtension kpCE = KeyProviderCryptoExtension.
+                  createKeyProviderCryptoExtension(kp);
+              kpCE.reencryptEncryptedKey(encKv);
+              fail("Should not have been able to reencryptEncryptedKey");
+            } catch (AuthorizationException ex) {
+              LOG.info("reencryptEncryptedKey caught expected exception.", ex);
+            }
+            return null;
+          }
+        });
+        doAs("GENERATE_EEK", new PrivilegedExceptionAction<Void>() {
+          @Override
+          public Void run() throws Exception {
+            KeyProvider kp = createProvider(uri, conf);
+            try {
+              KeyProviderCryptoExtension kpCE = KeyProviderCryptoExtension.
+                  createKeyProviderCryptoExtension(kp);
+              List<EncryptedKeyVersion> ekvs = new ArrayList<>(2);
+              ekvs.add(encKv);
+              ekvs.add(encKv);
+              kpCE.reencryptEncryptedKeys(ekvs);
+              fail("Should not have been able to reencryptEncryptedKeys");
+            } catch (AuthorizationException ex) {
+              LOG.info("reencryptEncryptedKeys caught expected exception.", ex);
+            }
+            return null;
+          }
+        });
         return null;
       }
     });
@@ -1461,9 +1816,8 @@ public class TestKMS {
   public void testKMSBlackList() throws Exception {
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
     conf.set("hadoop.kms.authentication.type", "kerberos");
     conf.set("hadoop.kms.authentication.kerberos.keytab",
         keytab.getAbsolutePath());
@@ -1499,9 +1853,9 @@ public class TestKMS {
               EncryptedKeyVersion eek =
                   ((CryptoExtension)kp).generateEncryptedKey("ck0");
               ((CryptoExtension)kp).decryptEncryptedKey(eek);
-              Assert.assertNull(kv.getMaterial());
+              assertNull(kv.getMaterial());
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1517,7 +1871,7 @@ public class TestKMS {
               EncryptedKeyVersion eek =
                   ((CryptoExtension)kp).generateEncryptedKey("ck1");
               ((CryptoExtension)kp).decryptEncryptedKey(eek);
-              Assert.fail("admin user must not be allowed to decrypt !!");
+              fail("admin user must not be allowed to decrypt !!");
             } catch (Exception ex) {
             }
             return null;
@@ -1534,7 +1888,7 @@ public class TestKMS {
               EncryptedKeyVersion eek =
                   ((CryptoExtension)kp).generateEncryptedKey("ck2");
               ((CryptoExtension)kp).decryptEncryptedKey(eek);
-              Assert.fail("admin user must not be allowed to decrypt !!");
+              fail("admin user must not be allowed to decrypt !!");
             } catch (Exception ex) {
             }
             return null;
@@ -1550,9 +1904,8 @@ public class TestKMS {
   public void testServicePrincipalACLs() throws Exception {
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
     conf.set("hadoop.kms.authentication.type", "kerberos");
     conf.set("hadoop.kms.authentication.kerberos.keytab",
         keytab.getAbsolutePath());
@@ -1580,9 +1933,9 @@ public class TestKMS {
               KeyProvider kp = createProvider(uri, conf);
               KeyProvider.KeyVersion kv = kp.createKey("ck0",
                   new KeyProvider.Options(conf));
-              Assert.assertNull(kv.getMaterial());
+              assertNull(kv.getMaterial());
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1595,9 +1948,9 @@ public class TestKMS {
               KeyProvider kp = createProvider(uri, conf);
               KeyProvider.KeyVersion kv = kp.createKey("ck1",
                   new KeyProvider.Options(conf));
-              Assert.assertNull(kv.getMaterial());
+              assertNull(kv.getMaterial());
             } catch (Exception ex) {
-              Assert.fail(ex.getMessage());
+              fail(ex.getMessage());
             }
             return null;
           }
@@ -1617,7 +1970,7 @@ public class TestKMS {
   public void testKMSTimeout() throws Exception {
     File confDir = getTestDir();
     Configuration conf = createBaseKMSConf(confDir);
-    conf.setInt(KMSClientProvider.TIMEOUT_ATTR, 1);
+    conf.setInt(CommonConfigurationKeysPublic.KMS_CLIENT_TIMEOUT_SECONDS, 1);
     writeConf(confDir, conf);
 
     ServerSocket sock;
@@ -1640,7 +1993,7 @@ public class TestKMS {
     } catch (SocketTimeoutException e) {
       caughtTimeout = true;
     } catch (IOException e) {
-      Assert.assertTrue("Caught unexpected exception" + e.toString(), false);
+      assertTrue(false, "Caught unexpected exception" + e.toString());
     }
 
     caughtTimeout = false;
@@ -1651,7 +2004,7 @@ public class TestKMS {
     } catch (SocketTimeoutException e) {
       caughtTimeout = true;
     } catch (IOException e) {
-      Assert.assertTrue("Caught unexpected exception" + e.toString(), false);
+      assertTrue(false, "Caught unexpected exception" + e.toString());
     }
 
     caughtTimeout = false;
@@ -1664,10 +2017,10 @@ public class TestKMS {
     } catch (SocketTimeoutException e) {
       caughtTimeout = true;
     } catch (IOException e) {
-      Assert.assertTrue("Caught unexpected exception" + e.toString(), false);
+      assertTrue(false, "Caught unexpected exception" + e.toString());
     }
 
-    Assert.assertTrue(caughtTimeout);
+    assertTrue(caughtTimeout);
 
     sock.close();
   }
@@ -1676,9 +2029,8 @@ public class TestKMS {
   public void testDelegationTokenAccess() throws Exception {
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     final File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
     conf.set("hadoop.kms.authentication.type", "kerberos");
     conf.set("hadoop.kms.authentication.kerberos.keytab",
         keytab.getAbsolutePath());
@@ -1720,7 +2072,6 @@ public class TestKMS {
             return null;
           }
         });
-
         nonKerberosUgi.addCredentials(credentials);
 
         try {
@@ -1745,34 +2096,137 @@ public class TestKMS {
   }
 
   @Test
-  public void testDelegationTokensOpsSimple() throws Exception {
-    final Configuration conf = new Configuration();
-    testDelegationTokensOps(conf, false);
+  public void testGetDelegationTokenByProxyUser() throws Exception {
+    Configuration conf = new Configuration();
+    conf.set("hadoop.security.auth_to_local.mechanism", "mit");
+    conf.set("hadoop.security.authentication", "kerberos");
+    UserGroupInformation.setConfiguration(conf);
+    final File testDir = getTestDir();
+
+    conf = createBaseKMSConf(testDir, conf);
+    conf.set("hadoop.kms.authentication.type", "kerberos");
+    conf.set("hadoop.kms.authentication.kerberos.keytab",
+            keytab.getAbsolutePath());
+    conf.set("hadoop.kms.authentication.kerberos.principal", "HTTP/localhost");
+    conf.set("hadoop.kms.proxyuser.client.users", "foo/localhost");
+    conf.set("hadoop.kms.proxyuser.client.hosts", "localhost");
+    conf.set(KeyAuthorizationKeyProvider.KEY_ACL + "kcc.ALL",
+        "foo/localhost");
+
+    writeConf(testDir, conf);
+
+    runServer(null, null, testDir, new KMSCallable<Void>() {
+      @Override
+      public Void call() throws Exception {
+        final Configuration conf = new Configuration();
+        final URI uri = createKMSUri(getKMSUrl());
+
+        // proxyuser client using kerberos credentials
+        UserGroupInformation proxyUgi = UserGroupInformation.
+            loginUserFromKeytabAndReturnUGI("client/host", keytab.getAbsolutePath());
+        UserGroupInformation foo = UserGroupInformation.createProxyUser(
+            "foo/localhost", proxyUgi);
+        final Credentials credentials = new Credentials();
+        foo.doAs(new PrivilegedExceptionAction<Void>() {
+          @Override
+          public Void run() throws Exception {
+            final KeyProvider kp = createProvider(uri, conf);
+            KeyProviderDelegationTokenExtension keyProviderDelegationTokenExtension
+                = KeyProviderDelegationTokenExtension
+                    .createKeyProviderDelegationTokenExtension(kp);
+            keyProviderDelegationTokenExtension.addDelegationTokens("client",
+                credentials);
+            assertNotNull(kp.createKey("kcc",
+                new KeyProvider.Options(conf)));
+            return null;
+          }
+        });
+
+        // current user client using token credentials for proxy user
+        UserGroupInformation nonKerberosUgi
+            = UserGroupInformation.getCurrentUser();
+        nonKerberosUgi.addCredentials(credentials);
+        nonKerberosUgi.doAs(new PrivilegedExceptionAction<Void>() {
+          @Override
+          public Void run() throws Exception {
+            final KeyProvider kp = createProvider(uri, conf);
+            assertNotNull(kp.getMetadata("kcc"));
+            return null;
+          }
+        });
+        return null;
+      }
+    });
+  }
+
+  private Configuration setupConfForKerberos(File confDir) throws Exception {
+    final Configuration conf =  createBaseKMSConf(confDir, null);
+    conf.set("hadoop.security.authentication", "kerberos");
+    conf.set("hadoop.kms.authentication.type", "kerberos");
+    conf.set("hadoop.kms.authentication.kerberos.keytab",
+        keytab.getAbsolutePath());
+    conf.set("hadoop.kms.authentication.kerberos.principal",
+        "HTTP/localhost");
+    conf.set("hadoop.kms.authentication.kerberos.name.rules", "DEFAULT");
+    return conf;
   }
 
   @Test
-  public void testDelegationTokensOpsKerberized() throws Exception {
-    final Configuration conf = new Configuration();
-    conf.set("hadoop.security.authentication", "kerberos");
-    testDelegationTokensOps(conf, true);
+  public void testDelegationTokensOpsHttpPseudo() throws Exception {
+    testDelegationTokensOps(false, false);
   }
 
-  private void testDelegationTokensOps(Configuration conf,
-      final boolean useKrb) throws Exception {
-    UserGroupInformation.setConfiguration(conf);
-    File confDir = getTestDir();
-    conf = createBaseKMSConf(confDir);
-    if (useKrb) {
-      conf.set("hadoop.kms.authentication.type", "kerberos");
-      conf.set("hadoop.kms.authentication.kerberos.keytab",
-          keytab.getAbsolutePath());
-      conf.set("hadoop.kms.authentication.kerberos.principal",
-          "HTTP/localhost");
-      conf.set("hadoop.kms.authentication.kerberos.name.rules", "DEFAULT");
+  @Test
+  public void testDelegationTokensOpsHttpKerberized() throws Exception {
+    testDelegationTokensOps(false, true);
+  }
+
+  @Test
+  public void testDelegationTokensOpsHttpsPseudo() throws Exception {
+    testDelegationTokensOps(true, false);
+  }
+
+  @Test
+  public void testDelegationTokensOpsHttpsKerberized() throws Exception {
+    testDelegationTokensOps(true, true);
+  }
+
+  private Text getTokenService(KeyProvider provider) {
+    assertTrue((provider instanceof LoadBalancingKMSClientProvider),
+        "KeyProvider should be an instance of " + "LoadBalancingKMSClientProvider");
+    assertEquals(1, ((LoadBalancingKMSClientProvider)provider).getProviders().length,
+        "Num client providers should be 1");
+    final Text tokenService = new Text(
+        (((LoadBalancingKMSClientProvider)provider).getProviders()[0])
+        .getCanonicalServiceName());
+    return tokenService;
+  }
+
+  private void testDelegationTokensOps(final boolean ssl, final boolean kerb)
+      throws Exception {
+    final File confDir = getTestDir();
+    final Configuration conf;
+    if (kerb) {
+      conf = setupConfForKerberos(confDir);
+    } else {
+      conf = createBaseKMSConf(confDir, null);
+    }
+
+    final String keystore;
+    final String password;
+    if (ssl) {
+      final String sslConfDir = KeyStoreTestUtil.getClasspathDir(TestKMS.class);
+      KeyStoreTestUtil.setupSSLConfig(confDir.getAbsolutePath(), sslConfDir,
+          conf, false);
+      keystore = confDir.getAbsolutePath() + "/serverKS.jks";
+      password = "serverP";
+    } else {
+      keystore = null;
+      password = null;
     }
     writeConf(confDir, conf);
 
-    runServer(null, null, confDir, new KMSCallable<Void>() {
+    runServer(keystore, password, confDir, new KMSCallable<Void>() {
       @Override
       public Void call() throws Exception {
         final Configuration clientConf = new Configuration();
@@ -1784,6 +2238,10 @@ public class TestKMS {
           @Override
           public Void run() throws Exception {
             KeyProvider kp = createProvider(uri, clientConf);
+            // Unset the conf value for key provider path just to be sure that
+            // the key provider created for renew and cancel token is from
+            // token service field.
+            clientConf.unset(HADOOP_SECURITY_KEY_PROVIDER_PATH);
             // test delegation token retrieval
             KeyProviderDelegationTokenExtension kpdte =
                 KeyProviderDelegationTokenExtension.
@@ -1791,39 +2249,40 @@ public class TestKMS {
             final Credentials credentials = new Credentials();
             final Token<?>[] tokens =
                 kpdte.addDelegationTokens("client1", credentials);
-            Assert.assertEquals(1, credentials.getAllTokens().size());
-            InetSocketAddress kmsAddr =
-                new InetSocketAddress(getKMSUrl().getHost(),
-                    getKMSUrl().getPort());
-            Assert.assertEquals(KMSClientProvider.TOKEN_KIND,
-                credentials.getToken(SecurityUtil.buildTokenService(kmsAddr)).
-                    getKind());
+            Text tokenService = getTokenService(kp);
+            assertEquals(1, credentials.getAllTokens().size());
+            assertEquals(KMSDelegationToken.TOKEN_KIND,
+                credentials.getToken(tokenService).getKind());
 
             // Test non-renewer user cannot renew.
             for (Token<?> token : tokens) {
-              if (!(token.getKind().equals(KMSClientProvider.TOKEN_KIND))) {
+              if (!(token.getKind().equals(KMSDelegationToken.TOKEN_KIND))) {
                 LOG.info("Skipping token {}", token);
                 continue;
               }
               LOG.info("Got dt for " + uri + "; " + token);
               try {
                 token.renew(clientConf);
-                Assert.fail("client should not be allowed to renew token with"
+                fail("client should not be allowed to renew token with"
                     + "renewer=client1");
               } catch (Exception e) {
+                final DelegationTokenIdentifier identifier =
+                    (DelegationTokenIdentifier) token.decodeIdentifier();
                 GenericTestUtils.assertExceptionContains(
-                    "tries to renew a token with renewer", e);
+                    "tries to renew a token (" + identifier
+                        + ") with non-matching renewer", e);
               }
             }
 
             final UserGroupInformation otherUgi;
-            if (useKrb) {
+            if (kerb) {
               UserGroupInformation
                   .loginUserFromKeytab("client1", keytab.getAbsolutePath());
               otherUgi = UserGroupInformation.getLoginUser();
             } else {
               otherUgi = UserGroupInformation.createUserForTesting("client1",
                   new String[] {"other group"});
+              UserGroupInformation.setLoginUser(otherUgi);
             }
             try {
               // test delegation token renewal via renewer
@@ -1833,7 +2292,7 @@ public class TestKMS {
                   boolean renewed = false;
                   for (Token<?> token : tokens) {
                     if (!(token.getKind()
-                        .equals(KMSClientProvider.TOKEN_KIND))) {
+                        .equals(KMSDelegationToken.TOKEN_KIND))) {
                       LOG.info("Skipping token {}", token);
                       continue;
                     }
@@ -1845,15 +2304,15 @@ public class TestKMS {
                     long newTokenLife = token.renew(clientConf);
                     LOG.info("Renewed token of kind {}, new lifetime:{}",
                         token.getKind(), newTokenLife);
-                    Assert.assertTrue(newTokenLife > tokenLife);
+                    assertTrue(newTokenLife > tokenLife);
                     renewed = true;
                   }
-                  Assert.assertTrue(renewed);
+                  assertTrue(renewed);
 
                   // test delegation token cancellation
                   for (Token<?> token : tokens) {
                     if (!(token.getKind()
-                        .equals(KMSClientProvider.TOKEN_KIND))) {
+                        .equals(KMSDelegationToken.TOKEN_KIND))) {
                       LOG.info("Skipping token {}", token);
                       continue;
                     }
@@ -1862,8 +2321,7 @@ public class TestKMS {
                     LOG.info("Cancelled token of kind {}", token.getKind());
                     try {
                       token.renew(clientConf);
-                      Assert
-                          .fail("should not be able to renew a canceled token");
+                      fail("should not be able to renew a canceled token");
                     } catch (Exception e) {
                       LOG.info("Expected exception when renewing token", e);
                     }
@@ -1871,6 +2329,8 @@ public class TestKMS {
                   return null;
                 }
               });
+              // Close the client provider.
+              kp.close();
               return null;
             } finally {
               otherUgi.logoutUserFromKeytab();
@@ -1885,16 +2345,15 @@ public class TestKMS {
   @Test
   public void testDelegationTokensUpdatedInUGI() throws Exception {
     Configuration conf = new Configuration();
-    UserGroupInformation.setConfiguration(conf);
     File confDir = getTestDir();
-    conf = createBaseKMSConf(confDir);
+    conf = createBaseKMSConf(confDir, conf);
     conf.set(
         "hadoop.kms.authentication.delegation-token.max-lifetime.sec", "5");
     conf.set(
         "hadoop.kms.authentication.delegation-token.renew-interval.sec", "5");
     writeConf(confDir, conf);
 
-    // Running as a service (e.g. Yarn in practice).
+    // Running as a service (e.g. YARN in practice).
     runServer(null, null, confDir, new KMSCallable<Void>() {
       @Override
       public Void call() throws Exception {
@@ -1909,7 +2368,7 @@ public class TestKMS {
         final InetSocketAddress kmsAddr =
             new InetSocketAddress(getKMSUrl().getHost(), getKMSUrl().getPort());
 
-        // Job 1 (e.g. Yarn log aggregation job), with user DT.
+        // Job 1 (e.g. YARN log aggregation job), with user DT.
         final Collection<Token<?>> job1Token = new HashSet<>();
         doAs("client", new PrivilegedExceptionAction<Void>() {
           @Override
@@ -1917,16 +2376,17 @@ public class TestKMS {
             // Get a DT and use it.
             final Credentials credentials = new Credentials();
             kpdte.addDelegationTokens("client", credentials);
-            Assert.assertEquals(1, credentials.getAllTokens().size());
-            Assert.assertEquals(KMSClientProvider.TOKEN_KIND, credentials.
-                getToken(SecurityUtil.buildTokenService(kmsAddr)).getKind());
+            Text tokenService = getTokenService(kp);
+            assertEquals(1, credentials.getAllTokens().size());
+            assertEquals(KMSDelegationToken.TOKEN_KIND, credentials.
+                getToken(tokenService).getKind());
             UserGroupInformation.getCurrentUser().addCredentials(credentials);
             LOG.info("Added kms dt to credentials: {}", UserGroupInformation.
                 getCurrentUser().getCredentials().getAllTokens());
             Token<?> token =
                 UserGroupInformation.getCurrentUser().getCredentials()
-                    .getToken(SecurityUtil.buildTokenService(kmsAddr));
-            Assert.assertNotNull(token);
+                    .getToken(tokenService);
+            assertNotNull(token);
             job1Token.add(token);
 
             // Decode the token to get max time.
@@ -1941,37 +2401,37 @@ public class TestKMS {
 
             // wait for token to expire.
             Thread.sleep(5100);
-            Assert.assertTrue("maxTime " + maxTime + " is not less than now.",
-                maxTime > 0 && maxTime < Time.now());
+            assertTrue(maxTime > 0 && maxTime < Time.now(),
+                "maxTime " + maxTime + " is not less than now.");
             try {
               kp.getKeys();
-              Assert.fail("Operation should fail since dt is expired.");
+              fail("Operation should fail since dt is expired.");
             } catch (Exception e) {
               LOG.info("Expected error.", e);
             }
             return null;
           }
         });
-        Assert.assertFalse(job1Token.isEmpty());
+        assertFalse(job1Token.isEmpty());
 
-        // job 2 (e.g. Another Yarn log aggregation job, with user DT.
+        // job 2 (e.g. Another YARN log aggregation job, with user DT.
         doAs("client", new PrivilegedExceptionAction<Void>() {
           @Override
           public Void run() throws Exception {
             // Get a new DT, but don't use it yet.
             final Credentials newCreds = new Credentials();
             kpdte.addDelegationTokens("client", newCreds);
-            Assert.assertEquals(1, newCreds.getAllTokens().size());
-            Assert.assertEquals(KMSClientProvider.TOKEN_KIND,
-                newCreds.getToken(SecurityUtil.buildTokenService(kmsAddr)).
+            Text tokenService = getTokenService(kp);
+            assertEquals(1, newCreds.getAllTokens().size());
+            assertEquals(KMSDelegationToken.TOKEN_KIND,
+                newCreds.getToken(tokenService).
                     getKind());
 
             // Using job 1's DT should fail.
             final Credentials oldCreds = new Credentials();
             for (Token<?> token : job1Token) {
-              if (token.getKind().equals(KMSClientProvider.TOKEN_KIND)) {
-                oldCreds
-                    .addToken(SecurityUtil.buildTokenService(kmsAddr), token);
+              if (token.getKind().equals(KMSDelegationToken.TOKEN_KIND)) {
+                oldCreds.addToken(tokenService, token);
               }
             }
             UserGroupInformation.getCurrentUser().addCredentials(oldCreds);
@@ -1979,15 +2439,15 @@ public class TestKMS {
                 .getCurrentUser().getCredentials().getAllTokens());
             try {
               kp.getKeys();
-              Assert.fail("Operation should fail since dt is expired.");
+              fail("Operation should fail since dt is expired.");
             } catch (Exception e) {
               LOG.info("Expected error.", e);
             }
 
             // Using the new DT should succeed.
-            Assert.assertEquals(1, newCreds.getAllTokens().size());
-            Assert.assertEquals(KMSClientProvider.TOKEN_KIND,
-                newCreds.getToken(SecurityUtil.buildTokenService(kmsAddr)).
+            assertEquals(1, newCreds.getAllTokens().size());
+            assertEquals(KMSDelegationToken.TOKEN_KIND,
+                newCreds.getToken(tokenService).
                     getKind());
             UserGroupInformation.getCurrentUser().addCredentials(newCreds);
             LOG.info("Credetials now are: {}", UserGroupInformation
@@ -2016,7 +2476,14 @@ public class TestKMS {
     doKMSWithZK(true, true);
   }
 
-  public void doKMSWithZK(boolean zkDTSM, boolean zkSigner) throws Exception {
+  private <T> T runServerWithZooKeeper(boolean zkDTSM, boolean zkSigner,
+      KMSCallable<T> callable) throws Exception {
+    return runServerWithZooKeeper(zkDTSM, zkSigner, callable, 1);
+  }
+
+  private <T> T runServerWithZooKeeper(boolean zkDTSM, boolean zkSigner,
+      KMSCallable<T> callable, int kmsSize) throws Exception {
+
     TestingServer zkServer = null;
     try {
       zkServer = new TestingServer();
@@ -2024,9 +2491,8 @@ public class TestKMS {
 
       Configuration conf = new Configuration();
       conf.set("hadoop.security.authentication", "kerberos");
-      UserGroupInformation.setConfiguration(conf);
       final File testDir = getTestDir();
-      conf = createBaseKMSConf(testDir);
+      conf = createBaseKMSConf(testDir, conf);
       conf.set("hadoop.kms.authentication.type", "kerberos");
       conf.set("hadoop.kms.authentication.kerberos.keytab", keytab.getAbsolutePath());
       conf.set("hadoop.kms.authentication.kerberos.principal", "HTTP/localhost");
@@ -2063,43 +2529,189 @@ public class TestKMS {
 
       writeConf(testDir, conf);
 
-      KMSCallable<KeyProvider> c =
-          new KMSCallable<KeyProvider>() {
-        @Override
-        public KeyProvider call() throws Exception {
-          final Configuration conf = new Configuration();
-          conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 128);
-          final URI uri = createKMSUri(getKMSUrl());
-
-          final KeyProvider kp =
-              doAs("SET_KEY_MATERIAL",
-                  new PrivilegedExceptionAction<KeyProvider>() {
-                    @Override
-                    public KeyProvider run() throws Exception {
-                      KeyProvider kp = createProvider(uri, conf);
-                          kp.createKey("k1", new byte[16],
-                              new KeyProvider.Options(conf));
-                          kp.createKey("k2", new byte[16],
-                              new KeyProvider.Options(conf));
-                          kp.createKey("k3", new byte[16],
-                              new KeyProvider.Options(conf));
-                      return kp;
-                    }
-                  });
-          return kp;
-        }
-      };
-
-      runServer(null, null, testDir, c);
+      int[] ports = new int[kmsSize];
+      for (int i = 0; i < ports.length; i++) {
+        ports[i] = -1;
+      }
+      return runServer(ports, null, null, testDir, callable);
     } finally {
       if (zkServer != null) {
         zkServer.stop();
         zkServer.close();
       }
     }
-
   }
 
+  public void doKMSWithZK(boolean zkDTSM, boolean zkSigner) throws Exception {
+    KMSCallable<KeyProvider> c =
+        new KMSCallable<KeyProvider>() {
+          @Override
+          public KeyProvider call() throws Exception {
+            final Configuration conf = new Configuration();
+            conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 128);
+            final URI uri = createKMSUri(getKMSUrl());
+
+            final KeyProvider kp =
+                doAs("SET_KEY_MATERIAL",
+                    new PrivilegedExceptionAction<KeyProvider>() {
+                      @Override
+                      public KeyProvider run() throws Exception {
+                        KeyProvider kp = createProvider(uri, conf);
+                        kp.createKey("k1", new byte[16],
+                            new KeyProvider.Options(conf));
+                        kp.createKey("k2", new byte[16],
+                            new KeyProvider.Options(conf));
+                        kp.createKey("k3", new byte[16],
+                            new KeyProvider.Options(conf));
+                        return kp;
+                      }
+                    });
+            return kp;
+          }
+        };
+
+    runServerWithZooKeeper(zkDTSM, zkSigner, c);
+  }
+
+  @Test
+  public void testKMSHAZooKeeperDelegationToken() throws Exception {
+    final int kmsSize = 2;
+    doKMSWithZKWithDelegationToken(true, true, kmsSize);
+  }
+
+  private void doKMSWithZKWithDelegationToken(boolean zkDTSM, boolean zkSigner,
+      int kmsSize) throws Exception {
+    // Create a KMSCallable to execute requests after ZooKeeper and KMS are up.
+    KMSCallable<Void> c = new KMSCallable<Void>() {
+      @Override
+      public Void call() throws Exception {
+        final Configuration conf = new Configuration();
+        conf.setInt(KeyProvider.DEFAULT_BITLENGTH_NAME, 128);
+        final URI[] uris = createKMSHAUri(getKMSHAUrl());
+        final Credentials credentials = new Credentials();
+        // Create a UGI without Kerberos auth. It will authenticate with tokens.
+        final UserGroupInformation nonKerberosUgi =
+            UserGroupInformation.getCurrentUser();
+        final String lbUri = generateLoadBalancingKeyProviderUriString();
+        final LoadBalancingKMSClientProvider lbkp =
+            createHAProvider(URI.create(lbUri), uris, conf);
+        conf.unset(HADOOP_SECURITY_KEY_PROVIDER_PATH);
+        // get delegation tokens using kerberos login
+        doAs("SET_KEY_MATERIAL",
+            new PrivilegedExceptionAction<Void>() {
+              @Override
+              public Void run() throws Exception {
+                KeyProviderDelegationTokenExtension kpdte =
+                    KeyProviderDelegationTokenExtension.
+                        createKeyProviderDelegationTokenExtension(lbkp);
+                kpdte.addDelegationTokens("foo", credentials);
+                return null;
+              }
+            });
+
+        nonKerberosUgi.addCredentials(credentials);
+        // Access KMS using delegation token for authentication, no Kerberos.
+        nonKerberosUgi.doAs(new PrivilegedExceptionAction<Void>() {
+          @Override
+          public Void run() throws Exception {
+            // Create a kms client with one provider at a time. Must use one
+            // provider so that if it fails to authenticate, it does not fall
+            // back to the next KMS instance.
+            // Should succeed because it has delegation tokens for any instance.
+            int i = 0;
+            for (KMSClientProvider provider : lbkp.getProviders()) {
+              final String key = "k" + i++;
+              LOG.info("Connect to {} to create key {}.", provider, key);
+              provider.createKey(key, new KeyProvider.Options(conf));
+            }
+            return null;
+          }
+        });
+
+        final Collection<Token<? extends TokenIdentifier>> tokens =
+            credentials.getAllTokens();
+        doAs("foo", new PrivilegedExceptionAction<Void>() {
+          @Override
+          public Void run() throws Exception {
+            assertEquals(1, tokens.size());
+            Token token = tokens.iterator().next();
+            assertEquals(KMSDelegationToken.TOKEN_KIND, token.getKind());
+            LOG.info("Got dt for token: {}", token);
+            final long tokenLife = token.renew(conf);
+            LOG.info("Renewed token {}, new lifetime:{}", token, tokenLife);
+            Thread.sleep(10);
+            final long newTokenLife = token.renew(conf);
+            LOG.info("Renewed token {}, new lifetime:{}", token, newTokenLife);
+            assertTrue(newTokenLife > tokenLife);
+
+            // test delegation token cancellation
+            LOG.info("Got dt for token: {}", token);
+            token.cancel(conf);
+            LOG.info("Cancelled token {}", token);
+            try {
+              token.renew(conf);
+              fail("should not be able to renew a canceled token");
+            } catch (Exception e) {
+              LOG.info("Expected exception when renewing token", e);
+            }
+            return null;
+          }
+        });
+
+        final Credentials newCredentials = new Credentials();
+        doAs("SET_KEY_MATERIAL",
+            new PrivilegedExceptionAction<Void>() {
+              @Override
+              public Void run() throws Exception {
+                KeyProviderDelegationTokenExtension kpdte =
+                    KeyProviderDelegationTokenExtension.
+                        createKeyProviderDelegationTokenExtension(lbkp);
+                kpdte.addDelegationTokens("foo", newCredentials);
+                return null;
+              }
+            });
+
+        doAs("foo", new PrivilegedExceptionAction<Void>() {
+          @Override
+          public Void run() throws Exception {
+            KMSClientProvider kp1 = lbkp.getProviders()[0];
+            URL[] urls = getKMSHAUrl();
+            final Collection<Token<? extends TokenIdentifier>> tokens =
+                newCredentials.getAllTokens();
+            assertEquals(1, tokens.size());
+            Token token = tokens.iterator().next();
+            assertEquals(KMSDelegationToken.TOKEN_KIND,
+                token.getKind());
+            // Testing backward compatibility of token renewal and cancellation.
+            // Set the token service to ip:port format and test to renew/cancel.
+            Text text = SecurityUtil.buildTokenService(
+                new InetSocketAddress(urls[0].getHost(), urls[0].getPort()));
+            token.setService(text);
+            conf.set(HADOOP_SECURITY_KEY_PROVIDER_PATH, lbUri);
+            long tokenLife = 0L;
+            for (KMSClientProvider kp : lbkp.getProviders()) {
+              long renewedTokenLife = token.renew(conf);
+              LOG.info("Renewed token of kind {}, new lifetime:{}",
+                  token.getKind(), renewedTokenLife);
+              assertTrue(renewedTokenLife > tokenLife);
+              tokenLife = renewedTokenLife;
+              Thread.sleep(10);
+            }
+            token.cancel(conf);
+            try {
+              token.renew(conf);
+              fail("should not be able to renew a canceled token");
+            } catch (IOException e) {
+              LOG.info("Expected exception when renewing token", e);
+            }
+            return null;
+          }
+        });
+        return null;
+      }
+    };
+    runServerWithZooKeeper(zkDTSM, zkSigner, c, kmsSize);
+  }
 
   @Test
   public void testProxyUserKerb() throws Exception {
@@ -2114,9 +2726,8 @@ public class TestKMS {
   public void doProxyUserTest(final boolean kerberos) throws Exception {
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     final File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
     if (kerberos) {
       conf.set("hadoop.kms.authentication.type", "kerberos");
     }
@@ -2147,6 +2758,7 @@ public class TestKMS {
               loginUserFromKeytabAndReturnUGI("client", keytab.getAbsolutePath());
         } else {
           proxyUgi = UserGroupInformation.createRemoteUser("client");
+          UserGroupInformation.setLoginUser(proxyUgi);
         }
 
         final UserGroupInformation clientUgi = proxyUgi; 
@@ -2162,7 +2774,7 @@ public class TestKMS {
             fooUgi.doAs(new PrivilegedExceptionAction<Void>() {
               @Override
               public Void run() throws Exception {
-                Assert.assertNotNull(kp.createKey("kbb",
+                assertNotNull(kp.createKey("kbb",
                     new KeyProvider.Options(conf)));
                 return null;
               }
@@ -2176,11 +2788,11 @@ public class TestKMS {
               public Void run() throws Exception {
                 try {
                   kp.createKey("kcc", new KeyProvider.Options(conf));
-                  Assert.fail();
+                  fail();
                 } catch (AuthorizationException ex) {
                   // OK
                 } catch (Exception ex) {
-                  Assert.fail(ex.getMessage());
+                  fail(ex.getMessage());
                 }
                 return null;
               }
@@ -2192,7 +2804,7 @@ public class TestKMS {
             barUgi.doAs(new PrivilegedExceptionAction<Void>() {
               @Override
               public Void run() throws Exception {
-                Assert.assertNotNull(kp.createKey("kdd",
+                assertNotNull(kp.createKey("kdd",
                     new KeyProvider.Options(conf)));
                 return null;
               }
@@ -2218,7 +2830,6 @@ public class TestKMS {
 
   @Test
   public void testTGTRenewal() throws Exception {
-    tearDownMiniKdc();
     Properties kdcConf = MiniKdc.createConf();
     kdcConf.setProperty(MiniKdc.MAX_TICKET_LIFETIME, "3");
     kdcConf.setProperty(MiniKdc.MIN_TICKET_LIFETIME, "3");
@@ -2226,9 +2837,8 @@ public class TestKMS {
 
     Configuration conf = new Configuration();
     conf.set("hadoop.security.authentication", "kerberos");
-    UserGroupInformation.setConfiguration(conf);
     final File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
     conf.set("hadoop.kms.authentication.type", "kerberos");
     conf.set("hadoop.kms.authentication.kerberos.keytab",
         keytab.getAbsolutePath());
@@ -2285,10 +2895,13 @@ public class TestKMS {
 
   public void doWebHDFSProxyUserTest(final boolean kerberos) throws Exception {
     Configuration conf = new Configuration();
-    conf.set("hadoop.security.authentication", "kerberos");
+    if (kerberos) {
+      conf.set("hadoop.security.authentication", "kerberos");
+    }
     UserGroupInformation.setConfiguration(conf);
+
     final File testDir = getTestDir();
-    conf = createBaseKMSConf(testDir);
+    conf = createBaseKMSConf(testDir, conf);
     if (kerberos) {
       conf.set("hadoop.kms.authentication.type", "kerberos");
     }
@@ -2333,7 +2946,7 @@ public class TestKMS {
               @Override
               public Void run() throws Exception {
                 KeyProvider kp = createProvider(uri, conf);
-                Assert.assertNotNull(kp.createKey("kaa",
+                assertNotNull(kp.createKey("kaa",
                     new KeyProvider.Options(conf)));
                 return null;
               }
@@ -2348,9 +2961,13 @@ public class TestKMS {
                 try {
                   KeyProvider kp = createProvider(uri, conf);
                   kp.createKey("kbb", new KeyProvider.Options(conf));
-                  Assert.fail();
+                  fail();
                 } catch (Exception ex) {
-                  Assert.assertTrue(ex.getMessage(), ex.getMessage().contains("Forbidden"));
+                  GenericTestUtils.assertExceptionContains("Error while " +
+                      "authenticating with endpoint", ex);
+                  GenericTestUtils.assertExceptionContains("Forbidden", ex
+                      .getCause().getCause());
+
                 }
                 return null;
               }
@@ -2363,7 +2980,7 @@ public class TestKMS {
               @Override
               public Void run() throws Exception {
                 KeyProvider kp = createProvider(uri, conf);
-                Assert.assertNotNull(kp.createKey("kcc",
+                assertNotNull(kp.createKey("kcc",
                     new KeyProvider.Options(conf)));
                 return null;
               }
@@ -2378,4 +2995,79 @@ public class TestKMS {
     });
   }
 
+  /*
+   * Test the jmx page can return, and contains the basic JvmMetrics. Only
+   * testing in simple mode since the page content is the same, kerberized
+   * or not.
+   */
+  @Test
+  public void testKMSJMX() throws Exception {
+    Configuration conf = new Configuration();
+    final File confDir = getTestDir();
+    conf = createBaseKMSConf(confDir, conf);
+    final String processName = "testkmsjmx";
+    conf.set(KMSConfiguration.METRICS_PROCESS_NAME_KEY, processName);
+    writeConf(confDir, conf);
+
+    runServer(null, null, confDir, new KMSCallable<Void>() {
+      @Override
+      public Void call() throws Exception {
+        final URL jmxUrl = new URL(
+            getKMSUrl() + "/jmx?user.name=whatever&qry=Hadoop:service="
+                + processName + ",name=JvmMetrics");
+        LOG.info("Requesting jmx from " + jmxUrl);
+        final StringBuilder sb = new StringBuilder();
+        final InputStream in = jmxUrl.openConnection().getInputStream();
+        final byte[] buffer = new byte[64 * 1024];
+        int len;
+        while ((len = in.read(buffer)) > 0) {
+          sb.append(new String(buffer, 0, len));
+        }
+        LOG.info("jmx returned: " + sb.toString());
+        assertTrue(sb.toString().contains("JvmMetrics"));
+        return null;
+      }
+    });
+  }
+
+  @Test
+  public void testFilterInitializer() throws Exception {
+    Configuration conf = new Configuration();
+    File testDir = getTestDir();
+    conf = createBaseKMSConf(testDir, conf);
+    conf.set("hadoop.security.authentication", "kerberos");
+    conf.set("hadoop.kms.authentication.token.validity", "1");
+    conf.set("hadoop.kms.authentication.type", "kerberos");
+    conf.set("hadoop.kms.authentication.kerberos.keytab",
+        keytab.getAbsolutePath());
+    conf.set("hadoop.kms.authentication.kerberos.principal", "HTTP/localhost");
+    conf.set("hadoop.kms.authentication.kerberos.name.rules", "DEFAULT");
+    conf.set("hadoop.http.filter.initializers",
+        AuthenticationFilterInitializer.class.getName());
+    conf.set("hadoop.http.authentication.type", "kerberos");
+    conf.set("hadoop.http.authentication.kerberos.principal", "HTTP/localhost");
+    conf.set("hadoop.http.authentication.kerberos.keytab",
+        keytab.getAbsolutePath());
+
+    writeConf(testDir, conf);
+
+    runServer(null, null, testDir, new KMSCallable<Void>() {
+      @Override
+      public Void call() throws Exception {
+        final Configuration conf = new Configuration();
+        URL url = getKMSUrl();
+        final URI uri = createKMSUri(getKMSUrl());
+
+        doAs("client", new PrivilegedExceptionAction<Void>() {
+          @Override
+          public Void run() throws Exception {
+            final KeyProvider kp = createProvider(uri, conf);
+            assertTrue(kp.getKeys().isEmpty());
+            return null;
+          }
+        });
+        return null;
+      }
+    });
+  }
 }

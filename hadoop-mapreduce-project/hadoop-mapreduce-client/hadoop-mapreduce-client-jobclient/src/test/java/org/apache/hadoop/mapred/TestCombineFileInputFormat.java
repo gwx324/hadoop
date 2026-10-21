@@ -26,16 +26,15 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.mapred.lib.CombineFileInputFormat;
 import org.apache.hadoop.mapred.lib.CombineFileSplit;
 import org.apache.hadoop.mapred.lib.CombineFileRecordReader;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import org.junit.Test;
-import static org.junit.Assert.*;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestCombineFileInputFormat {
-  private static final Log LOG =
-    LogFactory.getLog(TestCombineFileInputFormat.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestCombineFileInputFormat.class);
   
   private static JobConf defaultConf = new JobConf();
   private static FileSystem localFs = null; 
@@ -47,9 +46,9 @@ public class TestCombineFileInputFormat {
       throw new RuntimeException("init failure", e);
     }
   }
-  private static Path workDir =
-    new Path(new Path(System.getProperty("test.build.data", "/tmp")),
-             "TestCombineFileInputFormat").makeQualified(localFs);
+  private static Path workDir = localFs.makeQualified(new Path(
+      System.getProperty("test.build.data", "/tmp"),
+      "TestCombineFileInputFormat"));
 
   private static void writeFile(FileSystem fs, Path name, 
                                 String contents) throws IOException {
@@ -80,6 +79,6 @@ public class TestCombineFileInputFormat {
     LOG.info("Trying to getSplits with splits = " + SIZE_SPLITS);
     InputSplit[] splits = format.getSplits(job, SIZE_SPLITS);
     LOG.info("Got getSplits = " + splits.length);
-    assertEquals("splits == " + SIZE_SPLITS, SIZE_SPLITS, splits.length);
+    assertEquals(SIZE_SPLITS, splits.length, "splits == " + SIZE_SPLITS);
   }
 }

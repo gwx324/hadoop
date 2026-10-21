@@ -21,14 +21,15 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Random;
 
-import junit.framework.TestCase;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.WritableComparator;
 
-public class TestIndexedSort extends TestCase {
+public class TestIndexedSort {
 
   public void sortAllEqual(IndexedSorter sorter) throws Exception {
     final int SAMPLE = 500;
@@ -37,8 +38,9 @@ public class TestIndexedSort extends TestCase {
     SampleSortable s = new SampleSortable(values);
     sorter.sort(s, 0, SAMPLE);
     int[] check = s.getSorted();
-    assertTrue(Arrays.toString(values) + "\ndoesn't match\n" +
-        Arrays.toString(check), Arrays.equals(values, check));
+    assertTrue(Arrays.equals(values, check),
+        Arrays.toString(values) + "\ndoesn't match\n" +
+        Arrays.toString(check));
     // Set random min/max, re-sort.
     Random r = new Random();
     int min = r.nextInt(SAMPLE);
@@ -53,8 +55,9 @@ public class TestIndexedSort extends TestCase {
     Arrays.sort(values);
     assertTrue(check[0] == 9);
     assertTrue(check[SAMPLE - 1] == 11);
-    assertTrue(Arrays.toString(values) + "\ndoesn't match\n" +
-        Arrays.toString(check), Arrays.equals(values, check));
+    assertTrue(Arrays.equals(values, check),
+        Arrays.toString(values) + "\ndoesn't match\n" +
+        Arrays.toString(check));
   }
 
   public void sortSorted(IndexedSorter sorter) throws Exception {
@@ -72,8 +75,9 @@ public class TestIndexedSort extends TestCase {
     SampleSortable s = new SampleSortable(values);
     sorter.sort(s, 0, SAMPLE);
     int[] check = s.getSorted();
-    assertTrue(Arrays.toString(values) + "\ndoesn't match\n" +
-        Arrays.toString(check), Arrays.equals(values, check));
+    assertTrue(Arrays.equals(values, check),
+        Arrays.toString(values) + "\ndoesn't match\n" +
+        Arrays.toString(check));
   }
 
   public void sortSequential(IndexedSorter sorter) throws Exception {
@@ -85,8 +89,9 @@ public class TestIndexedSort extends TestCase {
     SampleSortable s = new SampleSortable(values);
     sorter.sort(s, 0, SAMPLE);
     int[] check = s.getSorted();
-    assertTrue(Arrays.toString(values) + "\ndoesn't match\n" +
-        Arrays.toString(check), Arrays.equals(values, check));
+    assertTrue(Arrays.equals(values, check),
+        Arrays.toString(values) + "\ndoesn't match\n" +
+        Arrays.toString(check));
   }
 
   public void sortSingleRecord(IndexedSorter sorter) throws Exception {
@@ -95,8 +100,9 @@ public class TestIndexedSort extends TestCase {
     int[] values = s.getValues();
     sorter.sort(s, 0, SAMPLE);
     int[] check = s.getSorted();
-    assertTrue(Arrays.toString(values) + "\ndoesn't match\n" +
-        Arrays.toString(check), Arrays.equals(values, check));
+    assertTrue(Arrays.equals(values, check),
+        Arrays.toString(values) + "\ndoesn't match\n" +
+        Arrays.toString(check));
   }
 
   public void sortRandom(IndexedSorter sorter) throws Exception {
@@ -109,8 +115,8 @@ public class TestIndexedSort extends TestCase {
     Arrays.sort(values);
     sorter.sort(s, 0, SAMPLE);
     int[] check = s.getSorted();
-    assertTrue("seed: " + seed + "\ndoesn't match\n",
-               Arrays.equals(values, check));
+    assertTrue(Arrays.equals(values, check),
+        "seed: " + seed + "\ndoesn't match\n");
   }
 
   public void sortWritable(IndexedSorter sorter) throws Exception {
@@ -123,11 +129,12 @@ public class TestIndexedSort extends TestCase {
     Arrays.sort(values);
     sorter.sort(s, 0, SAMPLE);
     String[] check = s.getSorted();
-    assertTrue("seed: " + seed + "\ndoesn't match",
-               Arrays.equals(values, check));
+    assertTrue(Arrays.equals(values, check),
+        "seed: " + seed + "\ndoesn't match");
   }
 
 
+  @Test
   public void testQuickSort() throws Exception {
     QuickSort sorter = new QuickSort();
     sortRandom(sorter);
@@ -158,6 +165,7 @@ public class TestIndexedSort extends TestCase {
     assertTrue(Arrays.equals(values, check));
   }
 
+  @Test
   public void testHeapSort() throws Exception {
     HeapSort sorter = new HeapSort();
     sortRandom(sorter);
@@ -264,15 +272,14 @@ public class TestIndexedSort extends TestCase {
 
     @Override
     public int compare(int i, int j) {
-      assertTrue("Expected fewer than " + maxcmp + " comparisons",
-                 ++comparisions < maxcmp);
+      assertTrue(++comparisions < maxcmp,
+          "Expected fewer than " + maxcmp + " comparisons");
       return s.compare(i, j);
     }
 
     @Override
     public void swap(int i, int j) {
-      assertTrue("Expected fewer than " + maxswp + " swaps",
-                 ++swaps < maxswp);
+      assertTrue(++swaps < maxswp, "Expected fewer than " + maxswp + " swaps");
       s.swap(i, j);
     }
 

@@ -17,26 +17,31 @@
  */
 package org.apache.hadoop.conf;
 
-import junit.framework.TestCase;
-
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import java.util.Properties;
 
 /**
  * Created 21-Jan-2009 13:42:36
  */
 
-public class TestConfigurationSubclass extends TestCase {
+public class TestConfigurationSubclass {
   private static final String EMPTY_CONFIGURATION_XML
           = "/org/apache/hadoop/conf/empty-configuration.xml";
 
 
+  @Test
   public void testGetProps() {
     SubConf conf = new SubConf(true);
     Properties properties = conf.getProperties();
-    assertNotNull("hadoop.tmp.dir is not set",
-            properties.getProperty("hadoop.tmp.dir"));
+    assertNotNull(properties.getProperty("hadoop.tmp.dir"),
+        "hadoop.tmp.dir is not set");
   }
 
+  @Test
   public void testReload() throws Throwable {
     SubConf conf = new SubConf(true);
     assertFalse(conf.isReloaded());
@@ -45,17 +50,19 @@ public class TestConfigurationSubclass extends TestCase {
     Properties properties = conf.getProperties();
   }
 
+  @Test
   public void testReloadNotQuiet() throws Throwable {
     SubConf conf = new SubConf(true);
     conf.setQuietMode(false);
     assertFalse(conf.isReloaded());
+    // adding a resource does not force a reload.
     conf.addResource("not-a-valid-resource");
-    assertTrue(conf.isReloaded());
+    assertFalse(conf.isReloaded());
     try {
       Properties properties = conf.getProperties();
       fail("Should not have got here");
     } catch (RuntimeException e) {
-      assertTrue(e.toString(),e.getMessage().contains("not found"));
+      assertTrue(e.getMessage().contains("not found"), e.toString());
     }
   }
 

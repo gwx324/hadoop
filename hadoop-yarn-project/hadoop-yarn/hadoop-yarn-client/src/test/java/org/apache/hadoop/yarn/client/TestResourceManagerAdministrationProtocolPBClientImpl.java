@@ -19,11 +19,13 @@ package org.apache.hadoop.yarn.client;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.service.Service;
 import org.apache.hadoop.service.Service.STATE;
+import org.apache.hadoop.service.ServiceStateChangeListener;
 import org.apache.hadoop.yarn.api.records.DecommissionType;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.factories.RecordFactory;
@@ -45,19 +47,22 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshUserToGroupsMapp
 import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceRequest;
 import org.apache.hadoop.yarn.server.api.protocolrecords.UpdateNodeResourceResponse;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test ResourceManagerAdministrationProtocolPBClientImpl. Test a methods and the proxy without  logic.
  */
 public class TestResourceManagerAdministrationProtocolPBClientImpl {
   private static ResourceManager resourceManager;
-  private static final Log LOG = LogFactory
-          .getLog(TestResourceManagerAdministrationProtocolPBClientImpl.class);
+  private static final Logger LOG = LoggerFactory
+          .getLogger(TestResourceManagerAdministrationProtocolPBClientImpl.class);
   private final RecordFactory recordFactory = RecordFactoryProvider
           .getRecordFactory(null);
 
@@ -67,7 +72,7 @@ public class TestResourceManagerAdministrationProtocolPBClientImpl {
    * Start resource manager server
    */
 
-  @BeforeClass
+  @BeforeAll
   public static void setUpResourceManager() throws IOException,
           InterruptedException {
     Configuration.addDefaultResource("config-with-security.xml");
@@ -77,24 +82,32 @@ public class TestResourceManagerAdministrationProtocolPBClientImpl {
       protected void doSecureLogin() throws IOException {
       }
     };
+
+    // a reliable way to wait for resource manager to fully start
+    final CountDownLatch rmStartedSignal = new CountDownLatch(1);
+    ServiceStateChangeListener rmStateChangeListener =
+        new ServiceStateChangeListener() {
+          @Override
+          public void stateChanged(Service service) {
+            if (service.getServiceState() == STATE.STARTED) {
+              rmStartedSignal.countDown();
+            }
+          }
+        };
+    resourceManager.registerServiceListener(rmStateChangeListener);
+
     resourceManager.init(configuration);
     new Thread() {
       public void run() {
         resourceManager.start();
       }
     }.start();
-    int waitCount = 0;
-    while (resourceManager.getServiceState() == STATE.INITED
-            && waitCount++ < 10) {
-      LOG.info("Waiting for RM to start...");
-      Thread.sleep(1000);
-    }
-    if (resourceManager.getServiceState() != STATE.STARTED) {
-      throw new IOException("ResourceManager failed to start. Final state is "
-              + resourceManager.getServiceState());
-    }
-    LOG.info("ResourceManager RMAdmin address: "
-            + configuration.get(YarnConfiguration.RM_ADMIN_ADDRESS));
+
+    boolean rmStarted = rmStartedSignal.await(60000L, TimeUnit.MILLISECONDS);
+    assertTrue(rmStarted, "ResourceManager failed to start up.");
+
+    LOG.info("ResourceManager RMAdmin address: {}.",
+            configuration.get(YarnConfiguration.RM_ADMIN_ADDRESS));
 
     client = new ResourceManagerAdministrationProtocolPBClientImpl(1L,
             getProtocolAddress(configuration), configuration);
@@ -184,7 +197,7 @@ public class TestResourceManagerAdministrationProtocolPBClientImpl {
    * Stop server
    */
 
-  @AfterClass
+  @AfterAll
   public static void tearDownResourceManager() throws InterruptedException {
     if (resourceManager != null) {
       LOG.info("Stopping ResourceManager...");

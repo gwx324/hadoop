@@ -22,9 +22,13 @@ import org.apache.hadoop.service.ServiceStateChangeListener;
 import org.apache.hadoop.yarn.api.ContainerManagementProtocol;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.server.api.records.ContainerQueuingLimit;
+import org.apache.hadoop.yarn.server.api.records.OpportunisticContainersStatus;
 import org.apache.hadoop.yarn.server.nodemanager.ContainerManagerEvent;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ResourceLocalizationService;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor
     .ContainersMonitor;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.scheduler
+    .ContainerScheduler;
 
 /**
  * The ContainerManager is an entity that manages the life cycle of Containers.
@@ -35,8 +39,14 @@ public interface ContainerManager extends ServiceStateChangeListener,
 
   ContainersMonitor getContainersMonitor();
 
+  OpportunisticContainersStatus getOpportunisticContainersStatus();
+
   void updateQueuingLimit(ContainerQueuingLimit queuingLimit);
 
-  void setBlockNewContainerRequests(boolean blockNewContainerRequests);
+  ContainerScheduler getContainerScheduler();
+
+  void handleCredentialUpdate();
+
+  ResourceLocalizationService getResourceLocalizationService();
 
 }

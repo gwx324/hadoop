@@ -18,184 +18,194 @@
 package org.apache.hadoop.fs.http.server;
 
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.BlockLocation;
+import org.apache.hadoop.fs.BlockStoragePolicySpi;
 import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.FileChecksum;
 import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FsStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FilterFileSystem;
+import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.fs.GlobFilter;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
+import org.apache.hadoop.fs.QuotaUsage;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.XAttrCodec;
 import org.apache.hadoop.fs.XAttrSetFlag;
 import org.apache.hadoop.fs.http.client.HttpFSFileSystem;
+import org.apache.hadoop.fs.http.client.HttpFSFileSystem.FILE_TYPE;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
+import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.hadoop.hdfs.protocol.AclException;
-import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
+import org.apache.hadoop.hdfs.protocol.SnapshotDiffReportListing;
+import org.apache.hadoop.hdfs.protocol.SnapshottableDirectoryStatus;
+import org.apache.hadoop.hdfs.protocol.SnapshotStatus;
+import org.apache.hadoop.hdfs.web.JsonUtil;
 import org.apache.hadoop.lib.service.FileSystemAccess;
 import org.apache.hadoop.util.StringUtils;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
+import org.apache.hadoop.fs.permission.FsCreateModes;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Collection;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.TreeMap;
+
+import static org.apache.hadoop.hdfs.DFSConfigKeys.HTTPFS_BUFFER_SIZE_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.HTTP_BUFFER_SIZE_DEFAULT;
 
 /**
  * FileSystem operation executors used by {@link HttpFSServer}.
  */
 @InterfaceAudience.Private
-public class FSOperations {
+public final class FSOperations {
 
+  private static int bufferSize = 4096;
+
+  private FSOperations() {
+    // not called
+  }
   /**
-   * This class is used to group a FileStatus and an AclStatus together.
-   * It's needed for the GETFILESTATUS and LISTSTATUS calls, which take
-   * most info from the FileStatus and a wee bit from the AclStatus.
+   * Set the buffer size. The size is set during the initialization of
+   * HttpFSServerWebApp.
+   * @param conf the configuration to get the bufferSize
    */
-  private static class StatusPair {
-    private FileStatus fileStatus;
-    private AclStatus aclStatus;
-
-    /**
-     * Simple constructor
-     * @param fileStatus Existing FileStatus object
-     * @param aclStatus Existing AclStatus object
-     */
-    public StatusPair(FileStatus fileStatus, AclStatus aclStatus) {
-      this.fileStatus = fileStatus;
-      this.aclStatus = aclStatus;
-    }
-
-    /**
-     * Create one StatusPair by performing the underlying calls to
-     * fs.getFileStatus and fs.getAclStatus
-     * @param fs The FileSystem where 'path' lives
-     * @param path The file/directory to query
-     * @throws IOException
-     */
-    public StatusPair(FileSystem fs, Path path) throws IOException {
-      fileStatus = fs.getFileStatus(path);
-      aclStatus = null;
-      try {
-        aclStatus = fs.getAclStatus(path);
-      } catch (AclException e) {
-        /*
-         * The cause is almost certainly an "ACLS aren't enabled"
-         * exception, so leave aclStatus at null and carry on.
-         */
-      } catch (UnsupportedOperationException e) {
-        /* Ditto above - this is the case for a local file system */
-      }
-    }
-
-    /**
-     * Return a Map suitable for conversion into JSON format
-     * @return The JSONish Map
-     */
-    public Map<String,Object> toJson() {
-      Map<String,Object> json = new LinkedHashMap<String,Object>();
-      json.put(HttpFSFileSystem.FILE_STATUS_JSON, toJsonInner(true));
-      return json;
-    }
-
-    /**
-     * Return in inner part of the JSON for the status - used by both the
-     * GETFILESTATUS and LISTSTATUS calls.
-     * @param emptyPathSuffix Whether or not to include PATH_SUFFIX_JSON
-     * @return The JSONish Map
-     */
-    public Map<String,Object> toJsonInner(boolean emptyPathSuffix) {
-      Map<String,Object> json = new LinkedHashMap<String,Object>();
-      json.put(HttpFSFileSystem.PATH_SUFFIX_JSON,
-              (emptyPathSuffix) ? "" : fileStatus.getPath().getName());
-      json.put(HttpFSFileSystem.TYPE_JSON,
-              HttpFSFileSystem.FILE_TYPE.getType(fileStatus).toString());
-      json.put(HttpFSFileSystem.LENGTH_JSON, fileStatus.getLen());
-      json.put(HttpFSFileSystem.OWNER_JSON, fileStatus.getOwner());
-      json.put(HttpFSFileSystem.GROUP_JSON, fileStatus.getGroup());
-      json.put(HttpFSFileSystem.PERMISSION_JSON,
-              HttpFSFileSystem.permissionToString(fileStatus.getPermission()));
-      json.put(HttpFSFileSystem.ACCESS_TIME_JSON, fileStatus.getAccessTime());
-      json.put(HttpFSFileSystem.MODIFICATION_TIME_JSON,
-              fileStatus.getModificationTime());
-      json.put(HttpFSFileSystem.BLOCK_SIZE_JSON, fileStatus.getBlockSize());
-      json.put(HttpFSFileSystem.REPLICATION_JSON, fileStatus.getReplication());
-      if ( (aclStatus != null) && !(aclStatus.getEntries().isEmpty()) ) {
-        json.put(HttpFSFileSystem.ACL_BIT_JSON,true);
-      }
-      return json;
-    }
+  public static void setBufferSize(Configuration conf) {
+    bufferSize = conf.getInt(HTTPFS_BUFFER_SIZE_KEY,
+        HTTP_BUFFER_SIZE_DEFAULT);
   }
 
   /**
-   * Simple class used to contain and operate upon a list of StatusPair
-   * objects.  Used by LISTSTATUS.
+   * @param fileStatus a FileStatus object
+   * @return JSON map suitable for wire transport
    */
-  private static class StatusPairs {
-    private StatusPair[] statusPairs;
+  private static Map<String, Object> toJson(FileStatus fileStatus) {
+    Map<String, Object> json = new LinkedHashMap<>();
+    json.put(HttpFSFileSystem.FILE_STATUS_JSON, toJsonInner(fileStatus, true));
+    return json;
+  }
 
-    /**
-     * Construct a list of StatusPair objects
-     * @param fs The FileSystem where 'path' lives
-     * @param path The directory to query
-     * @param filter A possible filter for entries in the directory
-     * @throws IOException
-     */
-    public StatusPairs(FileSystem fs, Path path, PathFilter filter)
-            throws IOException {
-      /* Grab all the file statuses at once in an array */
-      FileStatus[] fileStatuses = fs.listStatus(path, filter);
+  /**
+   * @param fileStatuses list of FileStatus objects
+   * @param isFile is the fileStatuses from a file path
+   * @return JSON map suitable for wire transport
+   */
+  @SuppressWarnings({"unchecked"})
+  private static Map<String, Object> toJson(FileStatus[] fileStatuses,
+      boolean isFile) {
+    Map<String, Object> json = new LinkedHashMap<>();
+    Map<String, Object> inner = new LinkedHashMap<>();
+    JSONArray statuses = new JSONArray();
+    for (FileStatus f : fileStatuses) {
+      statuses.add(toJsonInner(f, isFile));
+    }
+    inner.put(HttpFSFileSystem.FILE_STATUS_JSON, statuses);
+    json.put(HttpFSFileSystem.FILE_STATUSES_JSON, inner);
+    return json;
+  }
 
-      /* We'll have an array of StatusPairs of the same length */
-      AclStatus aclStatus = null;
-      statusPairs = new StatusPair[fileStatuses.length];
-
-      /*
-       * For each FileStatus, attempt to acquire an AclStatus.  If the
-       * getAclStatus throws an exception, we assume that ACLs are turned
-       * off entirely and abandon the attempt.
-       */
-      boolean useAcls = true;   // Assume ACLs work until proven otherwise
-      for (int i = 0; i < fileStatuses.length; i++) {
-        if (useAcls) {
-          try {
-            aclStatus = fs.getAclStatus(fileStatuses[i].getPath());
-          } catch (AclException e) {
-            /* Almost certainly due to an "ACLs not enabled" exception */
-            aclStatus = null;
-            useAcls = false;
-          } catch (UnsupportedOperationException e) {
-            /* Ditto above - this is the case for a local file system */
-            aclStatus = null;
-            useAcls = false;
-          }
-        }
-        statusPairs[i] = new StatusPair(fileStatuses[i], aclStatus);
+  /**
+   * Not meant to be called directly except by the other toJson functions.
+   */
+  private static Map<String, Object> toJsonInner(FileStatus fileStatus,
+      boolean emptyPathSuffix) {
+    Map<String, Object> json = new LinkedHashMap<String, Object>();
+    json.put(HttpFSFileSystem.PATH_SUFFIX_JSON,
+        (emptyPathSuffix) ? "" : fileStatus.getPath().getName());
+    FILE_TYPE fileType = HttpFSFileSystem.FILE_TYPE.getType(fileStatus);
+    json.put(HttpFSFileSystem.TYPE_JSON, fileType.toString());
+    if (fileType.equals(FILE_TYPE.SYMLINK)) {
+      // put the symlink into Json
+      try {
+        json.put(HttpFSFileSystem.SYMLINK_JSON,
+            fileStatus.getSymlink().getName());
+      } catch (IOException e) {
+        // Can't happen.
       }
     }
-
-    /**
-     * Return a Map suitable for conversion into JSON.
-     * @return A JSONish Map
-     */
-    @SuppressWarnings({"unchecked"})
-    public Map<String,Object> toJson() {
-      Map<String,Object> json = new LinkedHashMap<String,Object>();
-      Map<String,Object> inner = new LinkedHashMap<String,Object>();
-      JSONArray statuses = new JSONArray();
-      for (StatusPair s : statusPairs) {
-        statuses.add(s.toJsonInner(false));
+    json.put(HttpFSFileSystem.LENGTH_JSON, fileStatus.getLen());
+    json.put(HttpFSFileSystem.OWNER_JSON, fileStatus.getOwner());
+    json.put(HttpFSFileSystem.GROUP_JSON, fileStatus.getGroup());
+    json.put(HttpFSFileSystem.PERMISSION_JSON,
+        HttpFSFileSystem.permissionToString(fileStatus.getPermission()));
+    json.put(HttpFSFileSystem.ACCESS_TIME_JSON, fileStatus.getAccessTime());
+    json.put(HttpFSFileSystem.MODIFICATION_TIME_JSON,
+        fileStatus.getModificationTime());
+    json.put(HttpFSFileSystem.BLOCK_SIZE_JSON, fileStatus.getBlockSize());
+    json.put(HttpFSFileSystem.REPLICATION_JSON, fileStatus.getReplication());
+    if (fileStatus instanceof HdfsFileStatus) {
+      // Add HDFS-specific fields to response
+      HdfsFileStatus hdfsFileStatus = (HdfsFileStatus) fileStatus;
+      json.put(HttpFSFileSystem.CHILDREN_NUM_JSON,
+          hdfsFileStatus.getChildrenNum());
+      json.put(HttpFSFileSystem.FILE_ID_JSON,
+          hdfsFileStatus.getFileId());
+      json.put(HttpFSFileSystem.STORAGEPOLICY_JSON,
+          hdfsFileStatus.getStoragePolicy());
+      if (hdfsFileStatus.getErasureCodingPolicy() != null) {
+        json.put(HttpFSFileSystem.ECPOLICYNAME_JSON,
+            hdfsFileStatus.getErasureCodingPolicy().getName());
+        json.put(HttpFSFileSystem.ECPOLICY_JSON,
+            JsonUtil.getEcPolicyAsMap(
+                hdfsFileStatus.getErasureCodingPolicy()));
       }
-      inner.put(HttpFSFileSystem.FILE_STATUS_JSON, statuses);
-      json.put(HttpFSFileSystem.FILE_STATUSES_JSON, inner);
-      return json;
     }
+    if (fileStatus.getPermission().getAclBit()) {
+      json.put(HttpFSFileSystem.ACL_BIT_JSON, true);
+    }
+    if (fileStatus.getPermission().getEncryptedBit()) {
+      json.put(HttpFSFileSystem.ENC_BIT_JSON, true);
+    }
+    if (fileStatus.getPermission().getErasureCodedBit()) {
+      json.put(HttpFSFileSystem.EC_BIT_JSON, true);
+    }
+    if (fileStatus.isSnapshotEnabled()) {
+      json.put(HttpFSFileSystem.SNAPSHOT_BIT_JSON, true);
+    }
+    return json;
+  }
+
+  /**
+   * Serializes a DirectoryEntries object into the JSON for a
+   * WebHDFS {@link org.apache.hadoop.hdfs.protocol.DirectoryListing}.
+   * <p>
+   * These two classes are slightly different, due to the impedance
+   * mismatches between the WebHDFS and FileSystem APIs.
+   * @param entries
+   * @param isFile is the entries from a file path
+   * @return json
+   */
+  private static Map<String, Object> toJson(FileSystem.DirectoryEntries
+      entries, boolean isFile) {
+    Map<String, Object> json = new LinkedHashMap<>();
+    Map<String, Object> inner = new LinkedHashMap<>();
+    Map<String, Object> fileStatuses = toJson(entries.getEntries(), isFile);
+    inner.put(HttpFSFileSystem.PARTIAL_LISTING_JSON, fileStatuses);
+    inner.put(HttpFSFileSystem.REMAINING_ENTRIES_JSON, entries.hasMore() ? 1
+        : 0);
+    json.put(HttpFSFileSystem.DIRECTORY_LISTING_JSON, inner);
+    return json;
   }
 
   /** Converts an <code>AclStatus</code> object into a JSON object.
@@ -211,6 +221,8 @@ public class FSOperations {
     JSONArray entriesArray = new JSONArray();
     inner.put(HttpFSFileSystem.OWNER_JSON, aclStatus.getOwner());
     inner.put(HttpFSFileSystem.GROUP_JSON, aclStatus.getGroup());
+    inner.put(HttpFSFileSystem.PERMISSION_JSON,
+        HttpFSFileSystem.permissionToString(aclStatus.getPermission()));
     inner.put(HttpFSFileSystem.ACL_STICKY_BIT_JSON, aclStatus.isStickyBit());
     for ( AclEntry e : aclStatus.getEntries() ) {
       entriesArray.add(e.toString());
@@ -295,15 +307,66 @@ public class FSOperations {
   @SuppressWarnings({"unchecked"})
   private static Map contentSummaryToJSON(ContentSummary contentSummary) {
     Map json = new LinkedHashMap();
-    json.put(HttpFSFileSystem.CONTENT_SUMMARY_DIRECTORY_COUNT_JSON, contentSummary.getDirectoryCount());
-    json.put(HttpFSFileSystem.CONTENT_SUMMARY_FILE_COUNT_JSON, contentSummary.getFileCount());
-    json.put(HttpFSFileSystem.CONTENT_SUMMARY_LENGTH_JSON, contentSummary.getLength());
-    json.put(HttpFSFileSystem.CONTENT_SUMMARY_QUOTA_JSON, contentSummary.getQuota());
-    json.put(HttpFSFileSystem.CONTENT_SUMMARY_SPACE_CONSUMED_JSON, contentSummary.getSpaceConsumed());
-    json.put(HttpFSFileSystem.CONTENT_SUMMARY_SPACE_QUOTA_JSON, contentSummary.getSpaceQuota());
+    json.put(HttpFSFileSystem.CONTENT_SUMMARY_DIRECTORY_COUNT_JSON,
+        contentSummary.getDirectoryCount());
+    json.put(HttpFSFileSystem.CONTENT_SUMMARY_ECPOLICY_JSON,
+        contentSummary.getErasureCodingPolicy());
+    json.put(HttpFSFileSystem.CONTENT_SUMMARY_FILE_COUNT_JSON,
+        contentSummary.getFileCount());
+    json.put(HttpFSFileSystem.CONTENT_SUMMARY_LENGTH_JSON,
+        contentSummary.getLength());
+    Map<String, Object> quotaUsageMap = quotaUsageToMap(contentSummary);
+    for (Map.Entry<String, Object> e : quotaUsageMap.entrySet()) {
+      // For ContentSummary we don't need this since we already have
+      // separate count for file and directory.
+      if (!e.getKey().equals(
+          HttpFSFileSystem.QUOTA_USAGE_FILE_AND_DIRECTORY_COUNT_JSON)) {
+        json.put(e.getKey(), e.getValue());
+      }
+    }
     Map response = new LinkedHashMap();
     response.put(HttpFSFileSystem.CONTENT_SUMMARY_JSON, json);
     return response;
+  }
+
+  /**
+   * Converts a <code>QuotaUsage</code> object into a JSON array
+   * object.
+   */
+  @SuppressWarnings({"unchecked"})
+  private static Map quotaUsageToJSON(QuotaUsage quotaUsage) {
+    Map response = new LinkedHashMap();
+    Map quotaUsageMap = quotaUsageToMap(quotaUsage);
+    response.put(HttpFSFileSystem.QUOTA_USAGE_JSON, quotaUsageMap);
+    return response;
+  }
+
+  private static Map<String, Object> quotaUsageToMap(QuotaUsage quotaUsage) {
+    Map<String, Object> result = new LinkedHashMap<>();
+    result.put(HttpFSFileSystem.QUOTA_USAGE_FILE_AND_DIRECTORY_COUNT_JSON,
+        quotaUsage.getFileAndDirectoryCount());
+    result.put(HttpFSFileSystem.QUOTA_USAGE_QUOTA_JSON, quotaUsage.getQuota());
+    result.put(HttpFSFileSystem.QUOTA_USAGE_SPACE_CONSUMED_JSON,
+        quotaUsage.getSpaceConsumed());
+    result.put(HttpFSFileSystem.QUOTA_USAGE_SPACE_QUOTA_JSON,
+        quotaUsage.getSpaceQuota());
+    Map<String, Map<String, Long>> typeQuota = new TreeMap<>();
+    for (StorageType t : StorageType.getTypesSupportingQuota()) {
+      long tQuota = quotaUsage.getTypeQuota(t);
+      if (tQuota != HdfsConstants.QUOTA_RESET) {
+        Map<String, Long> type = typeQuota.get(t.toString());
+        if (type == null) {
+          type = new TreeMap<>();
+          typeQuota.put(t.toString(), type);
+        }
+        type.put(HttpFSFileSystem.QUOTA_USAGE_QUOTA_JSON,
+            quotaUsage.getTypeQuota(t));
+        type.put(HttpFSFileSystem.QUOTA_USAGE_CONSUMED_JSON,
+            quotaUsage.getTypeConsumed(t));
+      }
+    }
+    result.put(HttpFSFileSystem.QUOTA_USAGE_TYPE_QUOTA_JSON, typeQuota);
+    return result;
   }
 
   /**
@@ -321,6 +384,63 @@ public class FSOperations {
   private static JSONObject toJSON(String name, Object value) {
     JSONObject json = new JSONObject();
     json.put(name, value);
+    return json;
+  }
+
+  @SuppressWarnings({ "unchecked" })
+  private static JSONObject storagePolicyToJSON(BlockStoragePolicySpi policy) {
+    BlockStoragePolicy p = (BlockStoragePolicy) policy;
+    JSONObject policyJson = new JSONObject();
+    policyJson.put("id", p.getId());
+    policyJson.put("name", p.getName());
+    policyJson.put("storageTypes", toJsonArray(p.getStorageTypes()));
+    policyJson.put("creationFallbacks", toJsonArray(p.getCreationFallbacks()));
+    policyJson.put("replicationFallbacks",
+        toJsonArray(p.getReplicationFallbacks()));
+    policyJson.put("copyOnCreateFile", p.isCopyOnCreateFile());
+    return policyJson;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static JSONArray toJsonArray(StorageType[] storageTypes) {
+    JSONArray jsonArray = new JSONArray();
+    for (StorageType type : storageTypes) {
+      jsonArray.add(type.toString());
+    }
+    return jsonArray;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static JSONObject storagePoliciesToJSON(
+      Collection<? extends BlockStoragePolicySpi> storagePolicies) {
+    JSONObject json = new JSONObject();
+    JSONArray jsonArray = new JSONArray();
+    JSONObject policies = new JSONObject();
+    if (storagePolicies != null) {
+      for (BlockStoragePolicySpi policy : storagePolicies) {
+        JSONObject policyMap = storagePolicyToJSON(policy);
+        jsonArray.add(policyMap);
+      }
+    }
+    policies.put(HttpFSFileSystem.STORAGE_POLICY_JSON, jsonArray);
+    json.put(HttpFSFileSystem.STORAGE_POLICIES_JSON, policies);
+    return json;
+  }
+
+  /**
+   * Executes the fsStatus operation.
+   *
+   * @param fsStatus a FsStatus object
+   * @return JSON map suitable for wire transport
+   */
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> toJson(FsStatus fsStatus) {
+    Map<String, Object> json = new LinkedHashMap<>();
+    JSONObject statusJson = new JSONObject();
+    statusJson.put(HttpFSFileSystem.USED_JSON, fsStatus.getUsed());
+    statusJson.put(HttpFSFileSystem.REMAINING_JSON, fsStatus.getRemaining());
+    statusJson.put(HttpFSFileSystem.CAPACITY_JSON, fsStatus.getCapacity());
+    json.put(HttpFSFileSystem.FS_STATUS_JSON, statusJson);
     return json;
   }
 
@@ -350,14 +470,13 @@ public class FSOperations {
      *
      * @return void.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
-      int bufferSize = fs.getConf().getInt("httpfs.buffer.size", 4096);
       OutputStream os = fs.append(path, bufferSize);
-      IOUtils.copyBytes(is, os, bufferSize, true);
-      os.close();
+      long bytes = copyBytes(is, os);
+      HttpFSServerWebApp.get().getMetrics().incrBytesWritten(bytes);
       return null;
     }
 
@@ -375,7 +494,7 @@ public class FSOperations {
      * Creates a Concat executor.
      *
      * @param path target path to concat to.
-     * @param sources comma seperated absolute paths to use as sources.
+     * @param sources comma separated absolute paths to use as sources.
      */
     public FSConcat(String path, String[] sources) {
       this.sources = new Path[sources.length];
@@ -394,7 +513,7 @@ public class FSOperations {
      *
      * @return void.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -435,11 +554,12 @@ public class FSOperations {
      *         wait for it to complete before proceeding with further file 
      *         updates.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public JSONObject execute(FileSystem fs) throws IOException {
       boolean result = fs.truncate(path, newLength);
+      HttpFSServerWebApp.get().getMetrics().incrOpsTruncate();
       return toJSON(
           StringUtils.toLowerCase(HttpFSFileSystem.TRUNCATE_JSON), result);
     }
@@ -469,7 +589,7 @@ public class FSOperations {
      *
      * @return a Map object (JSON friendly) with the content-summary.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Map execute(FileSystem fs) throws IOException {
@@ -480,6 +600,26 @@ public class FSOperations {
   }
 
   /**
+   * Executor that performs a quota-usage FileSystemAccess files system
+   * operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSQuotaUsage
+      implements FileSystemAccess.FileSystemExecutor<Map> {
+    private Path path;
+
+    public FSQuotaUsage(String path) {
+      this.path = new Path(path);
+    }
+
+    @Override
+    public Map execute(FileSystem fs) throws IOException {
+      QuotaUsage quotaUsage = fs.getQuotaUsage(path);
+      return quotaUsageToJSON(quotaUsage);
+    }
+  }
+
+  /**
    * Executor that performs a create FileSystemAccess files system operation.
    */
   @InterfaceAudience.Private
@@ -487,6 +627,7 @@ public class FSOperations {
     private InputStream is;
     private Path path;
     private short permission;
+    private short unmaskedPermission;
     private boolean override;
     private short replication;
     private long blockSize;
@@ -500,12 +641,14 @@ public class FSOperations {
      * @param override if the file should be overriden if it already exist.
      * @param repl the replication factor for the file.
      * @param blockSize the block size for the file.
+     * @param unmaskedPerm unmasked permissions for the file
      */
     public FSCreate(InputStream is, String path, short perm, boolean override,
-                    short repl, long blockSize) {
+                    short repl, long blockSize, short unmaskedPerm) {
       this.is = is;
       this.path = new Path(path);
       this.permission = perm;
+      this.unmaskedPermission = unmaskedPerm;
       this.override = override;
       this.replication = repl;
       this.blockSize = blockSize;
@@ -518,7 +661,7 @@ public class FSOperations {
      *
      * @return The URI of the created file.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -529,13 +672,67 @@ public class FSOperations {
         blockSize = fs.getDefaultBlockSize(path);
       }
       FsPermission fsPermission = new FsPermission(permission);
-      int bufferSize = fs.getConf().getInt("httpfs.buffer.size", 4096);
+      if (unmaskedPermission != -1) {
+        fsPermission = FsCreateModes.create(fsPermission,
+            new FsPermission(unmaskedPermission));
+      }
       OutputStream os = fs.create(path, fsPermission, override, bufferSize, replication, blockSize, null);
-      IOUtils.copyBytes(is, os, bufferSize, true);
-      os.close();
+      long bytes = copyBytes(is, os);
+      HttpFSServerWebApp.get().getMetrics().incrBytesWritten(bytes);
       return null;
     }
 
+  }
+
+  /**
+   * These copyBytes methods combines the two different flavors used originally.
+   * One with length and another one with buffer size.
+   * In this impl, buffer size is determined internally, which is a singleton
+   * normally set during initialization.
+   * @param in the inputStream
+   * @param out the outputStream
+   * @return the totalBytes
+   * @throws IOException the exception to be thrown.
+   */
+  public static long copyBytes(InputStream in, OutputStream out)
+      throws IOException {
+    return copyBytes(in, out, Long.MAX_VALUE);
+  }
+
+  public static long copyBytes(InputStream in, OutputStream out, long count)
+      throws IOException {
+    long totalBytes = 0;
+
+    // If bufferSize is not initialized use 4k. This will not happen
+    // if all callers check and set it.
+    byte[] buf = new byte[bufferSize];
+    long bytesRemaining = count;
+    int bytesRead;
+
+    try {
+      while (bytesRemaining > 0) {
+        int bytesToRead = (int)
+            (bytesRemaining < buf.length ? bytesRemaining : buf.length);
+
+        bytesRead = in.read(buf, 0, bytesToRead);
+        if (bytesRead == -1) {
+          break;
+        }
+
+        out.write(buf, 0, bytesRead);
+        bytesRemaining -= bytesRead;
+        totalBytes += bytesRead;
+      }
+      return totalBytes;
+    } finally {
+      // Originally IOUtils.copyBytes() were called with close=true. So we are
+      // implementing the same behavior here.
+      try {
+        in.close();
+      } finally {
+        out.close();
+      }
+    }
   }
 
   /**
@@ -565,11 +762,12 @@ public class FSOperations {
      * @return <code>true</code> if the delete operation was successful,
      *         <code>false</code> otherwise.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public JSONObject execute(FileSystem fs) throws IOException {
       boolean deleted = fs.delete(path, recursive);
+      HttpFSServerWebApp.get().getMetrics().incrOpsDelete();
       return toJSON(
           StringUtils.toLowerCase(HttpFSFileSystem.DELETE_JSON), deleted);
     }
@@ -599,7 +797,7 @@ public class FSOperations {
      *
      * @return a Map object (JSON friendly) with the file checksum.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Map execute(FileSystem fs) throws IOException {
@@ -637,8 +835,9 @@ public class FSOperations {
      */
     @Override
     public Map execute(FileSystem fs) throws IOException {
-      StatusPair sp = new StatusPair(fs, path);
-      return sp.toJson();
+      FileStatus status = fs.getFileStatus(path);
+      HttpFSServerWebApp.get().getMetrics().incrOpsStat();
+      return toJson(status);
     }
 
   }
@@ -656,7 +855,7 @@ public class FSOperations {
      *
      * @return a JSON object with the user home directory.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     @SuppressWarnings("unchecked")
@@ -666,7 +865,6 @@ public class FSOperations {
       json.put(HttpFSFileSystem.HOME_DIR_JSON, homeDir.toUri().getPath());
       return json;
     }
-
   }
 
   /**
@@ -680,7 +878,7 @@ public class FSOperations {
     /**
      * Creates a list-status executor.
      *
-     * @param path the directory to retrieve the status of its contents.
+     * @param path the directory/file to retrieve the status of its contents.
      * @param filter glob filter to use.
      *
      * @throws IOException thrown if the filter expression is incorrect.
@@ -703,8 +901,9 @@ public class FSOperations {
      */
     @Override
     public Map execute(FileSystem fs) throws IOException {
-      StatusPairs sp = new StatusPairs(fs, path, filter);
-      return sp.toJson();
+      FileStatus[] fileStatuses = fs.listStatus(path, filter);
+      HttpFSServerWebApp.get().getMetrics().incrOpsListing();
+      return toJson(fileStatuses, fs.getFileStatus(path).isFile());
     }
 
     @Override
@@ -715,6 +914,45 @@ public class FSOperations {
   }
 
   /**
+   * Executor that performs a batched directory listing.
+   */
+  @InterfaceAudience.Private
+  public static class FSListStatusBatch implements FileSystemAccess
+      .FileSystemExecutor<Map> {
+    private final Path path;
+    private final byte[] token;
+
+    public FSListStatusBatch(String path, byte[] token) throws IOException {
+      this.path = new Path(path);
+      this.token = token.clone();
+    }
+
+    /**
+     * Simple wrapper filesystem that exposes the protected batched
+     * listStatus API so we can use it.
+     */
+    private static class WrappedFileSystem extends FilterFileSystem {
+      public WrappedFileSystem(FileSystem f) {
+        super(f);
+      }
+
+      @Override
+      public DirectoryEntries listStatusBatch(Path f, byte[] token) throws
+          FileNotFoundException, IOException {
+        return super.listStatusBatch(f, token);
+      }
+    }
+
+    @Override
+    public Map execute(FileSystem fs) throws IOException {
+      WrappedFileSystem wrappedFS = new WrappedFileSystem(fs);
+      FileSystem.DirectoryEntries entries =
+          wrappedFS.listStatusBatch(path, token);
+      return toJson(entries, wrappedFS.getFileStatus(path).isFile());
+    }
+  }
+
+  /**
    * Executor that performs a mkdirs FileSystemAccess files system operation.
    */
   @InterfaceAudience.Private
@@ -722,16 +960,20 @@ public class FSOperations {
 
     private Path path;
     private short permission;
+    private short unmaskedPermission;
 
     /**
      * Creates a mkdirs executor.
      *
      * @param path directory path to create.
      * @param permission permission to use.
+     * @param unmaskedPermission unmasked permissions for the directory
      */
-    public FSMkdirs(String path, short permission) {
+    public FSMkdirs(String path, short permission,
+        short unmaskedPermission) {
       this.path = new Path(path);
       this.permission = permission;
+      this.unmaskedPermission = unmaskedPermission;
     }
 
     /**
@@ -742,12 +984,17 @@ public class FSOperations {
      * @return <code>true</code> if the mkdirs operation was successful,
      *         <code>false</code> otherwise.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public JSONObject execute(FileSystem fs) throws IOException {
       FsPermission fsPermission = new FsPermission(permission);
+      if (unmaskedPermission != -1) {
+        fsPermission = FsCreateModes.create(fsPermission,
+            new FsPermission(unmaskedPermission));
+      }
       boolean mkdirs = fs.mkdirs(path, fsPermission);
+      HttpFSServerWebApp.get().getMetrics().incrOpsMkdir();
       return toJSON(HttpFSFileSystem.MKDIRS_JSON, mkdirs);
     }
 
@@ -776,11 +1023,12 @@ public class FSOperations {
      *
      * @return The inputstream of the file.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public InputStream execute(FileSystem fs) throws IOException {
-      int bufferSize = HttpFSServerWebApp.get().getConfig().getInt("httpfs.buffer.size", 4096);
+      // Only updating ops count. bytesRead is updated in InputStreamEntity
+      HttpFSServerWebApp.get().getMetrics().incrOpsOpen();
       return fs.open(path, bufferSize);
     }
 
@@ -813,11 +1061,12 @@ public class FSOperations {
      * @return <code>true</code> if the rename operation was successful,
      *         <code>false</code> otherwise.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public JSONObject execute(FileSystem fs) throws IOException {
       boolean renamed = fs.rename(path, toPath);
+      HttpFSServerWebApp.get().getMetrics().incrOpsRename();
       return toJSON(HttpFSFileSystem.RENAME_JSON, renamed);
     }
 
@@ -852,7 +1101,7 @@ public class FSOperations {
      *
      * @return void.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -889,7 +1138,7 @@ public class FSOperations {
      *
      * @return void.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -1080,6 +1329,29 @@ public class FSOperations {
   }
 
   /**
+   * Executor that performs getting trash root FileSystemAccess
+   * files system operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSTrashRoot
+      implements FileSystemAccess.FileSystemExecutor<JSONObject> {
+    private Path path;
+    public FSTrashRoot(String path) {
+      this.path = new Path(path);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public JSONObject execute(FileSystem fs) throws IOException {
+      Path trashRoot = fs.getTrashRoot(this.path);
+      JSONObject json = new JSONObject();
+      json.put(HttpFSFileSystem.TRASH_DIR_JSON, trashRoot.toUri().getPath());
+      return json;
+    }
+
+  }
+
+  /**
    * Executor that gets the ACL information for a given file.
    */
   @InterfaceAudience.Private
@@ -1139,7 +1411,7 @@ public class FSOperations {
      * @return <code>true</code> if the replication value was set,
      *         <code>false</code> otherwise.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     @SuppressWarnings("unchecked")
@@ -1181,7 +1453,7 @@ public class FSOperations {
      *
      * @return void.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -1267,7 +1539,7 @@ public class FSOperations {
      *
      * @return Map a map object (JSON friendly) with the xattr names.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Map execute(FileSystem fs) throws IOException {
@@ -1306,7 +1578,7 @@ public class FSOperations {
      *
      * @return Map a map object (JSON friendly) with the xattrs.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Map execute(FileSystem fs) throws IOException {
@@ -1317,6 +1589,839 @@ public class FSOperations {
         xattrs = fs.getXAttrs(path);
       }
       return xAttrsToJSON(xattrs, encoding);
+    }
+  }
+
+  /**
+   * Executor that performs a getAllStoragePolicies FileSystemAccess files
+   * system operation.
+   */
+  @SuppressWarnings({ "unchecked" })
+  @InterfaceAudience.Private
+  public static class FSGetAllStoragePolicies implements
+      FileSystemAccess.FileSystemExecutor<JSONObject> {
+
+    @Override
+    public JSONObject execute(FileSystem fs) throws IOException {
+      Collection<? extends BlockStoragePolicySpi> storagePolicies = fs
+          .getAllStoragePolicies();
+      return storagePoliciesToJSON(storagePolicies);
+    }
+  }
+
+  /**
+   * Executor that performs a getStoragePolicy FileSystemAccess files system
+   * operation.
+   */
+  @SuppressWarnings({ "unchecked" })
+  @InterfaceAudience.Private
+  public static class FSGetStoragePolicy implements
+      FileSystemAccess.FileSystemExecutor<JSONObject> {
+
+    private Path path;
+
+    public FSGetStoragePolicy(String path) {
+      this.path = new Path(path);
+    }
+
+    @Override
+    public JSONObject execute(FileSystem fs) throws IOException {
+      BlockStoragePolicySpi storagePolicy = fs.getStoragePolicy(path);
+      JSONObject json = new JSONObject();
+      json.put(HttpFSFileSystem.STORAGE_POLICY_JSON,
+          storagePolicyToJSON(storagePolicy));
+      return json;
+    }
+  }
+
+  /**
+   * Executor that performs a setStoragePolicy FileSystemAccess files system
+   * operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSSetStoragePolicy implements
+      FileSystemAccess.FileSystemExecutor<Void> {
+
+    private Path path;
+    private String policyName;
+
+    public FSSetStoragePolicy(String path, String policyName) {
+      this.path = new Path(path);
+      this.policyName = policyName;
+    }
+
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      fs.setStoragePolicy(path, policyName);
+      return null;
+    }
+  }
+
+  /**
+   * Executor that performs a unsetStoragePolicy FileSystemAccess files system
+   * operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSUnsetStoragePolicy implements
+      FileSystemAccess.FileSystemExecutor<Void> {
+
+    private Path path;
+
+    public FSUnsetStoragePolicy(String path) {
+      this.path = new Path(path);
+    }
+
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      fs.unsetStoragePolicy(path);
+      return null;
+    }
+  }
+
+  /**
+   *  Executor that performs an allowSnapshot operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSAllowSnapshot implements
+      FileSystemAccess.FileSystemExecutor<Void> {
+
+    private Path path;
+
+    /**
+     * Creates a allowSnapshot executor.
+     * @param path directory path to allow snapshot.
+     */
+    public FSAllowSnapshot(String path) {
+      this.path = new Path(path);
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        dfs.allowSnapshot(path);
+      } else {
+        throw new UnsupportedOperationException("allowSnapshot is not "
+            + "supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      return null;
+    }
+  }
+
+  /**
+   *  Executor that performs an disallowSnapshot operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSDisallowSnapshot implements
+      FileSystemAccess.FileSystemExecutor<Void> {
+
+    private Path path;
+
+    /**
+     * Creates a disallowSnapshot executor.
+     * @param path directory path to allow snapshot.
+     */
+    public FSDisallowSnapshot(String path) {
+      this.path = new Path(path);
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        dfs.disallowSnapshot(path);
+      } else {
+        throw new UnsupportedOperationException("disallowSnapshot is not "
+            + "supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      return null;
+    }
+  }
+
+  /**
+   *  Executor that performs a createSnapshot FileSystemAccess operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSCreateSnapshot implements
+      FileSystemAccess.FileSystemExecutor<String> {
+
+    private Path path;
+    private String snapshotName;
+
+    /**
+     * Creates a createSnapshot executor.
+     * @param path directory path to be snapshotted.
+     * @param snapshotName the snapshot name.
+     */
+    public FSCreateSnapshot(String path, String snapshotName) {
+      this.path = new Path(path);
+      this.snapshotName = snapshotName;
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @return <code>Path</code> the complete path for newly created snapshot
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public String execute(FileSystem fs) throws IOException {
+      Path snapshotPath = fs.createSnapshot(path, snapshotName);
+      JSONObject json = toJSON(HttpFSFileSystem.HOME_DIR_JSON,
+          snapshotPath.toString());
+      return json.toJSONString().replaceAll("\\\\", "");
+    }
+  }
+
+  /**
+   *  Executor that performs a deleteSnapshot FileSystemAccess operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSDeleteSnapshot implements
+      FileSystemAccess.FileSystemExecutor<Void> {
+
+    private Path path;
+    private String snapshotName;
+
+    /**
+     * Creates a deleteSnapshot executor.
+     * @param path path for the snapshot to be deleted.
+     * @param snapshotName snapshot name.
+     */
+    public FSDeleteSnapshot(String path, String snapshotName) {
+      this.path = new Path(path);
+      this.snapshotName = snapshotName;
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @return void
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      fs.deleteSnapshot(path, snapshotName);
+      return null;
+    }
+  }
+
+  /**
+   *  Executor that performs a renameSnapshot FileSystemAccess operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSRenameSnapshot implements
+      FileSystemAccess.FileSystemExecutor<Void> {
+    private Path path;
+    private String oldSnapshotName;
+    private String snapshotName;
+
+    /**
+     * Creates a renameSnapshot executor.
+     * @param path directory path of the snapshot to be renamed.
+     * @param oldSnapshotName current snapshot name.
+     * @param snapshotName new snapshot name to be set.
+     */
+    public FSRenameSnapshot(String path, String oldSnapshotName,
+                            String snapshotName) {
+      this.path = new Path(path);
+      this.oldSnapshotName = oldSnapshotName;
+      this.snapshotName = snapshotName;
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @return void
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      fs.renameSnapshot(path, oldSnapshotName, snapshotName);
+      return null;
+    }
+  }
+
+  /**
+   *  Executor that performs a getSnapshotDiff operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSGetSnapshotDiff implements
+      FileSystemAccess.FileSystemExecutor<String> {
+    private Path path;
+    private String oldSnapshotName;
+    private String snapshotName;
+
+    /**
+     * Creates a getSnapshotDiff executor.
+     * @param path directory path of the snapshots to be examined.
+     * @param oldSnapshotName Older snapshot name.
+     * @param snapshotName Newer snapshot name.
+     */
+    public FSGetSnapshotDiff(String path, String oldSnapshotName,
+        String snapshotName) {
+      this.path = new Path(path);
+      this.oldSnapshotName = oldSnapshotName;
+      this.snapshotName = snapshotName;
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @return A serialized JSON string of snapshot diffs.
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public String execute(FileSystem fs) throws IOException {
+      SnapshotDiffReport sdr = null;
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        sdr = dfs.getSnapshotDiffReport(path, oldSnapshotName, snapshotName);
+      } else {
+        throw new UnsupportedOperationException("getSnapshotDiff is not "
+            + "supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      if (sdr != null) {
+        return JsonUtil.toJsonString(sdr);
+      } else {
+        return "";
+      }
+    }
+  }
+
+  /**
+   *  Executor that performs a getSnapshotDiffListing operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSGetSnapshotDiffListing implements
+      FileSystemAccess.FileSystemExecutor<String> {
+
+    private final Path path;
+    private final String oldSnapshotName;
+    private final String snapshotName;
+    private final String snapshotDiffStartPath;
+    private final int snapshotDiffIndex;
+
+    /**
+     * Creates a getSnapshotDiffListing executor.
+     *
+     * @param path directory path of the snapshots to be examined.
+     * @param oldSnapshotName Older snapshot name.
+     * @param snapshotName Newer snapshot name.
+     * @param snapshotDiffStartPath snapshot diff start path.
+     * @param snapshotDiffIndex snapshot diff index.
+     */
+    public FSGetSnapshotDiffListing(String path, String oldSnapshotName,
+        String snapshotName, String snapshotDiffStartPath, int snapshotDiffIndex) {
+      this.path = new Path(path);
+      this.oldSnapshotName = oldSnapshotName;
+      this.snapshotName = snapshotName;
+      this.snapshotDiffStartPath = snapshotDiffStartPath;
+      this.snapshotDiffIndex = snapshotDiffIndex;
+    }
+
+    /**
+     * Executes the filesystem operation.
+     *
+     * @param fs filesystem instance to use.
+     * @return A serialized JSON string of snapshot diffs.
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public String execute(FileSystem fs) throws IOException {
+      SnapshotDiffReportListing snapshotDiffReportListing = null;
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        snapshotDiffReportListing =
+            dfs.getSnapshotDiffReportListing(path, oldSnapshotName, snapshotName,
+                snapshotDiffStartPath, snapshotDiffIndex);
+      } else {
+        throw new UnsupportedOperationException("getSnapshotDiffListing is not "
+            + "supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      if (snapshotDiffReportListing != null) {
+        return JsonUtil.toJsonString(snapshotDiffReportListing);
+      } else {
+        return "";
+      }
+    }
+  }
+
+  /**
+   *  Executor that performs a getSnapshottableDirListing operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSGetSnapshottableDirListing implements
+      FileSystemAccess.FileSystemExecutor<String> {
+
+    /**
+     * Creates a getSnapshottableDirListing executor.
+     */
+    public FSGetSnapshottableDirListing() {
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @return A JSON string of all snapshottable directories.
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public String execute(FileSystem fs) throws IOException {
+      SnapshottableDirectoryStatus[] sds = null;
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        sds = dfs.getSnapshottableDirListing();
+      } else {
+        throw new UnsupportedOperationException("getSnapshottableDirListing is "
+            + "not supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      return JsonUtil.toJsonString(sds);
+    }
+  }
+
+  /**
+   *  Executor that performs a getSnapshotListing operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSGetSnapshotListing implements
+      FileSystemAccess.FileSystemExecutor<String> {
+    private Path path;
+
+    /**
+     * Creates a getSnapshotDiff executor.
+     * @param path directory path of the snapshots to be examined.
+     */
+    public FSGetSnapshotListing(String path) {
+      this.path = new Path(path);
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @return A JSON string of all snapshots for a snapshottable directory.
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public String execute(FileSystem fs) throws IOException {
+      SnapshotStatus[] sds = null;
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        sds = dfs.getSnapshotListing(path);
+      } else {
+        throw new UnsupportedOperationException("getSnapshotListing is "
+            + "not supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      return JsonUtil.toJsonString(sds);
+    }
+  }
+
+  /**
+   * Executor that performs a getServerDefaults operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSGetServerDefaults
+      implements FileSystemAccess.FileSystemExecutor<String> {
+
+    /**
+     * Creates a getServerDefaults executor.
+     */
+    public FSGetServerDefaults() {
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @return A JSON string.
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public String execute(FileSystem fs) throws IOException {
+      FsServerDefaults sds = null;
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        sds = dfs.getServerDefaults();
+      } else {
+        throw new UnsupportedOperationException("getServerDefaults is "
+            + "not supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      return JsonUtil.toJsonString(sds);
+    }
+  }
+
+  /**
+   * Executor that performs a check access operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSAccess
+      implements FileSystemAccess.FileSystemExecutor<Void> {
+
+    private Path path;
+    private FsAction mode;
+
+    /**
+     * Creates a access executor.
+     */
+    public FSAccess(String path, FsAction mode) {
+      this.path = new Path(path);
+      this.mode = mode;
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        dfs.access(path, mode);
+        HttpFSServerWebApp.get().getMetrics().incrOpsCheckAccess();
+      } else {
+        throw new UnsupportedOperationException("checkaccess is "
+            + "not supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Executor that performs a setErasureCodingPolicy operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSSetErasureCodingPolicy
+      implements FileSystemAccess.FileSystemExecutor<Void> {
+
+    private Path path;
+    private String policyName;
+
+    public FSSetErasureCodingPolicy(String path, String policyName) {
+      this.path = new Path(path);
+      this.policyName = policyName;
+    }
+
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        dfs.setErasureCodingPolicy(path, policyName);
+      } else {
+        throw new UnsupportedOperationException("setErasureCodingPolicy is "
+            + "not supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Executor that performs a getErasureCodingPolicy operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSGetErasureCodingPolicy
+      implements FileSystemAccess.FileSystemExecutor<String> {
+
+    private Path path;
+
+    public FSGetErasureCodingPolicy(String path) {
+      this.path = new Path(path);
+    }
+
+    @Override
+    public String execute(FileSystem fs) throws IOException {
+      ErasureCodingPolicy policy = null;
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        policy = dfs.getErasureCodingPolicy(path);
+      } else {
+        throw new UnsupportedOperationException("getErasureCodingPolicy is "
+            + "not supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      return JsonUtil.toJsonString(policy);
+    }
+  }
+
+  /**
+   * Executor that performs a unsetErasureCodingPolicy operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSUnSetErasureCodingPolicy
+      implements FileSystemAccess.FileSystemExecutor<Void> {
+
+    private Path path;
+
+    public FSUnSetErasureCodingPolicy(String path) {
+      this.path = new Path(path);
+    }
+
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        dfs.unsetErasureCodingPolicy(path);
+      } else {
+        throw new UnsupportedOperationException("unsetErasureCodingPolicy is "
+            + "not supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Executor that performs a satisfyStoragePolicy operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSSatisyStoragePolicy
+      implements FileSystemAccess.FileSystemExecutor<Void> {
+
+    private Path path;
+
+    public FSSatisyStoragePolicy(String path) {
+      this.path = new Path(path);
+    }
+
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        dfs.satisfyStoragePolicy(path);
+      } else {
+        throw new UnsupportedOperationException("satisfyStoragePolicy is "
+            + "not supported for HttpFs on " + fs.getClass()
+            + ". Please check your fs.defaultFS configuration");
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Executor that performs a getFileBlockLocations operation.
+   */
+
+  @InterfaceAudience.Private
+  @SuppressWarnings("rawtypes")
+  public static class FSFileBlockLocations implements FileSystemAccess.FileSystemExecutor<Map> {
+    final private Path path;
+    final private long offsetValue;
+    final private long lengthValue;
+
+    /**
+     * Creates a file-block-locations executor.
+     *
+     * @param path the path to retrieve the location
+     * @param offsetValue offset into the given file
+     * @param lengthValue length for which to get locations for
+     */
+    public FSFileBlockLocations(String path, long offsetValue, long lengthValue) {
+      this.path = new Path(path);
+      this.offsetValue = offsetValue;
+      this.lengthValue = lengthValue;
+    }
+
+    @Override
+    public Map execute(FileSystem fs) throws IOException {
+      BlockLocation[] locations = fs.getFileBlockLocations(this.path,
+          this.offsetValue, this.lengthValue);
+      return JsonUtil.toJsonMap(locations);
+    }
+  }
+
+  /**
+   * Executor that performs a getFileBlockLocations operation for legacy
+   * clients that supports only GET_BLOCK_LOCATIONS.
+   */
+
+  @InterfaceAudience.Private
+  @SuppressWarnings("rawtypes")
+  public static class FSFileBlockLocationsLegacy
+      implements FileSystemAccess.FileSystemExecutor<Map> {
+    final private Path path;
+    final private long offsetValue;
+    final private long lengthValue;
+
+    /**
+     * Creates a file-block-locations executor.
+     *
+     * @param path the path to retrieve the location
+     * @param offsetValue offset into the given file
+     * @param lengthValue length for which to get locations for
+     */
+    public FSFileBlockLocationsLegacy(String path, long offsetValue, long lengthValue) {
+      this.path = new Path(path);
+      this.offsetValue = offsetValue;
+      this.lengthValue = lengthValue;
+    }
+
+    @Override
+    public Map execute(FileSystem fs) throws IOException {
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem)fs;
+        LocatedBlocks locations = dfs.getLocatedBlocks(
+            this.path, this.offsetValue, this.lengthValue);
+        return JsonUtil.toJsonMap(locations);
+      }
+      throw new IOException("Unable to support FSFileBlockLocationsLegacy " +
+          "because the file system is not DistributedFileSystem.");
+    }
+  }
+
+  /**
+   * Executor that performs a linkFile-status FileSystemAccess files
+   * system operation.
+   */
+  @InterfaceAudience.Private
+  @SuppressWarnings("rawtypes")
+  public static class FSFileLinkStatus
+      implements FileSystemAccess.FileSystemExecutor<Map> {
+    final private Path path;
+
+    /**
+     * Creates a linkFile-status executor.
+     *
+     * @param path the path to retrieve the status.
+     */
+    public FSFileLinkStatus(String path) {
+      this.path = new Path(path);
+    }
+
+    /**
+     * Executes the filesystem getFileLinkStatus operation and returns the
+     * result in a JSON Map.
+     *
+     * @param fs filesystem instance to use.
+     * @return a Map object (JSON friendly) with the file status.
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public Map execute(FileSystem fs) throws IOException {
+      FileStatus status = fs.getFileLinkStatus(path);
+      HttpFSServerWebApp.get().getMetrics().incrOpsStat();
+      return toJson(status);
+    }
+  }
+
+  /**
+   * Executor that performs a getFsStatus operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSStatus implements FileSystemAccess.FileSystemExecutor<Map> {
+    final private Path path;
+
+    /**
+     * Creates a fsStatus executor.
+     *
+     * @param path the path to retrieve the status.
+     */
+    public FSStatus(String path) {
+      this.path = new Path(path);
+    }
+
+    @Override
+    public Map execute(FileSystem fs) throws IOException {
+      FsStatus fsStatus = fs.getStatus(path);
+      HttpFSServerWebApp.get().getMetrics().incrOpsStatus();
+      return toJson(fsStatus);
+    }
+  }
+
+  /**
+   * Executor that performs a FSGetErasureCodingPolicies operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSGetErasureCodingPolicies
+      implements FileSystemAccess.FileSystemExecutor<String> {
+
+    public FSGetErasureCodingPolicies() {
+    }
+
+    @Override
+    public String execute(FileSystem fs) throws IOException {
+      Collection<ErasureCodingPolicyInfo> ecPolicyInfos = null;
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        ecPolicyInfos = dfs.getAllErasureCodingPolicies();
+      } else {
+        throw new UnsupportedOperationException("getErasureCodingPolicies is " +
+            "not supported for HttpFs on " + fs.getClass() +
+            ". Please check your fs.defaultFS configuration");
+      }
+      HttpFSServerWebApp.get().getMetrics().incrOpsAllECPolicies();
+      return JsonUtil.toJsonString(ecPolicyInfos.stream().toArray(ErasureCodingPolicyInfo[]::new));
+    }
+  }
+
+  /**
+   * Executor that performs a FSGetErasureCodingCodecs operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSGetErasureCodingCodecs
+      implements FileSystemAccess.FileSystemExecutor<Map> {
+
+    public FSGetErasureCodingCodecs() {
+    }
+
+    @Override
+    public Map execute(FileSystem fs) throws IOException {
+      Map<String, Map<String, String>> ecCodecs = new HashMap<>();
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        ecCodecs.put("ErasureCodingCodecs", dfs.getAllErasureCodingCodecs());
+      } else {
+        throw new UnsupportedOperationException("getErasureCodeCodecs is " +
+            "not supported for HttpFs on " + fs.getClass() +
+            ". Please check your fs.defaultFS configuration");
+      }
+      HttpFSServerWebApp.get().getMetrics().incrOpsECCodecs();
+      return ecCodecs;
+    }
+  }
+
+  /**
+   * Executor that performs a FSGetTrashRoots operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSGetTrashRoots
+      implements FileSystemAccess.FileSystemExecutor<Map> {
+    final private boolean allUsers;
+
+    public FSGetTrashRoots(boolean allUsers) {
+      this.allUsers = allUsers;
+    }
+
+    @Override
+    public Map execute(FileSystem fs) throws IOException {
+      Map<String, Collection<FileStatus>> paths = new HashMap<>();
+      if (fs instanceof DistributedFileSystem) {
+        DistributedFileSystem dfs = (DistributedFileSystem) fs;
+        paths.put("Paths", dfs.getTrashRoots(allUsers));
+      } else {
+        throw new UnsupportedOperationException("getTrashRoots is " +
+            "not supported for HttpFs on " + fs.getClass() +
+            ". Please check your fs.defaultFS configuration");
+      }
+      HttpFSServerWebApp.get().getMetrics().incrOpsTrashRoots();
+      return paths;
     }
   }
 }

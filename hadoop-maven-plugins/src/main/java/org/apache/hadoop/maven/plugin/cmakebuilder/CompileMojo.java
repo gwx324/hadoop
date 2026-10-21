@@ -14,6 +14,7 @@
 
 package org.apache.hadoop.maven.plugin.cmakebuilder;
 
+import java.util.Locale;
 import org.apache.hadoop.maven.plugin.util.Exec.OutputBufferThread;
 import org.apache.hadoop.maven.plugin.util.Exec;
 import org.apache.maven.plugin.AbstractMojo;
@@ -83,7 +84,8 @@ public class CompileMojo extends AbstractMojo {
 
   // TODO: support Windows
   private static void validatePlatform() throws MojoExecutionException {
-    if (System.getProperty("os.name").toLowerCase().startsWith("windows")) {
+    if (System.getProperty("os.name").toLowerCase(Locale.ENGLISH)
+        .startsWith("windows")) {
       throw new MojoExecutionException("CMakeBuilder does not yet support " +
           "the Windows platform.");
     }
@@ -94,8 +96,6 @@ public class CompileMojo extends AbstractMojo {
     validatePlatform();
     runCMake();
     runMake();
-    runMake(); // The second make is a workaround for HADOOP-9215.  It can be
-               // removed when cmake 2.6 is no longer supported.
     long end = System.nanoTime();
     getLog().info("cmake compilation finished successfully in " +
           TimeUnit.MILLISECONDS.convert(end - start, TimeUnit.NANOSECONDS) +

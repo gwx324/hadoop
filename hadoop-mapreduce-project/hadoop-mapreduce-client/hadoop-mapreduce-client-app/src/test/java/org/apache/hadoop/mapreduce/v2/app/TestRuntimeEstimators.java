@@ -29,8 +29,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.TaskCompletionEvent;
@@ -59,6 +57,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEventType;
 import org.apache.hadoop.mapreduce.v2.app.speculate.DefaultSpeculator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.ExponentiallySmoothedTaskRuntimeEstimator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.LegacyTaskRuntimeEstimator;
+import org.apache.hadoop.mapreduce.v2.app.speculate.SimpleExponentialTaskRuntimeEstimator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.Speculator;
 import org.apache.hadoop.mapreduce.v2.app.speculate.SpeculatorEvent;
 import org.apache.hadoop.mapreduce.v2.app.speculate.TaskRuntimeEstimator;
@@ -71,6 +70,7 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.event.AsyncDispatcher;
+import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
@@ -78,8 +78,13 @@ import org.apache.hadoop.yarn.security.client.ClientToAMTokenSecretManager;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.ControlledClock;
 import org.apache.hadoop.yarn.util.SystemClock;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.offset;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @SuppressWarnings({"unchecked", "rawtypes"})
 public class TestRuntimeEstimators {
@@ -97,7 +102,8 @@ public class TestRuntimeEstimators {
 
   AppContext myAppContext;
 
-  private static final Log LOG = LogFactory.getLog(TestRuntimeEstimators.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestRuntimeEstimators.class);
 
   private final AtomicInteger slotsInUse = new AtomicInteger(0);
 
@@ -123,6 +129,9 @@ public class TestRuntimeEstimators {
     estimator = testedEstimator;
 	clock = new ControlledClock();
 	dispatcher = new AsyncDispatcher();
+    Configuration conf = new Configuration();
+    dispatcher.init(conf);
+
     myJob = null;
     slotsInUse.set(0);
     completedMaps.set(0);
@@ -131,8 +140,6 @@ public class TestRuntimeEstimators {
     taskTimeSavedBySpeculation.set(0);
 
     clock.tickMsec(1000);
-
-    Configuration conf = new Configuration();
 
     myAppContext = new MyAppContext(MAP_TASKS, REDUCE_TASKS);
     myJob = myAppContext.getAllJobs().values().iterator().next();
@@ -145,22 +152,21 @@ public class TestRuntimeEstimators {
     conf.setDouble(MRJobConfig.SPECULATIVECAP_TOTAL_TASKS, 0.001);
     conf.setInt(MRJobConfig.SPECULATIVE_MINIMUM_ALLOWED_TASKS, 5);
     speculator = new DefaultSpeculator(conf, myAppContext, estimator, clock);
-    Assert.assertEquals("wrong SPECULATIVE_RETRY_AFTER_NO_SPECULATE value",
-        500L, speculator.getSoonestRetryAfterNoSpeculate());
-    Assert.assertEquals("wrong SPECULATIVE_RETRY_AFTER_SPECULATE value",
-        5000L, speculator.getSoonestRetryAfterSpeculate());
-    Assert.assertEquals(speculator.getProportionRunningTasksSpeculatable(),
-        0.1, 0.00001);
-    Assert.assertEquals(speculator.getProportionTotalTasksSpeculatable(),
-        0.001, 0.00001);
-    Assert.assertEquals("wrong SPECULATIVE_MINIMUM_ALLOWED_TASKS value",
-        5, speculator.getMinimumAllowedSpeculativeTasks());
+    assertEquals(500L, speculator.getSoonestRetryAfterNoSpeculate(),
+        "wrong SPECULATIVE_RETRY_AFTER_NO_SPECULATE value");
+    assertEquals(5000L, speculator.getSoonestRetryAfterSpeculate(),
+        "wrong SPECULATIVE_RETRY_AFTER_SPECULATE value");
+    assertThat(speculator.getProportionRunningTasksSpeculatable())
+        .isCloseTo(0.1, offset(0.00001));
+    assertThat(speculator.getProportionTotalTasksSpeculatable())
+        .isCloseTo(0.001, offset(0.00001));
+    assertEquals(5, speculator.getMinimumAllowedSpeculativeTasks(),
+        "wrong SPECULATIVE_MINIMUM_ALLOWED_TASKS value");
 
     dispatcher.register(Speculator.EventType.class, speculator);
 
     dispatcher.register(TaskEventType.class, new SpeculationRequestEventHandler());
 
-    dispatcher.init(conf);
     dispatcher.start();
 
 
@@ -182,7 +188,7 @@ public class TestRuntimeEstimators {
     int undoneReduces = REDUCE_TASKS;
 
     // build a task sequence where all the maps precede any of the reduces
-    List<Task> allTasksSequence = new LinkedList<Task>();
+    List<Task> allTasksSequence = new LinkedList<>();
 
     allTasksSequence.addAll(myJob.getTasks(TaskType.MAP).values());
     allTasksSequence.addAll(myJob.getTasks(TaskType.REDUCE).values());
@@ -238,8 +244,8 @@ public class TestRuntimeEstimators {
       }
     }
 
-    Assert.assertEquals("We got the wrong number of successful speculations.",
-        expectedSpeculations, successfulSpeculations.get());
+    assertEquals(expectedSpeculations, successfulSpeculations.get(),
+        "We got the wrong number of successful speculations.");
   }
 
   @Test
@@ -255,6 +261,13 @@ public class TestRuntimeEstimators {
     coreTestEstimator(specificEstimator, 3);
   }
 
+  @Test
+  public void testSimpleExponentialEstimator() throws Exception {
+    TaskRuntimeEstimator specificEstimator
+        = new SimpleExponentialTaskRuntimeEstimator();
+    coreTestEstimator(specificEstimator, 3);
+  }
+
   int taskTypeSlots(TaskType type) {
     return type == TaskType.MAP ? MAP_SLOT_REQUIREMENT : REDUCE_SLOT_REQUIREMENT;
   }
@@ -266,8 +279,8 @@ public class TestRuntimeEstimators {
       TaskId taskID = event.getTaskID();
       Task task = myJob.getTask(taskID);
 
-      Assert.assertEquals
-          ("Wrong type event", TaskEventType.T_ADD_SPEC_ATTEMPT, event.getType());
+      assertEquals(TaskEventType.T_ADD_SPEC_ATTEMPT, event.getType(),
+          "Wrong type event");
 
       System.out.println("SpeculationRequestEventHandler.handle adds a speculation task for " + taskID);
 
@@ -283,8 +296,7 @@ public class TestRuntimeEstimators {
 
   class MyTaskImpl implements Task {
     private final TaskId taskID;
-    private final Map<TaskAttemptId, TaskAttempt> attempts
-        = new ConcurrentHashMap<TaskAttemptId, TaskAttempt>(4);
+    private final Map<TaskAttemptId, TaskAttempt> attempts = new ConcurrentHashMap<>(4);
 
     MyTaskImpl(JobId jobID, int index, TaskType type) {
       taskID = recordFactory.newRecordInstance(TaskId.class);
@@ -340,8 +352,7 @@ public class TestRuntimeEstimators {
 
     @Override
     public Map<TaskAttemptId, TaskAttempt> getAttempts() {
-      Map<TaskAttemptId, TaskAttempt> result
-          = new HashMap<TaskAttemptId, TaskAttempt>(attempts.size());
+      Map<TaskAttemptId, TaskAttempt> result = new HashMap<>(attempts.size());
       result.putAll(attempts);
       return result;
     }
@@ -376,9 +387,9 @@ public class TestRuntimeEstimators {
 
   class MyJobImpl implements Job {
     private final JobId jobID;
-    private final Map<TaskId, Task> allTasks = new HashMap<TaskId, Task>();
-    private final Map<TaskId, Task> mapTasks = new HashMap<TaskId, Task>();
-    private final Map<TaskId, Task> reduceTasks = new HashMap<TaskId, Task>();
+    private final Map<TaskId, Task> allTasks = new HashMap<>();
+    private final Map<TaskId, Task> mapTasks = new HashMap<>();
+    private final Map<TaskId, Task> reduceTasks = new HashMap<>();
 
     MyJobImpl(JobId jobID, int numMaps, int numReduces) {
       this.jobID = jobID;
@@ -532,12 +543,32 @@ public class TestRuntimeEstimators {
     public void setJobPriority(Priority priority) {
       // do nothing
     }
+
+    @Override
+    public int getFailedMaps() {
+      return 0;
+    }
+
+    @Override
+    public int getFailedReduces() {
+      return 0;
+    }
+
+    @Override
+    public int getKilledMaps() {
+      return 0;
+    }
+
+    @Override
+    public int getKilledReduces() {
+      return 0;
+    }
   }
 
   /*
    * We follow the pattern of the real XxxImpl .  We create a job and initialize
    * it with a full suite of tasks which in turn have one attempt each in the
-   * NEW state.  Attempts transition only from NEW to RUNNING to SUCCEEDED .
+   * NEW state.  Attempts transition only from NEW to RUNNING to SUCCEED .
    */
   class MyTaskAttemptImpl implements TaskAttempt {
     private final TaskAttemptId myAttemptID;
@@ -835,7 +866,7 @@ public class TestRuntimeEstimators {
     }
 
     @Override
-    public EventHandler getEventHandler() {
+    public EventHandler<Event> getEventHandler() {
       return dispatcher.getEventHandler();
     }
 
@@ -894,6 +925,15 @@ public class TestRuntimeEstimators {
     @Override
     public TaskAttemptFinishingMonitor getTaskAttemptFinishingMonitor() {
       return null;
+    }
+
+    @Override
+    public String getHistoryUrl() {
+      return null;
+    }
+
+    @Override
+    public void setHistoryUrl(String historyUrl) {
     }
   }
 }

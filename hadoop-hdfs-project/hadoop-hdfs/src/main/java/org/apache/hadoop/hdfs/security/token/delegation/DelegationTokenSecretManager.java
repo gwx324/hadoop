@@ -21,15 +21,15 @@ package org.apache.hadoop.hdfs.security.token.delegation;
 import java.io.DataInput;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.io.InterruptedIOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.util.Lists;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.SecretManagerSection;
@@ -40,6 +40,7 @@ import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress.Counter;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.Step;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StepType;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ipc.RetriableException;
 import org.apache.hadoop.ipc.StandbyException;
@@ -50,9 +51,8 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager;
 import org.apache.hadoop.security.token.delegation.DelegationKey;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
-import com.google.protobuf.ByteString;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
 
 /**
  * A HDFS specific delegation token secret manager.
@@ -63,8 +63,8 @@ import com.google.protobuf.ByteString;
 public class DelegationTokenSecretManager
     extends AbstractDelegationTokenSecretManager<DelegationTokenIdentifier> {
 
-  private static final Log LOG = LogFactory
-      .getLog(DelegationTokenSecretManager.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(DelegationTokenSecretManager.class);
   
   private final FSNamesystem namesystem;
   private final SerializerCompat serializerCompat = new SerializerCompat();
@@ -192,7 +192,7 @@ public class DelegationTokenSecretManager
     }
   }
 
-  public synchronized void loadSecretManagerState(SecretManagerState state)
+  public synchronized void loadSecretManagerState(SecretManagerState state, Counter counter)
       throws IOException {
     Preconditions.checkState(!running,
         "Can't load state from image in a running SecretManager.");
@@ -212,6 +212,7 @@ public class DelegationTokenSecretManager
       id.setSequenceNumber(t.getSequenceNumber());
       id.setMasterKeyId(t.getMasterKeyId());
       addPersistedDelegationToken(id, t.getExpiryDate());
+      counter.increment();
     }
   }
 
@@ -366,34 +367,58 @@ public class DelegationTokenSecretManager
   @Override //AbstractDelegationTokenManager
   protected void logUpdateMasterKey(DelegationKey key)
       throws IOException {
-    synchronized (noInterruptsLock) {
+    try {
       // The edit logging code will fail catastrophically if it
       // is interrupted during a logSync, since the interrupt
       // closes the edit log files. Doing this inside the
-      // above lock and then checking interruption status
-      // prevents this bug.
-      if (Thread.interrupted()) {
-        throw new InterruptedIOException(
-            "Interrupted before updating master key");
+      // fsn lock will prevent being interrupted when stopping
+      // the secret manager.
+      namesystem.readLockInterruptibly(RwLockMode.FS);
+      try {
+        // this monitor isn't necessary if stopped while holding write lock
+        // but for safety, guard against a stop with read lock.
+        synchronized (noInterruptsLock) {
+          if (Thread.currentThread().isInterrupted()) {
+            return; // leave flag set so secret monitor exits.
+          }
+          namesystem.logUpdateMasterKey(key);
+        }
+      } finally {
+        namesystem.readUnlock(RwLockMode.FS, "logUpdateMasterKey");
       }
-      namesystem.logUpdateMasterKey(key);
+    } catch (InterruptedException ie) {
+      // AbstractDelegationTokenManager may crash if an exception is thrown.
+      // The interrupt flag will be detected when it attempts to sleep.
+      Thread.currentThread().interrupt();
     }
   }
   
   @Override //AbstractDelegationTokenManager
   protected void logExpireToken(final DelegationTokenIdentifier dtId)
       throws IOException {
-    synchronized (noInterruptsLock) {
+    try {
       // The edit logging code will fail catastrophically if it
       // is interrupted during a logSync, since the interrupt
       // closes the edit log files. Doing this inside the
-      // above lock and then checking interruption status
-      // prevents this bug.
-      if (Thread.interrupted()) {
-        throw new InterruptedIOException(
-            "Interrupted before expiring delegation token");
+      // fsn lock will prevent being interrupted when stopping
+      // the secret manager.
+      namesystem.readLockInterruptibly(RwLockMode.FS);
+      try {
+        // this monitor isn't necessary if stopped while holding write lock
+        // but for safety, guard against a stop with read lock.
+        synchronized (noInterruptsLock) {
+          if (Thread.currentThread().isInterrupted()) {
+            return; // leave flag set so secret monitor exits.
+          }
+          namesystem.logExpireDelegationToken(dtId);
+        }
+      } finally {
+        namesystem.readUnlock(RwLockMode.FS, "logExpireToken");
       }
-      namesystem.logExpireDelegationToken(dtId);
+    } catch (InterruptedException ie) {
+      // AbstractDelegationTokenManager may crash if an exception is thrown.
+      // The interrupt flag will be detected when it attempts to sleep.
+      Thread.currentThread().interrupt();
     }
   }
 

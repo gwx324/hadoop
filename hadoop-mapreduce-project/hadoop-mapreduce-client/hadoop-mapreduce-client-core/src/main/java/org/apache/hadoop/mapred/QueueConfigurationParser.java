@@ -17,13 +17,14 @@
  */
 package org.apache.hadoop.mapred;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.QueueState;
 import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.util.XMLUtils;
+
 import static org.apache.hadoop.mapred.QueueManager.toFullPropertyName;
+
 import org.xml.sax.SAXException;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -31,6 +32,8 @@ import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.w3c.dom.DOMException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -59,8 +62,8 @@ import java.util.HashSet;
  * Creates the complete queue hieararchy
  */
 class QueueConfigurationParser {
-  private static final Log LOG =
-    LogFactory.getLog(QueueConfigurationParser.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(QueueConfigurationParser.class);
   
   private boolean aclsEnabled = false;
 
@@ -88,7 +91,7 @@ class QueueConfigurationParser {
   static final String VALUE_TAG = "value";
 
   /**
-   * Default constructor for DeperacatedQueueConfigurationParser
+   * Default constructor for QueueConfigurationParser.
    */
   QueueConfigurationParser() {
     
@@ -158,8 +161,9 @@ class QueueConfigurationParser {
    */
   protected Queue loadResource(InputStream resourceInput)
     throws ParserConfigurationException, SAXException, IOException {
-    DocumentBuilderFactory docBuilderFactory
-      = DocumentBuilderFactory.newInstance();
+    DocumentBuilderFactory docBuilderFactory =
+        XMLUtils.newSecureDocumentBuilderFactory();
+
     //ignore all comments inside the xml file
     docBuilderFactory.setIgnoringComments(true);
 

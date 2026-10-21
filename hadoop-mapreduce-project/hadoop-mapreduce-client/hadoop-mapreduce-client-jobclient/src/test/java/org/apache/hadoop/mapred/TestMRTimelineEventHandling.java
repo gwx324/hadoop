@@ -18,8 +18,10 @@
 
 package org.apache.hadoop.mapred;
 
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -31,8 +33,6 @@ import java.util.List;
 import java.util.Set;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -42,6 +42,7 @@ import org.apache.hadoop.mapreduce.jobhistory.TestJobHistoryEventHandler;
 import org.apache.hadoop.mapreduce.v2.MiniMRYarnCluster;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.Sets;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
@@ -57,16 +58,15 @@ import org.apache.hadoop.yarn.server.timelineservice.storage.FileSystemTimelineR
 import org.apache.hadoop.yarn.server.timelineservice.storage.FileSystemTimelineWriterImpl;
 import org.apache.hadoop.yarn.server.timelineservice.storage.TimelineWriter;
 import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
-import org.junit.Assert;
-import org.junit.Test;
-
-import com.google.common.collect.Sets;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestMRTimelineEventHandling {
 
   private static final String TIMELINE_AUX_SERVICE_NAME = "timeline_collector";
-  private static final Log LOG =
-      LogFactory.getLog(TestMRTimelineEventHandling.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestMRTimelineEventHandling.class);
 
   @Test
   public void testTimelineServiceStartInMiniCluster() throws Exception {
@@ -86,8 +86,8 @@ public class TestMRTimelineEventHandling {
       cluster.start();
 
       //verify that the timeline service is not started.
-      Assert.assertNull("Timeline Service should not have been started",
-          cluster.getApplicationHistoryServer());
+      assertNull(cluster.getApplicationHistoryServer(),
+          "Timeline Service should not have been started");
     }
     finally {
       if(cluster != null) {
@@ -104,8 +104,8 @@ public class TestMRTimelineEventHandling {
       cluster.start();
 
       //verify that the timeline service is not started.
-      Assert.assertNull("Timeline Service should not have been started",
-          cluster.getApplicationHistoryServer());
+      assertNull(cluster.getApplicationHistoryServer(),
+          "Timeline Service should not have been started");
     }
     finally {
       if(cluster != null) {
@@ -136,33 +136,31 @@ public class TestMRTimelineEventHandling {
       Path outDir = new Path(localPathRoot, "output");
       RunningJob job =
               UtilsForTests.runJobSucceed(new JobConf(conf), inDir, outDir);
-      Assert.assertEquals(JobStatus.SUCCEEDED,
-              job.getJobStatus().getState().getValue());
+      assertEquals(JobStatus.SUCCEEDED, job.getJobStatus().getState().getValue());
       TimelineEntities entities = ts.getEntities("MAPREDUCE_JOB", null, null,
-              null, null, null, null, null, null, null);
-      Assert.assertEquals(1, entities.getEntities().size());
+          null, null, null, null, null, null, null);
+      assertEquals(1, entities.getEntities().size());
       TimelineEntity tEntity = entities.getEntities().get(0);
-      Assert.assertEquals(job.getID().toString(), tEntity.getEntityId());
-      Assert.assertEquals("MAPREDUCE_JOB", tEntity.getEntityType());
-      Assert.assertEquals(EventType.AM_STARTED.toString(),
-              tEntity.getEvents().get(tEntity.getEvents().size() - 1)
-              .getEventType());
-      Assert.assertEquals(EventType.JOB_FINISHED.toString(),
-              tEntity.getEvents().get(0).getEventType());
+      assertEquals(job.getID().toString(), tEntity.getEntityId());
+      assertEquals("MAPREDUCE_JOB", tEntity.getEntityType());
+      assertEquals(EventType.AM_STARTED.toString(),
+          tEntity.getEvents().get(tEntity.getEvents().size() - 1)
+          .getEventType());
+      assertEquals(EventType.JOB_FINISHED.toString(),
+          tEntity.getEvents().get(0).getEventType());
 
       job = UtilsForTests.runJobFail(new JobConf(conf), inDir, outDir);
-      Assert.assertEquals(JobStatus.FAILED,
-              job.getJobStatus().getState().getValue());
+      assertEquals(JobStatus.FAILED, job.getJobStatus().getState().getValue());
       entities = ts.getEntities("MAPREDUCE_JOB", null, null, null, null, null,
               null, null, null, null);
-      Assert.assertEquals(2, entities.getEntities().size());
+      assertEquals(2, entities.getEntities().size());
       tEntity = entities.getEntities().get(0);
-      Assert.assertEquals(job.getID().toString(), tEntity.getEntityId());
-      Assert.assertEquals("MAPREDUCE_JOB", tEntity.getEntityType());
-      Assert.assertEquals(EventType.AM_STARTED.toString(),
-              tEntity.getEvents().get(tEntity.getEvents().size() - 1)
-              .getEventType());
-      Assert.assertEquals(EventType.JOB_FAILED.toString(),
+      assertEquals(job.getID().toString(), tEntity.getEntityId());
+      assertEquals("MAPREDUCE_JOB", tEntity.getEntityType());
+      assertEquals(EventType.AM_STARTED.toString(),
+          tEntity.getEvents().get(tEntity.getEvents().size() - 1)
+          .getEventType());
+      assertEquals(EventType.JOB_FAILED.toString(),
               tEntity.getEvents().get(0).getEventType());
     } finally {
       if (cluster != null) {
@@ -222,7 +220,7 @@ public class TestMRTimelineEventHandling {
           UtilsForTests.createConfigValue(101 * 1024));
       RunningJob job =
           UtilsForTests.runJobSucceed(successConf, inDir, outDir);
-      Assert.assertEquals(JobStatus.SUCCEEDED,
+      assertEquals(JobStatus.SUCCEEDED,
           job.getJobStatus().getState().getValue());
 
       YarnClient yarnClient = YarnClient.createYarnClient();
@@ -233,7 +231,7 @@ public class TestMRTimelineEventHandling {
 
       ApplicationId firstAppId = null;
       List<ApplicationReport> apps = yarnClient.getApplications(appStates);
-      Assert.assertEquals(apps.size(), 1);
+      assertEquals(apps.size(), 1);
       ApplicationReport appReport = apps.get(0);
       firstAppId = appReport.getApplicationId();
       UtilsForTests.waitForAppFinished(job, cluster);
@@ -241,11 +239,11 @@ public class TestMRTimelineEventHandling {
 
       LOG.info("Run 2nd job which should be failed.");
       job = UtilsForTests.runJobFail(new JobConf(conf), inDir, outDir);
-      Assert.assertEquals(JobStatus.FAILED,
+      assertEquals(JobStatus.FAILED,
           job.getJobStatus().getState().getValue());
 
       apps = yarnClient.getApplications(appStates);
-      Assert.assertEquals(apps.size(), 2);
+      assertEquals(apps.size(), 2);
 
       appReport = apps.get(0).getApplicationId().equals(firstAppId) ?
           apps.get(0) : apps.get(1);
@@ -271,7 +269,7 @@ public class TestMRTimelineEventHandling {
 
     File tmpRootFolder = new File(tmpRoot);
 
-    Assert.assertTrue(tmpRootFolder.isDirectory());
+    assertTrue(tmpRootFolder.isDirectory());
     String basePath = tmpRoot + YarnConfiguration.DEFAULT_RM_CLUSTER_ID +
         File.separator +
         UserGroupInformation.getCurrentUser().getShortUserName() +
@@ -284,9 +282,8 @@ public class TestMRTimelineEventHandling {
         basePath + File.separator + "MAPREDUCE_JOB" + File.separator;
 
     File entityFolder = new File(outputDirJob);
-    Assert.assertTrue("Job output directory: " + outputDirJob +
-        " does not exist.",
-        entityFolder.isDirectory());
+    assertTrue(entityFolder.isDirectory(),
+        "Job output directory: " + outputDirJob + " does not exist.");
 
     // check for job event file
     String jobEventFileName = appId.toString().replaceAll("application", "job")
@@ -294,23 +291,20 @@ public class TestMRTimelineEventHandling {
 
     String jobEventFilePath = outputDirJob + jobEventFileName;
     File jobEventFile = new File(jobEventFilePath);
-    Assert.assertTrue("jobEventFilePath: " + jobEventFilePath +
-        " does not exist.",
-        jobEventFile.exists());
+    assertTrue(jobEventFile.exists(),
+        "jobEventFilePath: " + jobEventFilePath + " does not exist.");
     verifyEntity(jobEventFile, EventType.JOB_FINISHED.name(),
-        true, false, null);
+        true, false, null, false);
     Set<String> cfgsToCheck = Sets.newHashSet("dummy_conf1", "dummy_conf2",
         "huge_dummy_conf1", "huge_dummy_conf2");
-    verifyEntity(jobEventFile, null, false, true, cfgsToCheck);
+    verifyEntity(jobEventFile, null, false, true, cfgsToCheck, false);
 
     // for this test, we expect MR job metrics are published in YARN_APPLICATION
     String outputAppDir =
         basePath + File.separator + "YARN_APPLICATION" + File.separator;
     entityFolder = new File(outputAppDir);
-    Assert.assertTrue(
-        "Job output directory: " + outputAppDir +
-        " does not exist.",
-        entityFolder.isDirectory());
+    assertTrue(entityFolder.isDirectory(),
+        "Job output directory: " + outputAppDir + " does not exist.");
 
     // check for job event file
     String appEventFileName = appId.toString()
@@ -318,20 +312,19 @@ public class TestMRTimelineEventHandling {
 
     String appEventFilePath = outputAppDir + appEventFileName;
     File appEventFile = new File(appEventFilePath);
-    Assert.assertTrue(
+    assertTrue(appEventFile.exists(),
         "appEventFilePath: " + appEventFilePath +
-        " does not exist.",
-        appEventFile.exists());
-    verifyEntity(appEventFile, null, true, false, null);
-    verifyEntity(appEventFile, null, false, true, cfgsToCheck);
+        " does not exist.");
+    verifyEntity(appEventFile, null, true, false, null, false);
+    verifyEntity(appEventFile, null, false, true, cfgsToCheck, false);
 
     // check for task event file
     String outputDirTask =
         basePath + File.separator + "MAPREDUCE_TASK" + File.separator;
     File taskFolder = new File(outputDirTask);
-    Assert.assertTrue("Task output directory: " + outputDirTask +
-        " does not exist.",
-        taskFolder.isDirectory());
+    assertTrue(taskFolder.isDirectory(),
+        "Task output directory: " + outputDirTask +
+        " does not exist.");
 
     String taskEventFileName =
         appId.toString().replaceAll("application", "task") +
@@ -340,18 +333,18 @@ public class TestMRTimelineEventHandling {
 
     String taskEventFilePath = outputDirTask + taskEventFileName;
     File taskEventFile = new File(taskEventFilePath);
-    Assert.assertTrue("taskEventFileName: " + taskEventFilePath +
-        " does not exist.",
-        taskEventFile.exists());
+    assertTrue(taskEventFile.exists(),
+        "taskEventFileName: " + taskEventFilePath + " does not exist.");
     verifyEntity(taskEventFile, EventType.TASK_FINISHED.name(),
-        true, false, null);
+        true, false, null, true);
 
     // check for task attempt event file
     String outputDirTaskAttempt =
         basePath + File.separator + "MAPREDUCE_TASK_ATTEMPT" + File.separator;
     File taskAttemptFolder = new File(outputDirTaskAttempt);
-    Assert.assertTrue("TaskAttempt output directory: " + outputDirTaskAttempt +
-        " does not exist.", taskAttemptFolder.isDirectory());
+    assertTrue(taskAttemptFolder.isDirectory(),
+        "TaskAttempt output directory: " + outputDirTaskAttempt +
+        " does not exist.");
 
     String taskAttemptEventFileName = appId.toString().replaceAll(
         "application", "attempt") + "_m_000000_0" +
@@ -360,10 +353,11 @@ public class TestMRTimelineEventHandling {
     String taskAttemptEventFilePath = outputDirTaskAttempt +
         taskAttemptEventFileName;
     File taskAttemptEventFile = new File(taskAttemptEventFilePath);
-    Assert.assertTrue("taskAttemptEventFileName: " + taskAttemptEventFilePath +
-        " does not exist.", taskAttemptEventFile.exists());
+    assertTrue(taskAttemptEventFile.exists(),
+        "taskAttemptEventFileName: " + taskAttemptEventFilePath +
+        " does not exist.");
     verifyEntity(taskAttemptEventFile, EventType.MAP_ATTEMPT_FINISHED.name(),
-        true, false, null);
+        true, false, null, true);
   }
 
   /**
@@ -380,12 +374,13 @@ public class TestMRTimelineEventHandling {
    * @throws IOException
    */
   private void verifyEntity(File entityFile, String eventId,
-      boolean chkMetrics, boolean chkCfg, Set<String> cfgsToVerify)
-      throws IOException {
+      boolean chkMetrics, boolean chkCfg, Set<String> cfgsToVerify,
+      boolean checkIdPrefix) throws IOException {
     BufferedReader reader = null;
     String strLine;
     try {
       reader = new BufferedReader(new FileReader(entityFile));
+      long idPrefix = -1;
       while ((strLine = reader.readLine()) != null) {
         if (strLine.trim().length() > 0) {
           org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntity
@@ -394,6 +389,19 @@ public class TestMRTimelineEventHandling {
                       strLine.trim(),
                       org.apache.hadoop.yarn.api.records.timelineservice.
                           TimelineEntity.class);
+
+          LOG.info("strLine.trim()= " + strLine.trim());
+          if (checkIdPrefix) {
+            assertTrue(entity.getIdPrefix() > 0,
+                "Entity ID prefix expected to be > 0");
+            if (idPrefix == -1) {
+              idPrefix = entity.getIdPrefix();
+            } else {
+              assertEquals(idPrefix, entity.getIdPrefix(),
+                  "Entity ID prefix should be same across " +
+                  "each publish of same entity");
+            }
+          }
           if (eventId == null) {
             // Job metrics are published without any events for
             // ApplicationEntity. There is also possibility that some other
@@ -479,21 +487,21 @@ public class TestMRTimelineEventHandling {
 
       RunningJob job =
           UtilsForTests.runJobSucceed(new JobConf(conf), inDir, outDir);
-      Assert.assertEquals(JobStatus.SUCCEEDED,
+      assertEquals(JobStatus.SUCCEEDED,
           job.getJobStatus().getState().getValue());
       TimelineEntities entities = ts.getEntities("MAPREDUCE_JOB", null, null,
           null, null, null, null, null, null, null);
-      Assert.assertEquals(0, entities.getEntities().size());
+      assertEquals(0, entities.getEntities().size());
 
       conf.setBoolean(MRJobConfig.MAPREDUCE_JOB_EMIT_TIMELINE_DATA, true);
       job = UtilsForTests.runJobSucceed(new JobConf(conf), inDir, outDir);
-      Assert.assertEquals(JobStatus.SUCCEEDED,
+      assertEquals(JobStatus.SUCCEEDED,
           job.getJobStatus().getState().getValue());
       entities = ts.getEntities("MAPREDUCE_JOB", null, null, null, null, null,
           null, null, null, null);
-      Assert.assertEquals(1, entities.getEntities().size());
+      assertEquals(1, entities.getEntities().size());
       TimelineEntity tEntity = entities.getEntities().get(0);
-      Assert.assertEquals(job.getID().toString(), tEntity.getEntityId());
+      assertEquals(job.getID().toString(), tEntity.getEntityId());
     } finally {
       if (cluster != null) {
         cluster.stop();
@@ -519,21 +527,21 @@ public class TestMRTimelineEventHandling {
       conf.setBoolean(MRJobConfig.MAPREDUCE_JOB_EMIT_TIMELINE_DATA, false);
       RunningJob job =
           UtilsForTests.runJobSucceed(new JobConf(conf), inDir, outDir);
-      Assert.assertEquals(JobStatus.SUCCEEDED,
+      assertEquals(JobStatus.SUCCEEDED,
           job.getJobStatus().getState().getValue());
       TimelineEntities entities = ts.getEntities("MAPREDUCE_JOB", null, null,
           null, null, null, null, null, null, null);
-      Assert.assertEquals(0, entities.getEntities().size());
+      assertEquals(0, entities.getEntities().size());
 
       conf.setBoolean(MRJobConfig.MAPREDUCE_JOB_EMIT_TIMELINE_DATA, true);
       job = UtilsForTests.runJobSucceed(new JobConf(conf), inDir, outDir);
-      Assert.assertEquals(JobStatus.SUCCEEDED,
+      assertEquals(JobStatus.SUCCEEDED,
           job.getJobStatus().getState().getValue());
       entities = ts.getEntities("MAPREDUCE_JOB", null, null, null, null, null,
           null, null, null, null);
-      Assert.assertEquals(1, entities.getEntities().size());
+      assertEquals(1, entities.getEntities().size());
       TimelineEntity tEntity = entities.getEntities().get(0);
-      Assert.assertEquals(job.getID().toString(), tEntity.getEntityId());
+      assertEquals(job.getID().toString(), tEntity.getEntityId());
     } finally {
       if (cluster != null) {
         cluster.stop();

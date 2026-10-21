@@ -23,7 +23,6 @@ import org.apache.hadoop.cli.CLITestHelper;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.PrintStream;
-import java.util.StringTokenizer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.ArrayList;
@@ -75,7 +74,7 @@ public abstract class CommandExecutor {
     System.setErr(new PrintStream(bao));
     
     try {
-      execute(cmd);
+      exitCode = execute(cmd);
     } catch (Exception e) {
       e.printStackTrace();
       lastException = e;
@@ -87,7 +86,7 @@ public abstract class CommandExecutor {
     return new Result(bao.toString(), exitCode, lastException, cmd);
   }
   
-  protected abstract void execute(final String cmd) throws Exception;
+  protected abstract int execute(String cmd) throws Exception;
   
   public static class Result {
     final String commandOutput;

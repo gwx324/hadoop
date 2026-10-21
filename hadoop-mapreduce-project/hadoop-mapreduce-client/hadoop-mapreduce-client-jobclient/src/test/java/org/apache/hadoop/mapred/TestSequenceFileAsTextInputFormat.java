@@ -18,7 +18,6 @@
 
 package org.apache.hadoop.mapred;
 
-import org.apache.commons.logging.Log;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -26,16 +25,17 @@ import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
-import org.junit.Test;
+import org.slf4j.Logger;
+import org.junit.jupiter.api.Test;
 
 import java.util.BitSet;
 import java.util.Random;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 public class TestSequenceFileAsTextInputFormat {
-  private static final Log LOG = FileInputFormat.LOG;
+  private static final Logger LOG = FileInputFormat.LOG;
 
   private static int MAX_LENGTH = 10000;
   private static Configuration conf = new Configuration();
@@ -94,7 +94,8 @@ public class TestSequenceFileAsTextInputFormat {
           RecordReader<Text, Text> reader =
             format.getRecordReader(splits[j], job, reporter);
           Class readerClass = reader.getClass();
-          assertEquals("reader class is SequenceFileAsTextRecordReader.", SequenceFileAsTextRecordReader.class, readerClass);        
+          assertEquals(SequenceFileAsTextRecordReader.class, readerClass,
+              "reader class is SequenceFileAsTextRecordReader.");
           Text value = reader.createValue();
           Text key = reader.createKey();
           try {
@@ -105,7 +106,7 @@ public class TestSequenceFileAsTextInputFormat {
               // LOG.info("@"+reader.getPos());
               // }
               int keyInt = Integer.parseInt(key.toString());
-              assertFalse("Key in multiple partitions.", bits.get(keyInt));
+              assertFalse(bits.get(keyInt), "Key in multiple partitions.");
               bits.set(keyInt);
               count++;
             }
@@ -114,7 +115,7 @@ public class TestSequenceFileAsTextInputFormat {
             reader.close();
           }
         }
-        assertEquals("Some keys in no partition.", length, bits.cardinality());
+        assertEquals(length, bits.cardinality(), "Some keys in no partition.");
       }
 
     }

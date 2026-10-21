@@ -17,10 +17,10 @@
  */
 package org.apache.hadoop.mapreduce.v2.app.job.impl;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -28,8 +28,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.Task;
@@ -55,6 +53,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptEventType;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEventType;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskTAttemptEvent;
+import org.apache.hadoop.mapreduce.v2.app.job.event.TaskTAttemptFailedEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskTAttemptKilledEvent;
 import org.apache.hadoop.mapreduce.v2.app.metrics.MRAppMetrics;
 import org.apache.hadoop.security.Credentials;
@@ -66,14 +65,16 @@ import org.apache.hadoop.yarn.event.InlineDispatcher;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.Records;
 import org.apache.hadoop.yarn.util.SystemClock;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @SuppressWarnings("rawtypes")
 public class TestTaskImpl {
 
-  private static final Log LOG = LogFactory.getLog(TestTaskImpl.class);    
+  private static final Logger LOG = LoggerFactory.getLogger(TestTaskImpl.class);
   
   private JobConf conf;
   private TaskAttemptListener taskAttemptListener;
@@ -233,7 +234,7 @@ public class TestTaskImpl {
     
   }
   
-  @Before 
+  @BeforeEach
   @SuppressWarnings("unchecked")
   public void setup() {
      dispatcher = new InlineDispatcher();
@@ -272,7 +273,7 @@ public class TestTaskImpl {
         startCount, metrics, appContext, taskType);
   }
 
-  @After 
+  @AfterEach
   public void teardown() {
     taskAttempts.clear();
   }
@@ -345,8 +346,7 @@ public class TestTaskImpl {
   }
 
   private void failRunningTaskAttempt(TaskAttemptId attemptId) {
-    mockTask.handle(new TaskTAttemptEvent(attemptId, 
-        TaskEventType.T_ATTEMPT_FAILED));
+    mockTask.handle(new TaskTAttemptFailedEvent(attemptId));
     assertTaskRunningState();
   }
   
@@ -587,10 +587,10 @@ public class TestTaskImpl {
     mockTask.handle(new TaskTAttemptEvent(getLastAttempt().getAttemptId(), 
         TaskEventType.T_ATTEMPT_SUCCEEDED));
     
-    assertFalse("First attempt should not commit",
-        mockTask.canCommit(taskAttempts.get(0).getAttemptId()));
-    assertTrue("Second attempt should commit",
-        mockTask.canCommit(getLastAttempt().getAttemptId()));
+    assertFalse(mockTask.canCommit(taskAttempts.get(0).getAttemptId()),
+        "First attempt should not commit");
+    assertTrue(mockTask.canCommit(getLastAttempt().getAttemptId()),
+        "Second attempt should commit");
 
     assertTaskSucceededState();
   }
@@ -612,11 +612,16 @@ public class TestTaskImpl {
     
     // The task should now have succeeded
     assertTaskSucceededState();
-    
+
     // Now complete the first task attempt, after the second has succeeded
-    mockTask.handle(new TaskTAttemptEvent(taskAttempts.get(0).getAttemptId(), 
-        firstAttemptFinishEvent));
-    
+    if (firstAttemptFinishEvent.equals(TaskEventType.T_ATTEMPT_FAILED)) {
+      mockTask.handle(new TaskTAttemptFailedEvent(taskAttempts
+          .get(0).getAttemptId()));
+    } else {
+      mockTask.handle(new TaskTAttemptEvent(taskAttempts.get(0).getAttemptId(),
+          firstAttemptFinishEvent));
+    }
+
     // The task should still be in the succeeded state
     assertTaskSucceededState();
     
@@ -668,8 +673,8 @@ public class TestTaskImpl {
     assertEquals(2, taskAttempts.size());
 
     // speculative attempt retroactively fails from fetch failures
-    mockTask.handle(new TaskTAttemptEvent(taskAttempts.get(1).getAttemptId(),
-        TaskEventType.T_ATTEMPT_FAILED));
+    mockTask.handle(new TaskTAttemptFailedEvent(
+        taskAttempts.get(1).getAttemptId()));
 
     assertTaskScheduledState();
     assertEquals(3, taskAttempts.size());
@@ -683,8 +688,8 @@ public class TestTaskImpl {
     assertEquals(2, taskAttempts.size());
 
     // speculative attempt retroactively fails from fetch failures
-    mockTask.handle(new TaskTAttemptEvent(taskAttempts.get(1).getAttemptId(),
-        TaskEventType.T_ATTEMPT_FAILED));
+    mockTask.handle(new TaskTAttemptFailedEvent(
+        taskAttempts.get(1).getAttemptId()));
 
     assertTaskScheduledState();
     assertEquals(3, taskAttempts.size());
@@ -698,8 +703,8 @@ public class TestTaskImpl {
     assertEquals(2, taskAttempts.size());
 
     // speculative attempt retroactively fails from fetch failures
-    mockTask.handle(new TaskTAttemptEvent(taskAttempts.get(1).getAttemptId(),
-        TaskEventType.T_ATTEMPT_FAILED));
+    mockTask.handle(new TaskTAttemptFailedEvent(
+        taskAttempts.get(1).getAttemptId()));
 
     assertTaskScheduledState();
     assertEquals(3, taskAttempts.size());
@@ -734,8 +739,8 @@ public class TestTaskImpl {
     // have the first attempt fail, verify task failed due to no retries
     MockTaskAttemptImpl taskAttempt = taskAttempts.get(0);
     taskAttempt.setState(TaskAttemptState.FAILED);
-    mockTask.handle(new TaskTAttemptEvent(taskAttempt.getAttemptId(),
-        TaskEventType.T_ATTEMPT_FAILED));
+    mockTask.handle(new TaskTAttemptFailedEvent(
+        taskAttempt.getAttemptId()));
     assertEquals(TaskState.FAILED, mockTask.getState());
 
     // verify task can no longer be killed
@@ -757,8 +762,7 @@ public class TestTaskImpl {
         TaskEventType.T_ATTEMPT_COMMIT_PENDING));
     assertEquals(TaskState.FAILED, mockTask.getState());
     taskAttempt.setState(TaskAttemptState.FAILED);
-    mockTask.handle(new TaskTAttemptEvent(taskAttempt.getAttemptId(),
-        TaskEventType.T_ATTEMPT_FAILED));
+    mockTask.handle(new TaskTAttemptFailedEvent(taskAttempt.getAttemptId()));
     assertEquals(TaskState.FAILED, mockTask.getState());
     taskAttempt = taskAttempts.get(2);
     taskAttempt.setState(TaskAttemptState.SUCCEEDED);
@@ -808,8 +812,7 @@ public class TestTaskImpl {
     // max attempts is 4
     MockTaskAttemptImpl taskAttempt = taskAttempts.get(0);
     taskAttempt.setState(TaskAttemptState.FAILED);
-    mockTask.handle(new TaskTAttemptEvent(taskAttempt.getAttemptId(),
-        TaskEventType.T_ATTEMPT_FAILED));
+    mockTask.handle(new TaskTAttemptFailedEvent(taskAttempt.getAttemptId()));
     assertEquals(TaskState.RUNNING, mockTask.getState());
 
     // verify a new attempt(#3) added because the speculative attempt(#2)
@@ -829,8 +832,7 @@ public class TestTaskImpl {
     // hasn't reach the max attempts which is 4
     MockTaskAttemptImpl taskAttempt1 = taskAttempts.get(1);
     taskAttempt1.setState(TaskAttemptState.FAILED);
-    mockTask.handle(new TaskTAttemptEvent(taskAttempt1.getAttemptId(),
-        TaskEventType.T_ATTEMPT_FAILED));
+    mockTask.handle(new TaskTAttemptFailedEvent(taskAttempt1.getAttemptId()));
     assertEquals(TaskState.RUNNING, mockTask.getState());
 
     // verify there's no new attempt added because of the running attempt(#3)
@@ -877,7 +879,7 @@ public class TestTaskImpl {
     baseAttempt.setProgress(1.0f);
 
     Counters taskCounters = mockTask.getCounters();
-    assertEquals("wrong counters for task", specAttemptCounters, taskCounters);
+    assertEquals(specAttemptCounters, taskCounters, "wrong counters for task");
   }
 
   public static class MockTaskAttemptEventHandler implements EventHandler {

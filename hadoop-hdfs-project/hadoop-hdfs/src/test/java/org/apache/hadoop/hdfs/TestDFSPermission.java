@@ -17,10 +17,10 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.DataOutputStream;
 import java.io.FileNotFoundException;
@@ -30,8 +30,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -39,18 +39,22 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.Trash;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.test.LambdaTestUtils;
 import org.apache.hadoop.util.Time;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /** Unit tests for permission */
 public class TestDFSPermission {
-  public static final Log LOG = LogFactory.getLog(TestDFSPermission.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestDFSPermission.class);
   final private static Configuration conf = new HdfsConfiguration();
   
   final private static String GROUP1_NAME = "group1";
@@ -113,13 +117,13 @@ public class TestDFSPermission {
     }
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
     cluster.waitActive();
   }
   
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     if (cluster != null) {
       cluster.shutdown();
@@ -183,7 +187,7 @@ public class TestDFSPermission {
     // case 5: test non-existent parent directory
     uMask = DEFAULT_UMASK;
     initFileSystem(uMask);
-    assertFalse("File shouldn't exists", fs.exists(NON_EXISTENT_PATH));
+    assertFalse(fs.exists(NON_EXISTENT_PATH), "File shouldn't exists");
     createAndCheckPermission(op, NON_EXISTENT_PATH, uMask, new FsPermission(
         DEFAULT_PERMISSION), false);
     Path parent = NON_EXISTENT_PATH.getParent();
@@ -258,6 +262,17 @@ public class TestDFSPermission {
     checkPermission(name, expectedPermission, delete);
   }
 
+  @Test
+  public void testFSNamesystemCheckAccess() throws Exception{
+    Path testInvalidPath = new Path("/test2");
+    fs = FileSystem.get(conf);
+
+    LambdaTestUtils.intercept(
+        FileNotFoundException.class,
+        "Path not found: " + testInvalidPath,
+        () -> fs.access(testInvalidPath, FsAction.READ));
+  }
+
   /* Check if the permission of a file/directory is the same as the
    * expected permission; If the delete flag is true, delete the
    * file/directory afterwards.
@@ -288,6 +303,87 @@ public class TestDFSPermission {
         FsPermission.createImmutable((short)0777));
   }
   
+  @Test
+  @Timeout(value = 30)
+  public void testTrashPermission() throws Exception {
+    //  /BSS                  user1:group2 777
+    //   /BSS/user1            user1:group2 755
+    //   /BSS/user1/test       user1:group1 600
+    Path rootDir = new Path("/BSS");
+    Path user1Dir = new Path("/BSS/user1");
+    Path user1File = new Path("/BSS/user1/test");
+
+    try {
+      conf.set(CommonConfigurationKeys.FS_TRASH_INTERVAL_KEY, "10");
+      fs = FileSystem.get(conf);
+
+      fs.mkdirs(rootDir);
+      fs.setPermission(rootDir, new FsPermission((short) 0777));
+
+      fs = DFSTestUtil.login(fs, conf, USER1);
+      fs.mkdirs(user1Dir);
+      fs.setPermission(user1Dir, new FsPermission((short) 0755));
+      fs.setOwner(user1Dir, USER1.getShortUserName(), GROUP2_NAME);
+
+      create(OpType.CREATE, user1File);
+      fs.setOwner(user1File, USER1.getShortUserName(), GROUP1_NAME);
+      fs.setPermission(user1File, new FsPermission((short) 0600));
+
+      try {
+        // login as user2, attempt to delete /BSS/user1
+        // this should fail because user2 has no permission to
+        // its sub directory.
+        fs = DFSTestUtil.login(fs, conf, USER2);
+        fs.delete(user1Dir, true);
+        fail("User2 should not be allowed to delete user1's dir.");
+      } catch (AccessControlException e) {
+        e.printStackTrace();
+        assertTrue(e.getMessage().contains(USER2_NAME),
+            "Permission denied messages must carry the username");
+      }
+
+      // ensure the /BSS/user1 still exists
+      assertTrue(fs.exists(user1Dir));
+
+      try {
+        fs = DFSTestUtil.login(fs, conf, SUPERUSER);
+        Trash trash = new Trash(fs, conf);
+        Path trashRoot = trash.getCurrentTrashDir(user1Dir);
+        while(true) {
+          trashRoot = trashRoot.getParent();
+          if(trashRoot.getParent().isRoot()) {
+            break;
+          }
+        }
+        fs.mkdirs(trashRoot);
+        fs.setPermission(trashRoot, new FsPermission((short) 0777));
+
+        // login as user2, attempt to move /BSS/user1 to trash
+        // this should also fail otherwise the directory will be
+        // removed by trash emptier (emptier is running by superuser)
+        fs = DFSTestUtil.login(fs, conf, USER2);
+        Trash userTrash = new Trash(fs, conf);
+        assertTrue(userTrash.isEnabled());
+        userTrash.moveToTrash(user1Dir);
+        fail("User2 should not be allowed to move"
+            + "user1's dir to trash");
+      } catch (IOException e) {
+        // expect the exception is caused by permission denied
+        assertTrue(e.getCause() instanceof AccessControlException);
+        e.printStackTrace();
+        assertTrue(e.getCause().getMessage().contains(USER2_NAME),
+            "Permission denied messages must carry the username");
+      }
+
+      // ensure /BSS/user1 still exists
+      assertEquals(fs.exists(user1Dir), true);
+    } finally {
+      fs = DFSTestUtil.login(fs, conf, SUPERUSER);
+      fs.delete(rootDir, true);
+      conf.set(CommonConfigurationKeys.FS_TRASH_INTERVAL_KEY, "0");
+    }
+  }
+
   /* check if the ownership of a file/directory is set correctly */
   @Test
   public void testOwnership() throws Exception {
@@ -324,7 +420,7 @@ public class TestDFSPermission {
     setOwner(FILE_DIR_PATH, USER1.getShortUserName(), GROUP3_NAME, false);
 
     // case 3: user1 changes FILE_DIR_PATH's owner to be user2
-    login(USER1);
+    fs = DFSTestUtil.login(fs, conf, USER1);
     setOwner(FILE_DIR_PATH, USER2.getShortUserName(), null, true);
 
     // case 4: user1 changes FILE_DIR_PATH's group to be group1 which it belongs
@@ -336,14 +432,14 @@ public class TestDFSPermission {
     setOwner(FILE_DIR_PATH, null, GROUP3_NAME, true);
 
     // case 6: user2 (non-owner) changes FILE_DIR_PATH's group to be group3
-    login(USER2);
+    fs = DFSTestUtil.login(fs, conf, USER2);
     setOwner(FILE_DIR_PATH, null, GROUP3_NAME, true);
 
     // case 7: user2 (non-owner) changes FILE_DIR_PATH's user to be user2
     setOwner(FILE_DIR_PATH, USER2.getShortUserName(), null, true);
 
     // delete the file/directory
-    login(SUPERUSER);
+    fs = DFSTestUtil.login(fs, conf, SUPERUSER);
     fs.delete(FILE_DIR_PATH, true);
   }
 
@@ -458,11 +554,11 @@ public class TestDFSPermission {
       fs.access(p1, FsAction.WRITE);
       fail("The access call should have failed.");
     } catch (AccessControlException e) {
-      assertTrue("Permission denied messages must carry the username",
-              e.getMessage().contains(USER1_NAME));
-      assertTrue("Permission denied messages must carry the path parent",
-              e.getMessage().contains(
-                  p1.getParent().toUri().getPath()));
+      assertTrue(e.getMessage().contains(USER1_NAME),
+          "Permission denied messages must carry the username");
+      assertTrue(e.getMessage().contains(
+              p1.getParent().toUri().getPath()),
+          "Permission denied messages must carry the path parent");
     }
 
     Path badPath = new Path("/bad/bad");
@@ -492,11 +588,11 @@ public class TestDFSPermission {
       fs.access(p2, FsAction.EXECUTE);
       fail("The access call should have failed.");
     } catch (AccessControlException e) {
-      assertTrue("Permission denied messages must carry the username",
-              e.getMessage().contains(USER1_NAME));
-      assertTrue("Permission denied messages must carry the path parent",
-              e.getMessage().contains(
-                  p2.getParent().toUri().getPath()));
+      assertTrue(e.getMessage().contains(USER1_NAME),
+          "Permission denied messages must carry the username");
+      assertTrue(e.getMessage().contains(
+              p2.getParent().toUri().getPath()),
+          "Permission denied messages must carry the path parent");
     }
   }
 
@@ -517,11 +613,11 @@ public class TestDFSPermission {
       fs.access(p3, FsAction.READ_WRITE);
       fail("The access call should have failed.");
     } catch (AccessControlException e) {
-      assertTrue("Permission denied messages must carry the username",
-              e.getMessage().contains(USER1_NAME));
-      assertTrue("Permission denied messages must carry the path parent",
-              e.getMessage().contains(
-                  p3.getParent().toUri().getPath()));
+      assertTrue(e.getMessage().contains(USER1_NAME),
+          "Permission denied messages must carry the username");
+      assertTrue(e.getMessage().contains(
+              p3.getParent().toUri().getPath()),
+          "Permission denied messages must carry the path parent");
     }
   }
 
@@ -554,11 +650,11 @@ public class TestDFSPermission {
       fs.exists(nfpath);
       fail("The exists call should have failed.");
     } catch (AccessControlException e) {
-      assertTrue("Permission denied messages must carry file path",
-          e.getMessage().contains(fpath.getName()));
-      assertTrue("Permission denied messages must specify existing_file is not "
-              + "a directory, when checked on /existing_file/non_existing_name",
-          e.getMessage().contains("is not a directory"));
+      assertTrue(e.getMessage().contains(fpath.getName()),
+          "Permission denied messages must carry file path");
+      assertTrue(e.getMessage().contains("is not a directory"),
+          "Permission denied messages must specify existing_file is not "
+              + "a directory, when checked on /existing_file/non_existing_name");
     }
 
     rootFs.setPermission(p4, new FsPermission("600"));
@@ -566,13 +662,12 @@ public class TestDFSPermission {
       fs.exists(nfpath);
       fail("The exists call should have failed.");
     } catch (AccessControlException e) {
-      assertFalse("Permission denied messages must not carry full file path,"
-              + "since the user does not have permission on /p4: "
-              + e.getMessage(),
-          e.getMessage().contains(fpath.getName()));
-      assertFalse("Permission denied messages must not specify /p4"
-          + " is not a directory: " + e.getMessage(),
-          e.getMessage().contains("is not a directory"));
+      assertFalse(e.getMessage().contains(fpath.getName()),
+          "Permission denied messages must not carry full file path,"
+              + "since the user does not have permission on /p4: " + e.getMessage());
+      assertFalse(e.getMessage().contains("is not a directory"),
+          "Permission denied messages must not specify /p4"
+              + " is not a directory: " + e.getMessage());
     }
   }
 
@@ -585,7 +680,7 @@ public class TestDFSPermission {
       short[] filePermission, Path[] parentDirs, Path[] files, Path[] dirs)
       throws Exception {
     boolean[] isDirEmpty = new boolean[NUM_TEST_PERMISSIONS];
-    login(SUPERUSER);
+    fs = DFSTestUtil.login(fs, conf, SUPERUSER);
     for (int i = 0; i < NUM_TEST_PERMISSIONS; i++) {
       create(OpType.CREATE, files[i]);
       create(OpType.MKDIRS, dirs[i]);
@@ -601,7 +696,7 @@ public class TestDFSPermission {
       isDirEmpty[i] = (fs.listStatus(dirs[i]).length == 0);
     }
 
-    login(ugi);
+    fs = DFSTestUtil.login(fs, conf, ugi);
     for (int i = 0; i < NUM_TEST_PERMISSIONS; i++) {
       testCreateMkdirs(ugi, new Path(parentDirs[i], FILE_DIR_NAME),
           ancestorPermission[i], parentPermission[i]);
@@ -1154,16 +1249,6 @@ public class TestDFSPermission {
     ddpv.set(path, ancestorPermission, parentPermission, permission,
         childPermissions);
     ddpv.verifyPermission(ugi);
-  }
-
-  /* log into dfs as the given user */
-  private void login(UserGroupInformation ugi) throws IOException,
-      InterruptedException {
-    if (fs != null) {
-      fs.close();
-    }
-
-    fs = DFSTestUtil.getFileSystemAs(ugi, conf);
   }
 
   /* test non-existent file */

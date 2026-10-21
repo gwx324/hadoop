@@ -23,12 +23,12 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.text.NumberFormat;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestMRFieldSelection {
 
@@ -57,7 +57,7 @@ private static NumberFormat idFormat = NumberFormat.getInstance();
     StringBuffer expectedOutput = new StringBuffer();
     constructInputOutputData(inputData, expectedOutput, numOfInputLines);
     
-    conf.set(FieldSelectionHelper.DATA_FIELD_SEPERATOR, "-");
+    conf.set(FieldSelectionHelper.DATA_FIELD_SEPARATOR, "-");
     conf.set(FieldSelectionHelper.MAP_OUTPUT_KEY_VALUE_SPEC, "6,5,1-3:0-");
     conf.set(
       FieldSelectionHelper.REDUCE_OUTPUT_KEY_VALUE_SPEC, ":4,3,2,1,0,0-");
@@ -70,7 +70,7 @@ private static NumberFormat idFormat = NumberFormat.getInstance();
     job.setNumReduceTasks(1);
 
     job.waitForCompletion(true);
-    assertTrue("Job Failed!", job.isSuccessful());
+    assertTrue(job.isSuccessful(), "Job Failed!");
 
     //
     // Finally, we compare the reconstructed answer key with the
@@ -78,7 +78,7 @@ private static NumberFormat idFormat = NumberFormat.getInstance();
     // in the original key.
     //
     String outdata = MapReduceTestUtil.readOutput(outDir, conf);
-    assertEquals("Outputs doesnt match.",expectedOutput.toString(), outdata);
+    assertEquals(expectedOutput.toString(), outdata, "Outputs doesnt match.");
     fs.delete(outDir, true);
   }
 

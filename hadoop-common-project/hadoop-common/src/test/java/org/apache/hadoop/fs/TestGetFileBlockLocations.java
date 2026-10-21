@@ -22,7 +22,11 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Random;
 
-import junit.framework.TestCase;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.test.GenericTestUtils;
@@ -30,7 +34,7 @@ import org.apache.hadoop.test.GenericTestUtils;
 /**
  * Testing the correctness of FileSystem.getFileBlockLocations.
  */
-public class TestGetFileBlockLocations extends TestCase {
+public class TestGetFileBlockLocations {
   private static String TEST_ROOT_DIR = GenericTestUtils.getTempPath(
       "testGetFileBlockLocations");
   private static final int FileLength = 4 * 1024 * 1024; // 4MB
@@ -39,11 +43,8 @@ public class TestGetFileBlockLocations extends TestCase {
   private FileSystem fs;
   private Random random;
 
-  /**
-   * @see TestCase#setUp()
-   */
-  @Override
-  protected void setUp() throws IOException {
+  @BeforeEach
+  public void setUp() throws IOException {
     conf = new Configuration();
     Path rootPath = new Path(TEST_ROOT_DIR);
     path = new Path(rootPath, "TestGetFileBlockLocations");
@@ -91,15 +92,14 @@ public class TestGetFileBlockLocations extends TestCase {
       assertTrue(locations.length == 0);
     }
   }
-  /**
-   * @see TestCase#tearDown()
-   */
-  @Override
-  protected void tearDown() throws IOException {
+
+  @AfterEach
+  public void tearDown() throws IOException {
     fs.delete(path, true);
     fs.close();
   }
 
+  @Test
   public void testFailureNegativeParameters() throws IOException {
     FileStatus status = fs.getFileStatus(path);
     try {
@@ -117,6 +117,7 @@ public class TestGetFileBlockLocations extends TestCase {
     }
   }
 
+  @Test
   public void testGetFileBlockLocations1() throws IOException {
     FileStatus status = fs.getFileStatus(path);
     oneTest(0, (int) status.getLen(), status);
@@ -130,6 +131,7 @@ public class TestGetFileBlockLocations extends TestCase {
     }
   }
 
+  @Test
   public void testGetFileBlockLocations2() throws IOException {
     FileStatus status = fs.getFileStatus(path);
     for (int i = 0; i < 1000; ++i) {

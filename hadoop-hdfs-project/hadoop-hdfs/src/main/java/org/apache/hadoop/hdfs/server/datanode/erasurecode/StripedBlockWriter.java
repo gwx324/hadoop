@@ -23,13 +23,16 @@ import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSPacket;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo.DatanodeInfoBuilder;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.datatransfer.BlockConstructionStage;
 import org.apache.hadoop.hdfs.protocol.datatransfer.IOStreamPair;
+import org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException;
 import org.apache.hadoop.hdfs.protocol.datatransfer.Sender;
 import org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataEncryptionKeyFactory;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.DataNodeFaultInjector;
 import org.apache.hadoop.io.ByteBufferPool;
 import org.apache.hadoop.io.ElasticByteBufferPool;
 import org.apache.hadoop.io.IOUtils;
@@ -60,6 +63,7 @@ class StripedBlockWriter {
   private final ExtendedBlock block;
   private final DatanodeInfo target;
   private final StorageType storageType;
+  private final String storageId;
 
   private Socket targetSocket;
   private DataOutputStream targetOutputStream;
@@ -71,8 +75,8 @@ class StripedBlockWriter {
 
   StripedBlockWriter(StripedWriter stripedWriter, DataNode datanode,
                      Configuration conf, ExtendedBlock block,
-                     DatanodeInfo target, StorageType storageType)
-      throws IOException {
+                     DatanodeInfo target, StorageType storageType,
+                     String storageId) throws IOException {
     this.stripedWriter = stripedWriter;
     this.datanode = datanode;
     this.conf = conf;
@@ -80,10 +84,20 @@ class StripedBlockWriter {
     this.block = block;
     this.target = target;
     this.storageType = storageType;
+    this.storageId = storageId;
 
     this.targetBuffer = stripedWriter.allocateWriteBuffer();
 
     init();
+  }
+
+  static boolean prepareRetryAfterInvalidEncryptionKey(
+      DataEncryptionKeyFactory keyFactory, int retryCount) {
+    if (retryCount > 1) {
+      return false;
+    }
+    keyFactory.clearDataEncryptionKey();
+    return true;
   }
 
   ByteBuffer getTargetBuffer() {
@@ -91,7 +105,10 @@ class StripedBlockWriter {
   }
 
   void freeTargetBuffer() {
-    targetBuffer = null;
+    if (targetBuffer != null) {
+      stripedWriter.getReconstructor().freeBuffer(targetBuffer);
+      targetBuffer = null;
+    }
   }
 
   /**
@@ -106,39 +123,56 @@ class StripedBlockWriter {
     try {
       InetSocketAddress targetAddr =
           stripedWriter.getSocketAddress4Transfer(target);
-      socket = datanode.newSocket();
-      NetUtils.connect(socket, targetAddr,
-          datanode.getDnConf().getSocketTimeout());
-      socket.setTcpNoDelay(
-          datanode.getDnConf().getDataTransferServerTcpNoDelay());
-      socket.setSoTimeout(datanode.getDnConf().getSocketTimeout());
+      DataNodeFaultInjector.get().stripedBlockWriterInit(targetBuffer);
 
       Token<BlockTokenIdentifier> blockToken =
           datanode.getBlockAccessToken(block,
-              EnumSet.of(BlockTokenIdentifier.AccessMode.WRITE));
+              EnumSet.of(BlockTokenIdentifier.AccessMode.WRITE),
+              new StorageType[]{storageType}, new String[]{storageId});
 
       long writeTimeout = datanode.getDnConf().getSocketWriteTimeout();
-      OutputStream unbufOut = NetUtils.getOutputStream(socket, writeTimeout);
-      InputStream unbufIn = NetUtils.getInputStream(socket);
       DataEncryptionKeyFactory keyFactory =
           datanode.getDataEncryptionKeyFactoryForBlock(block);
-      IOStreamPair saslStreams = datanode.getSaslClient().socketSend(
-          socket, unbufOut, unbufIn, keyFactory, blockToken, target);
-
-      unbufOut = saslStreams.out;
-      unbufIn = saslStreams.in;
+      OutputStream unbufOut;
+      InputStream unbufIn;
+      int encryptionKeyRetryCount = 0;
+      while (true) {
+        try {
+          socket = datanode.newSocket();
+          NetUtils.connect(socket, targetAddr,
+              datanode.getDnConf().getSocketTimeout());
+          socket.setTcpNoDelay(
+              datanode.getDnConf().getDataTransferServerTcpNoDelay());
+          socket.setSoTimeout(datanode.getDnConf().getSocketTimeout());
+          unbufOut = NetUtils.getOutputStream(socket, writeTimeout);
+          unbufIn = NetUtils.getInputStream(socket);
+          IOStreamPair saslStreams = datanode.getSaslClient().socketSend(
+              socket, unbufOut, unbufIn, keyFactory, blockToken, target);
+          unbufOut = saslStreams.out;
+          unbufIn = saslStreams.in;
+          break;
+        } catch (InvalidEncryptionKeyException e) {
+          IOUtils.closeSocket(socket);
+          socket = null;
+          if (!prepareRetryAfterInvalidEncryptionKey(keyFactory,
+              ++encryptionKeyRetryCount)) {
+            throw e;
+          }
+        }
+      }
 
       out = new DataOutputStream(new BufferedOutputStream(unbufOut,
           DFSUtilClient.getSmallBufferSize(conf)));
       in = new DataInputStream(unbufIn);
 
-      DatanodeInfo source = new DatanodeInfo(datanode.getDatanodeId());
+      DatanodeInfo source = new DatanodeInfoBuilder()
+          .setNodeID(datanode.getDatanodeId()).build();
       new Sender(out).writeBlock(block, storageType,
           blockToken, "", new DatanodeInfo[]{target},
           new StorageType[]{storageType}, source,
           BlockConstructionStage.PIPELINE_SETUP_CREATE, 0, 0, 0, 0,
           stripedWriter.getChecksum(), stripedWriter.getCachingStrategy(),
-          false, false, null);
+          false, false, null, storageId, new String[]{storageId});
 
       targetSocket = socket;
       targetOutputStream = out;
@@ -146,6 +180,7 @@ class StripedBlockWriter {
       success = true;
     } finally {
       if (!success) {
+        freeTargetBuffer();
         IOUtils.closeStream(out);
         IOUtils.closeStream(in);
         IOUtils.closeStream(socket);
@@ -194,6 +229,7 @@ class StripedBlockWriter {
       packet.writeTo(targetOutputStream);
 
       blockOffset4Target += toWrite;
+      stripedWriter.getReconstructor().incrBytesWritten(toWrite);
     }
   }
 

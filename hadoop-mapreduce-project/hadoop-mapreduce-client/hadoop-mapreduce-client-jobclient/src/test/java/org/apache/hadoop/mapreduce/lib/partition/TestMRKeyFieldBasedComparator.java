@@ -30,15 +30,15 @@ import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.map.InverseMapper;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 
 public class TestMRKeyFieldBasedComparator extends HadoopTestCase {
@@ -50,7 +50,7 @@ public class TestMRKeyFieldBasedComparator extends HadoopTestCase {
   public TestMRKeyFieldBasedComparator() throws IOException {
     super(HadoopTestCase.LOCAL_MR, HadoopTestCase.LOCAL_FS, 1, 1);
     conf = createJobConf();
-    conf.set(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPERATOR, " ");
+    conf.set(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPARATOR, " ");
   }
 
   private void testComparator(String keySpec, int expect)
@@ -61,7 +61,7 @@ public class TestMRKeyFieldBasedComparator extends HadoopTestCase {
     
     conf.set("mapreduce.partition.keycomparator.options", keySpec);
     conf.set("mapreduce.partition.keypartitioner.options", "-k1.1,1.1");
-    conf.set(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPERATOR, " ");
+    conf.set(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPARATOR, " ");
 
     Job job = MapReduceTestUtil.createJob(conf, inDir, outDir, 1, 1,
                 line1 +"\n" + line2 + "\n"); 

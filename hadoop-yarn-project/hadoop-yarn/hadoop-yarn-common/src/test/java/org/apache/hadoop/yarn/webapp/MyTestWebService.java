@@ -26,13 +26,15 @@ import javax.xml.bind.annotation.XmlAccessType;
 import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlRootElement;
 
-import com.google.inject.Singleton;
+import javax.inject.Singleton;
+
+import org.apache.hadoop.http.JettyUtils;
 
 @Singleton
 @Path("/ws/v1/test")
 public class MyTestWebService {
   @GET
-  @Produces({ MediaType.APPLICATION_XML })
+  @Produces({ MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
   public MyInfo get() {
     return new MyInfo();
   }

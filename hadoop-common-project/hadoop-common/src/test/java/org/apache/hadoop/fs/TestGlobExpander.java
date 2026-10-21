@@ -20,10 +20,12 @@ package org.apache.hadoop.fs;
 import java.io.IOException;
 import java.util.List;
 
-import junit.framework.TestCase;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-public class TestGlobExpander extends TestCase {
+public class TestGlobExpander {
 
+  @Test
   public void testExpansionIsIdentical() throws IOException {
     checkExpansionIsIdentical("");
     checkExpansionIsIdentical("/}");
@@ -35,6 +37,7 @@ public class TestGlobExpander extends TestCase {
     checkExpansionIsIdentical("p{a\\/b,c\\/d}s");
   }
 
+  @Test
   public void testExpansion() throws IOException {
     checkExpansion("{a/b}", "a/b");
     checkExpansion("/}{a/b}", "/}a/b");
@@ -52,11 +55,11 @@ public class TestGlobExpander extends TestCase {
   private void checkExpansion(String filePattern, String... expectedExpansions)
       throws IOException {
     List<String> actualExpansions = GlobExpander.expand(filePattern);
-    assertEquals("Different number of expansions", expectedExpansions.length,
-        actualExpansions.size());
+    assertEquals(expectedExpansions.length,
+        actualExpansions.size(), "Different number of expansions");
     for (int i = 0; i < expectedExpansions.length; i++) {
-      assertEquals("Expansion of " + filePattern, expectedExpansions[i],
-          actualExpansions.get(i));
+      assertEquals(expectedExpansions[i],
+          actualExpansions.get(i), "Expansion of " + filePattern);
     }
   }
 }

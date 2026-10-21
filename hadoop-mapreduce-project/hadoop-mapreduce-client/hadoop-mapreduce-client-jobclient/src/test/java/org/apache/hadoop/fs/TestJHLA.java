@@ -23,11 +23,11 @@ import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.File;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Test Job History Log Analyzer.
@@ -35,11 +35,12 @@ import org.junit.Test;
  * @see JHLogAnalyzer
  */
 public class TestJHLA {
-  private static final Log LOG = LogFactory.getLog(JHLogAnalyzer.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(JHLogAnalyzer.class);
   private String historyLog = System.getProperty("test.build.data", 
                                   "build/test/data") + "/history/test.log";
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     File logFile = new File(historyLog);
     if(!logFile.getParentFile().exists())
@@ -120,7 +121,7 @@ public class TestJHLA {
     writer.close();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     File logFile = new File(historyLog);
     if(!logFile.delete())

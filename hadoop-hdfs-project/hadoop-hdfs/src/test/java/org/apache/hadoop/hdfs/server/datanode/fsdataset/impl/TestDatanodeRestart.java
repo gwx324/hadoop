@@ -18,12 +18,8 @@
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.util.Collection;
-import java.util.Iterator;
 import java.util.Random;
 
 import org.apache.hadoop.conf.Configuration;
@@ -40,13 +36,14 @@ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeFaultInjector;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
-import org.apache.hadoop.hdfs.server.datanode.DatanodeUtil;
 import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.io.IOUtils;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.util.Time;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** Test if a datanode can correctly upgrade itself */
 public class TestDatanodeRestart {
@@ -126,13 +123,13 @@ public class TestDatanodeRestart {
       // check volumeMap: one rwr replica
       String bpid = cluster.getNamesystem().getBlockPoolId();
       ReplicaMap replicas = dataset(dn).volumeMap;
-      Assert.assertEquals(1, replicas.size(bpid));
+      assertEquals(1, replicas.size(bpid));
       ReplicaInfo replica = replicas.replicas(bpid).iterator().next();
-      Assert.assertEquals(ReplicaState.RWR, replica.getState());
+      assertEquals(ReplicaState.RWR, replica.getState());
       if (isCorrupt) {
-        Assert.assertEquals((fileLen-1)/512*512, replica.getNumBytes());
+        assertEquals((fileLen - 1) / 512 * 512, replica.getNumBytes());
       } else {
-        Assert.assertEquals(fileLen, replica.getNumBytes());
+        assertEquals(fileLen, replica.getNumBytes());
       }
       dataset(dn).invalidate(bpid, new Block[]{replica});
     } finally {
@@ -172,17 +169,17 @@ public class TestDatanodeRestart {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDNs).build();
       cluster.waitActive();
 
-      start = System.currentTimeMillis();
+      start = Time.monotonicNow();
       FileSystem fileSys = cluster.getFileSystem();
       try {
         DFSTestUtil.createFile(fileSys, file, 10240L, (short)1, 0L);
         // It is a bug if this does not fail.
         throw new IOException("Did not fail!");
       } catch (org.apache.hadoop.ipc.RemoteException e) {
-        long elapsed = System.currentTimeMillis() - start;
+        long elapsed = Time.monotonicNow() - start;
         // timers have at-least semantics, so it should be at least 5 seconds.
         if (elapsed < 5000 || elapsed > 10000) {
-          throw new IOException(elapsed + " seconds passed.", e);
+          throw new IOException(elapsed + " milliseconds passed.", e);
         }
       }
       DataNodeFaultInjector.set(oldDnInjector);
@@ -195,18 +192,18 @@ public class TestDatanodeRestart {
       // back to simulating unregistered node.
       DataNodeFaultInjector.set(dnFaultInjector);
       byte[] buffer = new byte[8];
-      start = System.currentTimeMillis();
+      start = Time.monotonicNow();
       try {
         fileSys.open(file).read(0L, buffer, 0, 1);
         throw new IOException("Did not fail!");
       } catch (IOException e) {
-        long elapsed = System.currentTimeMillis() - start;
+        long elapsed = Time.monotonicNow() - start;
         if (e.getMessage().contains("readBlockLength")) {
           throw new IOException("Failed, but with unexpected exception:", e);
         }
         // timers have at-least semantics, so it should be at least 5 seconds.
         if (elapsed < 5000 || elapsed > 10000) {
-          throw new IOException(elapsed + " seconds passed.", e);
+          throw new IOException(elapsed + " milliseconds passed.", e);
         }
       }
       DataNodeFaultInjector.set(oldDnInjector);

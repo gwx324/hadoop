@@ -19,23 +19,28 @@
 package org.apache.hadoop.mapred;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static org.apache.hadoop.io.IOUtils.closeStream;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.security.PrivilegedExceptionAction;
 import java.util.concurrent.ScheduledExecutorService;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.hadoop.fs.FSError;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.ClusterStorageCapacityExceededException;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.ipc.CallerContext;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.RPC;
+import org.apache.hadoop.mapred.protocolPB.TaskUmbilicalProtocolPB;
+import org.apache.hadoop.mapred.protocolPB.TaskUmbilicalProtocolPBClientImpl;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TaskType;
@@ -59,14 +64,18 @@ import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.ApplicationConstants.Environment;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.apache.hadoop.yarn.util.ConverterUtils;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * The main() for MapReduce task processes.
  */
 class YarnChild {
 
-  private static final Log LOG = LogFactory.getLog(YarnChild.class);
+  private static final Logger LOG = LoggerFactory.getLogger(YarnChild.class);
 
   static volatile TaskAttemptID taskid = null;
 
@@ -78,6 +87,8 @@ class YarnChild {
     // Initing with our JobConf allows us to avoid loading confs twice
     Limits.init(job);
     UserGroupInformation.setConfiguration(job);
+    // MAPREDUCE-6565: need to set configuration for SecurityUtil.
+    SecurityUtil.setConfiguration(job);
 
     String host = args[0];
     int port = Integer.parseInt(args[1]);
@@ -98,10 +109,7 @@ class YarnChild {
     // Security framework already loaded the tokens into current ugi
     Credentials credentials =
         UserGroupInformation.getCurrentUser().getCredentials();
-    LOG.info("Executing with tokens:");
-    for (Token<?> token: credentials.getAllTokens()) {
-      LOG.info(token);
-    }
+    LOG.info("Executing with tokens: {}", credentials.getAllTokens());
 
     // Create TaskUmbilicalProtocol as actual task owner.
     UserGroupInformation taskOwner =
@@ -113,9 +121,14 @@ class YarnChild {
       taskOwner.doAs(new PrivilegedExceptionAction<TaskUmbilicalProtocol>() {
       @Override
       public TaskUmbilicalProtocol run() throws Exception {
-        return (TaskUmbilicalProtocol)RPC.getProxy(TaskUmbilicalProtocol.class,
-            TaskUmbilicalProtocol.versionID, address, job);
-      }
+          RPC.setProtocolEngine(job, TaskUmbilicalProtocolPB.class,
+              ProtobufRpcEngine2.class);
+          TaskUmbilicalProtocolPB proxy = RPC.getProxy(
+              TaskUmbilicalProtocolPB.class,
+              RPC.getProtocolVersion(TaskUmbilicalProtocolPB.class),
+              address, job);
+          return new TaskUmbilicalProtocolPBClientImpl(proxy);
+        }
     });
 
     // report non-pid to application master
@@ -127,7 +140,7 @@ class YarnChild {
 
     try {
       int idleLoopCount = 0;
-      JvmTask myTask = null;;
+      JvmTask myTask = null;
       // poll for new task
       for (int idle = 0; null == myTask; ++idle) {
         long sleepTimeMilliSecs = Math.min(idle * 500, 1500);
@@ -177,13 +190,12 @@ class YarnChild {
         }
       });
     } catch (FSError e) {
-      LOG.fatal("FSError from child", e);
+      LOG.error("FSError from child", e);
       if (!ShutdownHookManager.get().isShutdownInProgress()) {
         umbilical.fsError(taskid, e.getMessage());
       }
     } catch (Exception exception) {
-      LOG.warn("Exception running child : "
-          + StringUtils.stringifyException(exception));
+      LOG.warn("Exception running child : {}", StringUtils.stringifyException(exception));
       try {
         if (task != null) {
           // do cleanup for the task
@@ -191,42 +203,62 @@ class YarnChild {
             task.taskCleanup(umbilical);
           } else {
             final Task taskFinal = task;
-            childUGI.doAs(new PrivilegedExceptionAction<Object>() {
-              @Override
-              public Object run() throws Exception {
-                taskFinal.taskCleanup(umbilical);
-                return null;
-              }
+            childUGI.doAs((PrivilegedExceptionAction<Object>) () -> {
+              taskFinal.taskCleanup(umbilical);
+              return null;
             });
           }
         }
       } catch (Exception e) {
-        LOG.info("Exception cleaning up: " + StringUtils.stringifyException(e));
+        LOG.info("Exception cleaning up: {}", StringUtils.stringifyException(e));
       }
       // Report back any failures, for diagnostic purposes
       if (taskid != null) {
         if (!ShutdownHookManager.get().isShutdownInProgress()) {
-          umbilical.fatalError(taskid,
-              StringUtils.stringifyException(exception));
+          reportError(exception, task, umbilical);
         }
       }
     } catch (Throwable throwable) {
-      LOG.fatal("Error running child : "
-    	        + StringUtils.stringifyException(throwable));
+      LOG.error("Error running child : {}", StringUtils.stringifyException(throwable));
       if (taskid != null) {
         if (!ShutdownHookManager.get().isShutdownInProgress()) {
           Throwable tCause = throwable.getCause();
           String cause =
               tCause == null ? throwable.getMessage() : StringUtils
                   .stringifyException(tCause);
-          umbilical.fatalError(taskid, cause);
+          umbilical.fatalError(taskid, cause, false);
         }
       }
     } finally {
-      RPC.stopProxy(umbilical);
+      if (umbilical instanceof Closeable closeable) {
+        closeStream(closeable);
+      } else {
+        RPC.stopProxy(umbilical);
+      }
       DefaultMetricsSystem.shutdown();
       TaskLog.syncLogsShutdown(logSyncer);
     }
+  }
+
+  @VisibleForTesting
+  static void reportError(Exception exception, Task task,
+      TaskUmbilicalProtocol umbilical) throws IOException {
+    boolean fastFailJob = false;
+    boolean hasClusterStorageCapacityExceededException =
+        ExceptionUtils.indexOfType(exception,
+            ClusterStorageCapacityExceededException.class) != -1;
+    if (hasClusterStorageCapacityExceededException) {
+      boolean killJobWhenExceedClusterStorageCapacity = task.getConf()
+          .getBoolean(MRJobConfig.JOB_DFS_STORAGE_CAPACITY_KILL_LIMIT_EXCEED,
+              MRJobConfig.DEFAULT_JOB_DFS_STORAGE_CAPACITY_KILL_LIMIT_EXCEED);
+      if (killJobWhenExceedClusterStorageCapacity) {
+        LOG.error(
+            "Fast fail the job because the cluster storage capacity was exceeded.");
+        fastFailJob = true;
+      }
+    }
+    umbilical.fatalError(taskid, StringUtils.stringifyException(exception),
+        fastFailJob);
   }
 
   /**
@@ -255,7 +287,7 @@ class YarnChild {
     String[] localSysDirs = StringUtils.getTrimmedStrings(
         System.getenv(Environment.LOCAL_DIRS.name()));
     job.setStrings(MRConfig.LOCAL_DIR, localSysDirs);
-    LOG.info(MRConfig.LOCAL_DIR + " for child: " + job.get(MRConfig.LOCAL_DIR));
+    LOG.info(MRConfig.LOCAL_DIR + " for child: {}", job.get(MRConfig.LOCAL_DIR));
     LocalDirAllocator lDirAlloc = new LocalDirAllocator(MRConfig.LOCAL_DIR);
     Path workDir = null;
     // First, try to find the JOB_LOCAL_DIR on this host.
@@ -295,7 +327,7 @@ class YarnChild {
     ApplicationAttemptId appAttemptId = ContainerId.fromString(
         System.getenv(Environment.CONTAINER_ID.name()))
         .getApplicationAttemptId();
-    LOG.debug("APPLICATION_ATTEMPT_ID: " + appAttemptId);
+    LOG.debug("APPLICATION_ATTEMPT_ID: {}", appAttemptId);
     // Set it in conf, so as to be able to be used the the OutputCommitter.
     job.setInt(MRJobConfig.APPLICATION_ATTEMPT_ID,
         appAttemptId.getAttemptId());
@@ -350,7 +382,7 @@ class YarnChild {
       out = FileSystem.create(localFs, jobFile, urw_gr);
       conf.writeXml(out);
     } finally {
-      IOUtils.cleanup(LOG, out);
+      IOUtils.cleanupWithLogger(LOG, out);
     }
   }
 

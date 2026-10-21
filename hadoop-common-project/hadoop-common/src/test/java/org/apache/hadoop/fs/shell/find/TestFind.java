@@ -17,41 +17,53 @@
  */
 package org.apache.hadoop.fs.shell.find;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
-import static org.mockito.Matchers.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.io.PrintStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedList;
+import java.util.NoSuchElementException;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.shell.PathData;
 import org.apache.hadoop.fs.shell.find.BaseExpression;
 import org.apache.hadoop.fs.shell.find.Expression;
 import org.apache.hadoop.fs.shell.find.Find;
 import org.apache.hadoop.fs.shell.find.FindOptions;
 import org.apache.hadoop.fs.shell.find.Result;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.rules.Timeout;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.InOrder;
+import org.mockito.Mockito;
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
 
+@Timeout(10)
 public class TestFind {
-
-  @Rule
-  public Timeout timeout = new Timeout(10000);
 
   private static FileSystem mockFs;
   private static Configuration conf;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     mockFs = MockFileSystem.setup();
     conf = mockFs.getConf();
@@ -196,6 +208,210 @@ public class TestFind {
     find.setConf(conf);
     String args = "path -print0";
     String expected = "Print0-Print(;)";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -atime is correct handled
+  @Test
+  public void processOptionsAtime() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -atime 10";
+    String expected = "And(;Atime(10;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -amin is correctly handled
+  @Test
+  public void processOptionsAmin() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -amin 10";
+    String expected = "And(;Amin-Atime(10;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -blocksize is correctly handled
+  @Test
+  public void processOptionsBlocksize() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -blocksize 16";
+    String expected = "And(;Blocksize(16;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -empty is handled correctly
+  @Test
+  public void processOptionsEmpty() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -empty ";
+    String expected = "And(;Empty(;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -group is handled correctly
+  @Test
+  public void processOptionsGroup() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -group groupname";
+    String expected = "And(;Group(groupname;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -mtime is handled correctly
+  @Test
+  public void processOptionsMtime() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -mtime 40";
+    String expected = "And(;Mtime(40;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -mmin is handled correctly
+  @Test
+  public void processOptionsMmin() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -mmin 40";
+    String expected = "And(;Mmin-Mtime(40;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -newer is handled correctly
+  @Test
+  public void processOptionsNewer() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -newer 50";
+    String expected = "And(;Newer(50;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -nogroup is handled correctly
+  @Test
+  public void processOptionsNogroup() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -nogroup ";
+    String expected = "And(;Nogroup(;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -nouser is handled correctly
+  @Test
+  public void processOptionsNouser() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -nouser ";
+    String expected = "And(;Nouser(;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -perm is handled correctly
+  @Test
+  public void processOptionsPerm() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -perm permission";
+    String expected = "And(;Perm(permission;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -regex is handled correctly
+  @Test
+  public void processOptionsRegex() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -regex pattern";
+    String expected = "And(;Regex(pattern;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -iregex is handled correctly
+  @Test
+  public void processOptionsIregex() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -iregex pattern";
+    String expected = "And(;Iregex-Regex(pattern;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -replicas is handled correctly
+  @Test
+  public void processOptionsReplicas() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -replicas 60";
+    String expected = "And(;Replicas(60;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -size is handled correctly
+  @Test
+  public void processOptionsSize() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -size 60";
+    String expected = "And(;Size(60;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -type is handled correctly
+  @Test
+  public void processOptionsType() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -type d";
+    String expected = "And(;Type(d;),Print(;))";
+    find.processOptions(getArgs(args));
+    Expression expression = find.getRootExpression();
+    assertEquals(expected, expression.toString());
+  }
+
+  // check -user is handled correctly
+  @Test
+  public void processOptionsUser() throws IOException {
+    Find find = new Find();
+    find.setConf(conf);
+    String args = "path -user username";
+    String expected = "And(;User(username;),Print(;))";
     find.processOptions(getArgs(args));
     Expression expression = find.getRootExpression();
     assertEquals(expected, expression.toString());
@@ -860,6 +1076,34 @@ public class TestFind {
             item5e.stat });
     when(mockFs.listStatus(eq(item5c.path))).thenReturn(
         new FileStatus[] { item5ca.stat });
+
+    when(mockFs.listStatusIterator(Mockito.any(Path.class)))
+        .thenAnswer(new Answer<RemoteIterator<FileStatus>>() {
+
+          @Override
+          public RemoteIterator<FileStatus> answer(InvocationOnMock invocation)
+              throws Throwable {
+            final Path p = (Path) invocation.getArguments()[0];
+            final FileStatus[] stats = mockFs.listStatus(p);
+
+            return new RemoteIterator<FileStatus>() {
+              private int i = 0;
+
+              @Override
+              public boolean hasNext() throws IOException {
+                return i < stats.length;
+              }
+
+              @Override
+              public FileStatus next() throws IOException {
+                if (!hasNext()) {
+                  throw new NoSuchElementException("No more entry in " + p);
+                }
+                return stats[i++];
+              }
+            };
+          }
+        });
 
     when(item1.stat.isSymlink()).thenReturn(false);
     when(item1a.stat.isSymlink()).thenReturn(false);

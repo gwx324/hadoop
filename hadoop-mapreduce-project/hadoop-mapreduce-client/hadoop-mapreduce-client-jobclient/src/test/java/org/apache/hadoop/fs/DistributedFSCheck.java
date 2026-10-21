@@ -31,17 +31,14 @@ import java.util.StringTokenizer;
 import java.util.TreeSet;
 import java.util.Vector;
 
-import junit.framework.TestCase;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.SequenceFile.CompressionType;
 import org.apache.hadoop.mapred.*;
-import org.junit.Ignore;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Distributed checkup of the file system consistency.
@@ -53,10 +50,10 @@ import org.junit.Ignore;
  * Optionally displays statistics on read performance.
  * 
  */
-@Ignore
-public class DistributedFSCheck extends TestCase {
+public class DistributedFSCheck {
   // Constants
-  private static final Log LOG = LogFactory.getLog(DistributedFSCheck.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(DistributedFSCheck.class);
   private static final int TEST_TYPE_READ = 0;
   private static final int TEST_TYPE_CLEANUP = 2;
   private static final int DEFAULT_BUFFER_SIZE = 1000000;

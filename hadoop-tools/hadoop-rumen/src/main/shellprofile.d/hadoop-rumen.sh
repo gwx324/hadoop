@@ -18,7 +18,7 @@
 if ! declare -f hadoop_subcommand_rumenfolder >/dev/null 2>/dev/null; then
 
   if [[ "${HADOOP_SHELL_EXECNAME}" = hadoop ]]; then
-    hadoop_add_subcommand "rumenfolder" "scale a rumen input trace"
+    hadoop_add_subcommand "rumenfolder" client "scale a rumen input trace"
   fi
 
 ## @description  rumenfolder command for hadoop
@@ -30,8 +30,6 @@ function hadoop_subcommand_rumenfolder
   # shellcheck disable=SC2034
   HADOOP_CLASSNAME=org.apache.hadoop.tools.rumen.Folder
   hadoop_add_to_classpath_tools hadoop-rumen
-  hadoop_debug "Appending HADOOP_CLIENT_OPTS onto HADOOP_OPTS"
-  HADOOP_OPTS="${HADOOP_OPTS} ${HADOOP_CLIENT_OPTS}"
 }
 
 fi
@@ -39,7 +37,7 @@ fi
 if ! declare -f hadoop_subcommand_rumentrace >/dev/null 2>/dev/null; then
 
   if [[ "${HADOOP_SHELL_EXECNAME}" = hadoop ]]; then
-    hadoop_add_subcommand "rumentrace" "convert logs into a rumen trace"
+    hadoop_add_subcommand "rumentrace" client "convert logs into a rumen trace"
   fi
 
 ## @description  rumentrace command for hadoop
@@ -51,8 +49,6 @@ function hadoop_subcommand_rumentrace
   # shellcheck disable=SC2034
   HADOOP_CLASSNAME=org.apache.hadoop.tools.rumen.TraceBuilder
   hadoop_add_to_classpath_tools hadoop-rumen
-  hadoop_debug "Appending HADOOP_CLIENT_OPTS onto HADOOP_OPTS"
-  HADOOP_OPTS="${HADOOP_OPTS} ${HADOOP_CLIENT_OPTS}"
 }
 
 fi

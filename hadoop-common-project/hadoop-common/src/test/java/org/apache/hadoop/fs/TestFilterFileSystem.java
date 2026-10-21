@@ -18,9 +18,16 @@
 
 package org.apache.hadoop.fs;
 
-import static org.junit.Assert.*;
-import static org.mockito.Matchers.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.reset;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -29,23 +36,24 @@ import java.net.URI;
 import java.util.EnumSet;
 import java.util.Iterator;
 
-import org.apache.commons.logging.Log;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.Options.CreateOpts;
 import org.apache.hadoop.fs.Options.Rename;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.security.token.DelegationTokenIssuer;
 import org.apache.hadoop.util.Progressable;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
 
 public class TestFilterFileSystem {
 
-  private static final Log LOG = FileSystem.LOG;
+  private static final Logger LOG = FileSystem.LOG;
   private static final Configuration conf = new Configuration();
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() {
     conf.set("fs.flfs.impl", FilterLocalFileSystem.class.getName());
     conf.setBoolean("fs.flfs.impl.disable.cache", true);
@@ -64,7 +72,6 @@ public class TestFilterFileSystem {
     public FSDataOutputStream append(Path f, int bufferSize) throws
         IOException;
     public long getLength(Path f);
-    public void rename(Path src, Path dst, Rename... options);
     public boolean exists(Path f);
     public boolean isDirectory(Path f);
     public boolean isFile(Path f);
@@ -78,8 +85,8 @@ public class TestFilterFileSystem {
         boolean overwrite, int bufferSize, short replication, long blockSize,
         Progressable progress) throws IOException;
 
-    public boolean mkdirs(Path f);
     public FSDataInputStream open(Path f);
+    public FSDataInputStream open(PathHandle f);
     public FSDataOutputStream create(Path f);
     public FSDataOutputStream create(Path f, boolean overwrite);
     public FSDataOutputStream create(Path f, Progressable progress);
@@ -103,6 +110,7 @@ public class TestFilterFileSystem {
     public void processDeleteOnExit();
     public FsStatus getStatus();
     public FileStatus[] listStatus(Path f, PathFilter filter);
+    public FileStatus[] listStatusBatch(Path f, byte[] token);
     public FileStatus[] listStatus(Path[] files);
     public FileStatus[] listStatus(Path[] files, PathFilter filter);
     public FileStatus[] globStatus(Path pathPattern);
@@ -124,6 +132,8 @@ public class TestFilterFileSystem {
     public int getDefaultPort();
     public String getCanonicalServiceName();
     public Token<?> getDelegationToken(String renewer) throws IOException;
+    public DelegationTokenIssuer[] getAdditionalTokenIssuers()
+        throws IOException;
     public boolean deleteOnExit(Path f) throws IOException;
     public boolean cancelDeleteOnExit(Path f) throws IOException;
     public Token<?>[] addDelegationTokens(String renewer, Credentials creds)
@@ -132,7 +142,21 @@ public class TestFilterFileSystem {
     public Path fixRelativePart(Path p);
     public ContentSummary getContentSummary(Path f);
     public QuotaUsage getQuotaUsage(Path f);
+    void setQuota(Path f, long namespaceQuota, long storagespaceQuota);
+    void setQuotaByStorageType(Path f, StorageType type, long quota);
     StorageStatistics getStorageStatistics();
+
+    /*
+    Not passed through as the inner implementation will miss features
+    of the filter such as checksums.
+     */
+    MultipartUploaderBuilder createMultipartUploader(Path basePath);
+
+    FSDataOutputStream append(Path f, boolean appendToNewBlock) throws IOException;
+
+    FSDataOutputStream append(Path f, int bufferSize,
+        Progressable progress, boolean appendToNewBlock) throws IOException;
+    BulkDelete createBulkDelete(Path path) throws IllegalArgumentException, IOException;
   }
 
   @Test
@@ -163,8 +187,8 @@ public class TestFilterFileSystem {
         }
       }
     }
-    assertTrue((errors + " methods were not overridden correctly - see" +
-        " log"), errors <= 0);
+    assertTrue(errors <= 0, (errors + " methods were not overridden correctly - see" +
+        " log"));
   }
   
   @Test
@@ -263,6 +287,31 @@ public class TestFilterFileSystem {
     verify(mockFs).setWriteChecksum(eq(true));
   }
 
+  @Test
+  public void testRenameOptions() throws Exception {
+    FileSystem mockFs = mock(FileSystem.class);
+    FileSystem fs = new FilterFileSystem(mockFs);
+    Path src = new Path("/src");
+    Path dst = new Path("/dest");
+    Rename opt = Rename.TO_TRASH;
+    fs.rename(src, dst, opt);
+    verify(mockFs).rename(eq(src), eq(dst), eq(opt));
+  }
+
+  /**
+   * Verify that filterFS always returns false, even if local/rawlocal
+   * ever implement multipart uploads.
+   */
+  @Test
+  public void testFilterPathCapabilites() throws Exception {
+    try (FilterFileSystem flfs = new FilterLocalFileSystem()) {
+      flfs.initialize(URI.create("filter:/"), conf);
+      Path src = new Path("/src");
+      assertFalse(flfs.hasPathCapability(src, CommonPathCapabilities.FS_MULTIPART_UPLOADER),
+          "hasPathCapability(FS_MULTIPART_UPLOADER) should have failed for " + flfs);
+    }
+  }
+
   private void checkInit(FilterFileSystem fs, boolean expectInit)
       throws Exception {
     URI uri = URI.create("filter:/");
@@ -281,7 +330,7 @@ public class TestFilterFileSystem {
     int depth = 0;
     while (true) {
       depth++; 
-      assertFalse("depth "+depth+">"+expectDepth, depth > expectDepth);
+      assertFalse(depth > expectDepth, "depth "+depth+">"+expectDepth);
       assertEquals(conf, fs.getConf());
       if (!(fs instanceof FilterFileSystem)) {
         break;

@@ -33,8 +33,8 @@ import org.apache.hadoop.mapred.JobConfigurable;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.util.ReflectionUtils;
-import org.junit.Test;
-import static org.junit.Assert.assertTrue;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestWrappedRecordReaderClassloader {
   /**
@@ -50,8 +50,8 @@ public class TestWrappedRecordReaderClassloader {
     assertTrue(job.getClassLoader() instanceof Fake_ClassLoader);
 
     FileSystem fs = FileSystem.get(job);
-    Path testdir = new Path(System.getProperty("test.build.data", "/tmp"))
-        .makeQualified(fs);
+    Path testdir = fs.makeQualified(new Path(
+        System.getProperty("test.build.data", "/tmp")));
 
     Path base = new Path(testdir, "/empty");
     Path[] src = { new Path(base, "i0"), new Path("i1"), new Path("i2") };
@@ -123,9 +123,9 @@ public class TestWrappedRecordReaderClassloader {
 
     @SuppressWarnings("unchecked")
     public RR_ClassLoaderChecker(JobConf job) {
-      assertTrue("The class loader has not been inherited from "
-          + CompositeRecordReader.class.getSimpleName(),
-          job.getClassLoader() instanceof Fake_ClassLoader);
+      assertTrue(job.getClassLoader() instanceof Fake_ClassLoader,
+          "The class loader has not been inherited from "
+          + CompositeRecordReader.class.getSimpleName());
 
       keyclass = (Class<? extends K>) job.getClass("test.fakeif.keyclass",
           NullWritable.class, WritableComparable.class);

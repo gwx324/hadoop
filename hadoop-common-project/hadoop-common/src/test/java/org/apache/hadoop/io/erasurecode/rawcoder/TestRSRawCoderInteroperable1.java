@@ -17,21 +17,22 @@
  */
 package org.apache.hadoop.io.erasurecode.rawcoder;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
 import org.apache.hadoop.io.erasurecode.ErasureCodeNative;
-import org.junit.Assume;
-import org.junit.Before;
+import org.junit.jupiter.api.BeforeEach;
 
 /**
  * Test raw Reed-solomon coder implemented in Java.
  */
 public class TestRSRawCoderInteroperable1 extends TestRSRawCoderBase {
 
-  @Before
+  @BeforeEach
   public void setup() {
-    Assume.assumeTrue(ErasureCodeNative.isNativeCodeLoaded());
+    assumeTrue(ErasureCodeNative.isNativeCodeLoaded());
 
-    this.encoderClass = RSRawEncoder.class;
-    this.decoderClass = NativeRSRawDecoder.class;
+    this.encoderFactoryClass = RSRawErasureCoderFactory.class;
+    this.decoderFactoryClass = NativeRSRawErasureCoderFactory.class;
     setAllowDump(true);
   }
 

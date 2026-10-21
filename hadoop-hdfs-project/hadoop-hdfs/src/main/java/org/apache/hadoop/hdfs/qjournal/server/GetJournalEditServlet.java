@@ -27,13 +27,13 @@ import java.util.Set;
 
 import javax.servlet.ServletContext;
 import javax.servlet.ServletException;
-import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.apache.commons.lang.StringEscapeUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.text.StringEscapeUtils;
+import org.apache.hadoop.hdfs.server.namenode.DfsServlet;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -64,28 +64,24 @@ import org.apache.hadoop.util.StringUtils;
  * </ul>
  */
 @InterfaceAudience.Private
-public class GetJournalEditServlet extends HttpServlet {
+public class GetJournalEditServlet extends DfsServlet {
 
   private static final long serialVersionUID = -4635891628211723009L;
-  private static final Log LOG = LogFactory.getLog(GetJournalEditServlet.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(GetJournalEditServlet.class);
 
   static final String STORAGEINFO_PARAM = "storageInfo";
   static final String JOURNAL_ID_PARAM = "jid";
   static final String SEGMENT_TXID_PARAM = "segmentTxId";
+  static final String IN_PROGRESS_OK = "inProgressOk";
 
   protected boolean isValidRequestor(HttpServletRequest request, Configuration conf)
       throws IOException {
-    String remotePrincipal = request.getUserPrincipal().getName();
-    String remoteShortName = request.getRemoteUser();
-    if (remotePrincipal == null) { // This really shouldn't happen...
-      LOG.warn("Received null remoteUser while authorizing access to " +
-          "GetJournalEditServlet");
-      return false;
-    }
+    UserGroupInformation ugi = getUGI(request, conf);
 
     if (LOG.isDebugEnabled()) {
-      LOG.debug("Validating request made by " + remotePrincipal +
-          " / " + remoteShortName + ". This user is: " +
+      LOG.debug("Validating request made by " + ugi.getUserName() +
+          " / " + ugi.getShortUserName() + ". This user is: " +
           UserGroupInformation.getLoginUser());
     }
 
@@ -113,9 +109,9 @@ public class GetJournalEditServlet extends HttpServlet {
     for (String v : validRequestors) {
       if (LOG.isDebugEnabled())
         LOG.debug("isValidRequestor is comparing to valid requestor: " + v);
-      if (v != null && v.equals(remotePrincipal)) {
+      if (v != null && v.equals(ugi.getUserName())) {
         if (LOG.isDebugEnabled())
-          LOG.debug("isValidRequestor is allowing: " + remotePrincipal);
+          LOG.debug("isValidRequestor is allowing: " + ugi.getUserName());
         return true;
       }
     }
@@ -123,16 +119,16 @@ public class GetJournalEditServlet extends HttpServlet {
     // Additionally, we compare the short name of the requestor to this JN's
     // username, because we want to allow requests from other JNs during
     // recovery, but we can't enumerate the full list of JNs.
-    if (remoteShortName.equals(
+    if (ugi.getShortUserName().equals(
           UserGroupInformation.getLoginUser().getShortUserName())) {
       if (LOG.isDebugEnabled())
         LOG.debug("isValidRequestor is allowing other JN principal: " +
-            remotePrincipal);
+            ugi.getUserName());
       return true;
     }
 
     if (LOG.isDebugEnabled())
-      LOG.debug("isValidRequestor is rejecting: " + remotePrincipal);
+      LOG.debug("isValidRequestor is rejecting: " + ugi.getUserName());
     return false;
   }
   
@@ -156,7 +152,7 @@ public class GetJournalEditServlet extends HttpServlet {
     int myNsId = storage.getNamespaceID();
     String myClusterId = storage.getClusterID();
     
-    String theirStorageInfoString = StringEscapeUtils.escapeHtml(
+    String theirStorageInfoString = StringEscapeUtils.escapeHtml4(
         request.getParameter(STORAGEINFO_PARAM));
 
     if (theirStorageInfoString != null) {
@@ -186,6 +182,14 @@ public class GetJournalEditServlet extends HttpServlet {
       final Configuration conf = (Configuration) getServletContext()
           .getAttribute(JspHelper.CURRENT_CONF);
       final String journalId = request.getParameter(JOURNAL_ID_PARAM);
+      final String inProgressOkStr = request.getParameter(IN_PROGRESS_OK);
+      final boolean inProgressOk;
+      if (inProgressOkStr != null &&
+          inProgressOkStr.equalsIgnoreCase("false")) {
+        inProgressOk = false;
+      } else {
+        inProgressOk = true;
+      }
       QuorumJournalManager.checkJournalId(journalId);
       final JNStorage storage = JournalNodeHttpServer
           .getJournalFromContext(context, journalId).getStorage();
@@ -210,8 +214,7 @@ public class GetJournalEditServlet extends HttpServlet {
         // Synchronize on the FJM so that the file doesn't get finalized
         // out from underneath us while we're in the process of opening
         // it up.
-        EditLogFile elf = fjm.getLogFile(
-            segmentTxId);
+        EditLogFile elf = fjm.getLogFile(segmentTxId, inProgressOk);
         if (elf == null) {
           response.sendError(HttpServletResponse.SC_NOT_FOUND,
               "No edit log found starting at txid " + segmentTxId);
@@ -239,7 +242,7 @@ public class GetJournalEditServlet extends HttpServlet {
   }
 
   public static String buildPath(String journalId, long segmentTxId,
-      NamespaceInfo nsInfo) {
+      NamespaceInfo nsInfo, boolean inProgressOk) {
     StringBuilder path = new StringBuilder("/getJournal?");
     try {
       path.append(JOURNAL_ID_PARAM).append("=")
@@ -248,6 +251,8 @@ public class GetJournalEditServlet extends HttpServlet {
           .append(segmentTxId);
       path.append("&" + STORAGEINFO_PARAM).append("=")
           .append(URLEncoder.encode(nsInfo.toColonSeparatedString(), "UTF-8"));
+      path.append("&" + IN_PROGRESS_OK).append("=")
+          .append(inProgressOk);
     } catch (UnsupportedEncodingException e) {
       // Never get here -- everyone supports UTF-8
       throw new RuntimeException(e);

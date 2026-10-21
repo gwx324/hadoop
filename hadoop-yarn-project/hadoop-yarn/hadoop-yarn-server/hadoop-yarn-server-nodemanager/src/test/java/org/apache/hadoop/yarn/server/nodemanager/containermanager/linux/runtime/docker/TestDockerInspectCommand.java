@@ -17,9 +17,11 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.docker;
 
-import static org.junit.Assert.assertEquals;
-import org.junit.Before;
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import org.apache.hadoop.util.StringUtils;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests the docker inspect command and its command
@@ -31,7 +33,7 @@ public class TestDockerInspectCommand {
 
   private static final String CONTAINER_NAME = "foo";
 
-  @Before
+  @BeforeEach
   public void setup() {
     dockerInspectCommand = new DockerInspectCommand(CONTAINER_NAME);
   }
@@ -44,7 +46,29 @@ public class TestDockerInspectCommand {
   @Test
   public void testGetContainerStatus() throws Exception {
     dockerInspectCommand.getContainerStatus();
-    assertEquals("inspect --format='{{.State.Status}}' foo",
-        dockerInspectCommand.getCommandWithArguments());
+    assertEquals("inspect", StringUtils.join(",",
+        dockerInspectCommand.getDockerCommandWithArguments()
+            .get("docker-command")));
+    assertEquals("{{.State.Status}}", StringUtils.join(",",
+        dockerInspectCommand.getDockerCommandWithArguments().get("format")));
+    assertEquals("foo", StringUtils.join(",",
+        dockerInspectCommand.getDockerCommandWithArguments().get("name")));
+    assertEquals(3,
+        dockerInspectCommand.getDockerCommandWithArguments().size());
+  }
+
+  @Test
+  public void testGetIpAndHost() throws Exception {
+    dockerInspectCommand.getIpAndHost();
+    assertEquals("inspect", StringUtils.join(",",
+        dockerInspectCommand.getDockerCommandWithArguments()
+            .get("docker-command")));
+    assertEquals("{{range(.NetworkSettings.Networks)}}"
+        + "{{.IPAddress}},{{end}}{{.Config.Hostname}}", StringUtils.join(",",
+        dockerInspectCommand.getDockerCommandWithArguments().get("format")));
+    assertEquals("foo", StringUtils.join(",",
+        dockerInspectCommand.getDockerCommandWithArguments().get("name")));
+    assertEquals(3,
+        dockerInspectCommand.getDockerCommandWithArguments().size());
   }
 }

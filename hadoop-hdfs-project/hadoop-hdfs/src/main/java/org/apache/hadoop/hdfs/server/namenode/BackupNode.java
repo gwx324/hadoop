@@ -48,11 +48,12 @@ import org.apache.hadoop.hdfs.server.protocol.NamenodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.ipc.StandbyException;
 import org.apache.hadoop.ipc.RPC;
+import org.apache.hadoop.metrics2.annotation.Metrics;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.protobuf.BlockingService;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.protobuf.BlockingService;
 
 /**
  * BackupNode.
@@ -68,6 +69,7 @@ import com.google.protobuf.BlockingService;
  * </ol>
  */
 @InterfaceAudience.Private
+@Metrics(context="dfs")
 public class BackupNode extends NameNode {
   private static final String BN_ADDRESS_NAME_KEY = DFSConfigKeys.DFS_NAMENODE_BACKUP_ADDRESS_KEY;
   private static final String BN_ADDRESS_DEFAULT = DFSConfigKeys.DFS_NAMENODE_BACKUP_ADDRESS_DEFAULT;
@@ -244,7 +246,7 @@ public class BackupNode extends NameNode {
           new JournalProtocolServerSideTranslatorPB(this);
       BlockingService service = JournalProtocolService
           .newReflectiveBlockingService(journalProtocolTranslator);
-      DFSUtil.addPBProtocol(conf, JournalProtocolPB.class, service,
+      DFSUtil.addInternalPBProtocol(conf, JournalProtocolPB.class, service,
           this.clientRpcServer);
     }
     
@@ -433,7 +435,7 @@ public class BackupNode extends NameNode {
   }
 
   @Override
-  protected HAState createHAState(StartupOption startOpt) {
+  protected HAState createHAState(Configuration conf) {
     return new BackupState();
   }
 
@@ -469,11 +471,11 @@ public class BackupNode extends NameNode {
      * (not run or not pass any control commands to DataNodes)
      * on BackupNode:
      * {@link LeaseManager.Monitor} protected by SafeMode.
-     * {@link BlockManager.ReplicationMonitor} protected by SafeMode.
+     * {@link BlockManager.RedundancyMonitor} protected by SafeMode.
      * {@link HeartbeatManager.Monitor} protected by SafeMode.
-     * {@link DecommissionManager.Monitor} need to prohibit refreshNodes().
+     * {@link DatanodeAdminManager.Monitor} need to prohibit refreshNodes().
      * {@link PendingReconstructionBlocks.PendingReconstructionMonitor}
-     * harmless, because ReplicationMonitor is muted.
+     * harmless, because RedundancyMonitor is muted.
      */
     @Override
     public void startActiveServices() throws IOException {

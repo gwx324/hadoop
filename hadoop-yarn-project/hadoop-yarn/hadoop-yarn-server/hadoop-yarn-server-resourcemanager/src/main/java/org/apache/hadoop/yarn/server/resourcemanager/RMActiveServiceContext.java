@@ -18,50 +18,60 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.Dispatcher;
+import org.apache.hadoop.yarn.nodelabels.NodeAttributesManager;
+import org.apache.hadoop.yarn.proto.YarnServerCommonServiceProtos.SystemCredentialsForAppsProto;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMDelegatedNodeLabelsUpdater;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.placement.PlacementManager;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.NullRMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSystem;
+import org.apache.hadoop.yarn.server.resourcemanager.resource.ResourceProfilesManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.AMLivelinessMonitor;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.monitor.RMAppLifetimeMonitor;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.ContainerAllocationExpirer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNode;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint.AllocationTagsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint.PlacementConstraintManager;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.distributed.QueueLimitCalculator;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.MultiNodeSortingManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.AMRMTokenSecretManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.server.resourcemanager.security.DelegationTokenRenewer;
 import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
+import org.apache.hadoop.yarn.server.resourcemanager.security.ProxyCAManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
 import org.apache.hadoop.yarn.server.resourcemanager.security.RMDelegationTokenSecretManager;
-import org.apache.hadoop.yarn.server.resourcemanager.timelineservice.RMTimelineCollectorManager;
+import org.apache.hadoop.yarn.server.resourcemanager.volume.csi.VolumeManager;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.SystemClock;
 
 /**
- * The RMActiveServiceContext is the class that maintains all the
- * RMActiveService contexts.This is expected to be used only by ResourceManager
- * and RMContext.
+ * The RMActiveServiceContext is the class that maintains <b>Active</b> service
+ * context. Services that need to run only on the Active RM. This is expected to
+ * be used only by RMContext.
  */
 @Private
 @Unstable
 public class RMActiveServiceContext {
 
-  private static final Log LOG = LogFactory
-      .getLog(RMActiveServiceContext.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(RMActiveServiceContext.class);
 
   private final ConcurrentMap<ApplicationId, RMApp> applications =
       new ConcurrentHashMap<ApplicationId, RMApp>();
@@ -72,8 +82,8 @@ public class RMActiveServiceContext {
   private final ConcurrentMap<NodeId, RMNode> inactiveNodes =
       new ConcurrentHashMap<NodeId, RMNode>();
 
-  private final ConcurrentMap<ApplicationId, ByteBuffer> systemCredentials =
-      new ConcurrentHashMap<ApplicationId, ByteBuffer>();
+  private final ConcurrentMap<ApplicationId, SystemCredentialsForAppsProto> systemCredentials =
+    new ConcurrentHashMap<ApplicationId, SystemCredentialsForAppsProto>();
 
   private boolean isWorkPreservingRecoveryEnabled;
 
@@ -93,9 +103,9 @@ public class RMActiveServiceContext {
   private NodesListManager nodesListManager;
   private ResourceTrackerService resourceTrackerService;
   private ApplicationMasterService applicationMasterService;
-  private RMTimelineCollectorManager timelineCollectorManager;
 
   private RMNodeLabelsManager nodeLabelManager;
+  private NodeAttributesManager nodeAttributesManager;
   private RMDelegatedNodeLabelsUpdater rmDelegatedNodeLabelsUpdater;
   private long epoch;
   private Clock systemClock = SystemClock.getInstance();
@@ -104,6 +114,18 @@ public class RMActiveServiceContext {
   private boolean printLog = true;
   private boolean isSchedulerReady = false;
   private PlacementManager queuePlacementManager = null;
+
+  private RMAppLifetimeMonitor rmAppLifetimeMonitor;
+  private QueueLimitCalculator queueLimitCalculator;
+  private AllocationTagsManager allocationTagsManager;
+  private PlacementConstraintManager placementConstraintManager;
+  private ResourceProfilesManager resourceProfilesManager;
+  private MultiNodeSortingManager<SchedulerNode> multiNodeSortingManager;
+
+  private ProxyCAManager proxyCAManager;
+  private VolumeManager volumeManager;
+
+  private AtomicLong tokenSequenceNo = new AtomicLong(1);
 
   public RMActiveServiceContext() {
     queuePlacementManager = new PlacementManager();
@@ -371,19 +393,6 @@ public class RMActiveServiceContext {
 
   @Private
   @Unstable
-  public RMTimelineCollectorManager getRMTimelineCollectorManager() {
-    return timelineCollectorManager;
-  }
-
-  @Private
-  @Unstable
-  public void setRMTimelineCollectorManager(
-      RMTimelineCollectorManager collectorManager) {
-    this.timelineCollectorManager = collectorManager;
-  }
-
-  @Private
-  @Unstable
   public long getEpoch() {
     return this.epoch;
   }
@@ -408,6 +417,44 @@ public class RMActiveServiceContext {
 
   @Private
   @Unstable
+  public NodeAttributesManager getNodeAttributesManager() {
+    return nodeAttributesManager;
+  }
+
+  @Private
+  @Unstable
+  public void setNodeAttributesManager(NodeAttributesManager mgr) {
+    nodeAttributesManager = mgr;
+  }
+
+  @Private
+  @Unstable
+  public AllocationTagsManager getAllocationTagsManager() {
+    return allocationTagsManager;
+  }
+
+  @Private
+  @Unstable
+  public void setAllocationTagsManager(
+      AllocationTagsManager allocationTagsManager) {
+    this.allocationTagsManager = allocationTagsManager;
+  }
+
+  @Private
+  @Unstable
+  public PlacementConstraintManager getPlacementConstraintManager() {
+    return placementConstraintManager;
+  }
+
+  @Private
+  @Unstable
+  public void setPlacementConstraintManager(
+      PlacementConstraintManager placementConstraintManager) {
+    this.placementConstraintManager = placementConstraintManager;
+  }
+
+  @Private
+  @Unstable
   public RMDelegatedNodeLabelsUpdater getRMDelegatedNodeLabelsUpdater() {
     return rmDelegatedNodeLabelsUpdater;
   }
@@ -417,6 +464,19 @@ public class RMActiveServiceContext {
   public void setRMDelegatedNodeLabelsUpdater(
       RMDelegatedNodeLabelsUpdater nodeLablesUpdater) {
     rmDelegatedNodeLabelsUpdater = nodeLablesUpdater;
+  }
+
+  @Private
+  @Unstable
+  public MultiNodeSortingManager<SchedulerNode> getMultiNodeSortingManager() {
+    return multiNodeSortingManager;
+  }
+
+  @Private
+  @Unstable
+  public void setMultiNodeSortingManager(
+      MultiNodeSortingManager<SchedulerNode> multiNodeSortingManager) {
+    this.multiNodeSortingManager = multiNodeSortingManager;
   }
 
   @Private
@@ -452,7 +512,8 @@ public class RMActiveServiceContext {
 
   @Private
   @Unstable
-  public ConcurrentMap<ApplicationId, ByteBuffer> getSystemCredentialsForApps() {
+  public ConcurrentMap<ApplicationId, SystemCredentialsForAppsProto>
+      getSystemCredentialsForApps() {
     return systemCredentials;
   }
   
@@ -466,5 +527,81 @@ public class RMActiveServiceContext {
   @Unstable
   public void setQueuePlacementManager(PlacementManager placementMgr) {
     this.queuePlacementManager = placementMgr;
+  }
+
+  @Private
+  @Unstable
+  public void setRMAppLifetimeMonitor(
+      RMAppLifetimeMonitor lifetimeMonitor) {
+    this.rmAppLifetimeMonitor = lifetimeMonitor;
+  }
+
+  @Private
+  @Unstable
+  public RMAppLifetimeMonitor getRMAppLifetimeMonitor() {
+    return this.rmAppLifetimeMonitor;
+  }
+
+  @Private
+  @Unstable
+  public QueueLimitCalculator getNodeManagerQueueLimitCalculator() {
+    return this.queueLimitCalculator;
+  }
+
+  @Private
+  @Unstable
+  public void setContainerQueueLimitCalculator(
+      QueueLimitCalculator limitCalculator) {
+    this.queueLimitCalculator = limitCalculator;
+  }
+
+  public ResourceProfilesManager getResourceProfilesManager() {
+    return resourceProfilesManager;
+  }
+
+  public void setResourceProfilesManager(
+      ResourceProfilesManager resourceProfilesManager) {
+    this.resourceProfilesManager = resourceProfilesManager;
+  }
+
+  @Private
+  @Unstable
+  public ProxyCAManager getProxyCAManager() {
+    return proxyCAManager;
+  }
+
+  @Private
+  @Unstable
+  public void setProxyCAManager(ProxyCAManager proxyCAManager) {
+    this.proxyCAManager = proxyCAManager;
+  }
+
+  @Private
+  @Unstable
+  public VolumeManager getVolumeManager() {
+    return this.volumeManager;
+  }
+
+  @Private
+  @Unstable
+  public void setVolumeManager(VolumeManager volumeManager) {
+    this.volumeManager = volumeManager;
+  }
+
+  /**
+   * Get token sequence no.
+   *
+   * @return the tokenSequenceNo
+   */
+  public Long getTokenSequenceNo() {
+    return tokenSequenceNo.get();
+  }
+
+  /**
+   * Increment token sequence no.
+   *
+   */
+  public void incrTokenSequenceNo() {
+    this.tokenSequenceNo.incrementAndGet();
   }
 }

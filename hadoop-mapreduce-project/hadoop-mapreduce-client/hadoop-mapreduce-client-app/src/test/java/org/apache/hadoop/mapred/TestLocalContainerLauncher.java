@@ -19,7 +19,7 @@
 package org.apache.hadoop.mapred;
 
 import static org.apache.hadoop.fs.CreateFlag.CREATE;
-import static org.mockito.Matchers.isA;
+import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -31,8 +31,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileSystem;
@@ -55,16 +53,20 @@ import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 public class TestLocalContainerLauncher {
-  private static final Log LOG =
-      LogFactory.getLog(TestLocalContainerLauncher.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestLocalContainerLauncher.class);
   private static File testWorkDir;
   private static final String[] localDirs = new String[2];
 
@@ -75,7 +77,7 @@ public class TestLocalContainerLauncher {
     fs.delete(p, true);
   }
 
-  @BeforeClass
+  @BeforeAll
   public static void setupTestDirs() throws IOException {
     testWorkDir = new File("target",
         TestLocalContainerLauncher.class.getCanonicalName());
@@ -89,7 +91,7 @@ public class TestLocalContainerLauncher {
     }
   }
 
-  @AfterClass
+  @AfterAll
   public static void cleanupTestDirs() throws IOException {
     if (testWorkDir != null) {
       delete(testWorkDir);
@@ -97,13 +99,14 @@ public class TestLocalContainerLauncher {
   }
 
   @SuppressWarnings("rawtypes")
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testKillJob() throws Exception {
     JobConf conf = new JobConf();
     AppContext context = mock(AppContext.class);
     // a simple event handler solely to detect the container cleaned event
     final CountDownLatch isDone = new CountDownLatch(1);
-    EventHandler handler = new EventHandler() {
+    EventHandler<Event> handler = new EventHandler<Event>() {
       @Override
       public void handle(Event event) {
         LOG.info("handling event " + event.getClass() +
@@ -198,8 +201,8 @@ public class TestLocalContainerLauncher {
     final Path mapOut = mrOutputFiles.getOutputFileForWrite(1);
     conf.set(MRConfig.LOCAL_DIR, localDirs[1].toString());
     final Path mapOutIdx = mrOutputFiles.getOutputIndexFileForWrite(1);
-    Assert.assertNotEquals("Paths must be different!",
-        mapOut.getParent(), mapOutIdx.getParent());
+    assertNotEquals(mapOut.getParent(), mapOutIdx.getParent(),
+        "Paths must be different!");
 
     // make both dirs part of LOCAL_DIR
     conf.setStrings(MRConfig.LOCAL_DIR, localDirs);

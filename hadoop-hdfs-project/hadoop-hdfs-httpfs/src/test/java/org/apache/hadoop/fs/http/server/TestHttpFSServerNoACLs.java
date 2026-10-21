@@ -23,16 +23,16 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.test.HTestCase;
 import org.apache.hadoop.test.HadoopUsersConfTestHelper;
 import org.apache.hadoop.test.TestDir;
 import org.apache.hadoop.test.TestDirHelper;
 import org.apache.hadoop.test.TestJetty;
 import org.apache.hadoop.test.TestJettyHelper;
-import org.junit.Assert;
-import org.junit.Test;
-import org.mortbay.jetty.Server;
-import org.mortbay.jetty.webapp.WebAppContext;
+import org.junit.jupiter.api.Test;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.webapp.WebAppContext;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -45,6 +45,9 @@ import java.io.Writer;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.text.MessageFormat;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * This test class ensures that everything works as expected when ACL
@@ -98,9 +101,9 @@ public class TestHttpFSServerNoACLs extends HTestCase {
    */
   private void createHttpFSServer() throws Exception {
     File homeDir = TestDirHelper.getTestDir();
-    Assert.assertTrue(new File(homeDir, "conf").mkdir());
-    Assert.assertTrue(new File(homeDir, "log").mkdir());
-    Assert.assertTrue(new File(homeDir, "temp").mkdir());
+    assertTrue(new File(homeDir, "conf").mkdir());
+    assertTrue(new File(homeDir, "log").mkdir());
+    assertTrue(new File(homeDir, "temp").mkdir());
     HttpFSServerWebApp.setHomeDirForCurrentThread(homeDir.getAbsolutePath());
 
     File secretFile = new File(new File(homeDir, "conf"), "secret");
@@ -110,12 +113,12 @@ public class TestHttpFSServerNoACLs extends HTestCase {
 
     // HDFS configuration
     File hadoopConfDir = new File(new File(homeDir, "conf"), "hadoop-conf");
-    if ( !hadoopConfDir.mkdirs() ) {
+    if (!hadoopConfDir.mkdirs()) {
       throw new IOException();
     }
 
     String fsDefaultName =
-            nnConf.get(CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY);
+        nnConf.get(CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY);
     Configuration conf = new Configuration(false);
     conf.set(CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY, fsDefaultName);
 
@@ -136,8 +139,9 @@ public class TestHttpFSServerNoACLs extends HTestCase {
     conf.set("httpfs.proxyuser." +
                     HadoopUsersConfTestHelper.getHadoopProxyUser() + ".hosts",
             HadoopUsersConfTestHelper.getHadoopProxyUserHosts());
-    conf.set("httpfs.authentication.signature.secret.file",
-            secretFile.getAbsolutePath());
+    conf.set(HttpFSAuthenticationFilter.HADOOP_HTTP_CONF_PREFIX +
+            AuthenticationFilter.SIGNATURE_SECRET_FILE,
+        secretFile.getAbsolutePath());
 
     File httpfsSite = new File(new File(homeDir, "conf"), "httpfs-site.xml");
     os = new FileOutputStream(httpfsSite);
@@ -146,12 +150,12 @@ public class TestHttpFSServerNoACLs extends HTestCase {
 
     ClassLoader cl = Thread.currentThread().getContextClassLoader();
     URL url = cl.getResource("webapp");
-    if ( url == null ) {
+    if (url == null) {
       throw new IOException();
     }
     WebAppContext context = new WebAppContext(url.getPath(), "/webhdfs");
     Server server = TestJettyHelper.getJettyServer();
-    server.addHandler(context);
+    server.setHandler(context);
     server.start();
   }
 
@@ -168,7 +172,7 @@ public class TestHttpFSServerNoACLs extends HTestCase {
           throws Exception {
     String user = HadoopUsersConfTestHelper.getHadoopUsers()[0];
     // Remove leading / from filename
-    if ( filename.charAt(0) == '/' ) {
+    if (filename.charAt(0) == '/') {
       filename = filename.substring(1);
     }
     String pathOps = MessageFormat.format(
@@ -179,18 +183,18 @@ public class TestHttpFSServerNoACLs extends HTestCase {
     conn.connect();
     int resp = conn.getResponseCode();
     BufferedReader reader;
-    if ( expectOK ) {
-      Assert.assertEquals(HttpURLConnection.HTTP_OK, resp);
+    if (expectOK) {
+      assertEquals(HttpURLConnection.HTTP_OK, resp);
       reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
       String res = reader.readLine();
-      Assert.assertTrue(!res.contains("aclBit"));
-      Assert.assertTrue(res.contains("owner")); // basic sanity check
+      assertTrue(!res.contains("aclBit"));
+      assertTrue(res.contains("owner")); // basic sanity check
     } else {
-      Assert.assertEquals(HttpURLConnection.HTTP_INTERNAL_ERROR, resp);
+      assertEquals(HttpURLConnection.HTTP_INTERNAL_ERROR, resp);
       reader = new BufferedReader(new InputStreamReader(conn.getErrorStream()));
       String res = reader.readLine();
-      Assert.assertTrue(res.contains("AclException"));
-      Assert.assertTrue(res.contains("Support for ACLs has been disabled"));
+      assertTrue(res.contains("AclException"));
+      assertTrue(res.contains("Support for ACLs has been disabled"));
     }
   }
 
@@ -204,7 +208,7 @@ public class TestHttpFSServerNoACLs extends HTestCase {
                       String params, boolean expectOK) throws Exception {
     String user = HadoopUsersConfTestHelper.getHadoopUsers()[0];
     // Remove leading / from filename
-    if ( filename.charAt(0) == '/' ) {
+    if (filename.charAt(0) == '/') {
       filename = filename.substring(1);
     }
     String pathOps = MessageFormat.format(
@@ -216,19 +220,20 @@ public class TestHttpFSServerNoACLs extends HTestCase {
     conn.setRequestMethod("PUT");
     conn.connect();
     int resp = conn.getResponseCode();
-    if ( expectOK ) {
-      Assert.assertEquals(HttpURLConnection.HTTP_OK, resp);
+    if (expectOK) {
+      assertEquals(HttpURLConnection.HTTP_OK, resp);
     } else {
-      Assert.assertEquals(HttpURLConnection.HTTP_INTERNAL_ERROR, resp);
+      assertEquals(HttpURLConnection.HTTP_INTERNAL_ERROR, resp);
       BufferedReader reader;
       reader = new BufferedReader(new InputStreamReader(conn.getErrorStream()));
       String err = reader.readLine();
-      Assert.assertTrue(err.contains("AclException"));
-      Assert.assertTrue(err.contains("Support for ACLs has been disabled"));
+      assertTrue(err.contains("AclException"));
+      assertTrue(err.contains("Support for ACLs has been disabled"));
     }
   }
 
   /**
+   * Test without ACLs.
    * Ensure that
    * <ol>
    *   <li>GETFILESTATUS and LISTSTATUS work happily</li>

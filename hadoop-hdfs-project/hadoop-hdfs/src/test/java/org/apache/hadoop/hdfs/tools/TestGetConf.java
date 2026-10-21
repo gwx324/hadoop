@@ -23,20 +23,27 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_BACKUP_ADDRESS_K
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SHARED_EDITS_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICES;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.InetSocketAddress;
+import java.net.URISyntaxException;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.StringTokenizer;
 
 import org.apache.hadoop.fs.FileSystem;
@@ -48,17 +55,19 @@ import org.apache.hadoop.hdfs.tools.GetConf.Command;
 import org.apache.hadoop.hdfs.tools.GetConf.CommandHandler;
 import org.apache.hadoop.hdfs.util.HostsFileWriter;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.util.ToolRunner;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
 
 /**
  * Test for {@link GetConf}
  */
 public class TestGetConf {
   enum TestType {
-    NAMENODE, BACKUP, SECONDARY, NNRPCADDRESSES
+    NAMENODE, BACKUP, SECONDARY, NNRPCADDRESSES, JOURNALNODE
   }
   FileSystem localFileSys; 
   /** Setup federation nameServiceIds in the configuration */
@@ -96,9 +105,10 @@ public class TestGetConf {
    * Add namenodes to the static resolution list to avoid going
    * through DNS which can be really slow in some configurations.
    */
-  private void setupStaticHostResolution(int nameServiceIdCount) {
+  private void setupStaticHostResolution(int nameServiceIdCount,
+                                         String hostname) {
     for (int i = 0; i < nameServiceIdCount; i++) {
-      NetUtils.addStaticResolution("nn" + i, "localhost");
+      NetUtils.addStaticResolution(hostname + i, "localhost");
     }
   }
 
@@ -140,10 +150,9 @@ public class TestGetConf {
       int ret = ToolRunner.run(new GetConf(conf, out, out), args);
       out.flush();
       System.err.println("Output: " + o.toString());
-      assertEquals("Expected " + (success?"success":"failure") +
+      assertEquals(success, ret == 0, "Expected " + (success ? "success" : "failure") +
           " for args: " + Joiner.on(" ").join(args) + "\n" +
-          "Output: " + o.toString(),
-          success, ret == 0);
+          "Output: " + o.toString());
       return o.toString();
     } finally {
       o.close();
@@ -173,6 +182,8 @@ public class TestGetConf {
     case NNRPCADDRESSES:
       args[0] = Command.NNRPCADDRESSES.getName();
       break;
+    case JOURNALNODE:
+      args[0] = Command.JOURNALNODE.getName();
     }
     return runTool(conf, args, success);
   }
@@ -209,7 +220,7 @@ public class TestGetConf {
       if (!checkPort) {
         expectedHosts[i++] = addr.getHostName();
       }else {
-        expectedHosts[i++] = addr.getHostName()+":"+addr.getPort();
+        expectedHosts[i++] = NetUtils.getHostPortString(addr);
       }
     }
 
@@ -239,7 +250,8 @@ public class TestGetConf {
   /**
    * Test empty configuration
    */
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testEmptyConf() throws Exception {
     HdfsConfiguration conf = new HdfsConfiguration(false);
     // Verify getting addresses fails
@@ -250,7 +262,7 @@ public class TestGetConf {
     for (Command cmd : Command.values()) {
       String arg = cmd.getName();
       CommandHandler handler = Command.getHandler(arg);
-      assertNotNull("missing handler: " + cmd, handler);
+      assertNotNull(handler, "missing handler: " + cmd);
       if (handler.key != null) {
         // First test with configuration missing the required key
         String[] args = {handler.key};
@@ -262,7 +274,8 @@ public class TestGetConf {
   /**
    * Test invalid argument to the tool
    */
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testInvalidArgument() throws Exception {
     HdfsConfiguration conf = new HdfsConfiguration();
     String[] args = {"-invalidArgument"};
@@ -274,7 +287,8 @@ public class TestGetConf {
    * Tests to make sure the returned addresses are correct in case of default
    * configuration with no federation
    */
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testNonFederation() throws Exception {
     HdfsConfiguration conf = new HdfsConfiguration(false);
   
@@ -303,13 +317,25 @@ public class TestGetConf {
     conf.set(DFS_NAMENODE_RPC_ADDRESS_KEY, "localhost:1001");
     verifyAddresses(conf, TestType.NAMENODE, false, "localhost:1001");
     verifyAddresses(conf, TestType.NNRPCADDRESSES, true, "localhost:1001");
+
+    // An IPv6 literal host name is printed bracketed. use_ip=false keeps the
+    // literal as the host name, as with no PTR record, without a DNS lookup.
+    conf = new HdfsConfiguration();
+    conf.set(DFS_NAMENODE_RPC_ADDRESS_KEY, "[2001:db8::10]:1001");
+    SecurityUtil.setTokenServiceUseIp(false);
+    try {
+      verifyAddresses(conf, TestType.NNRPCADDRESSES, true, "[2001:db8::10]:1001");
+    } finally {
+      SecurityUtil.setTokenServiceUseIp(true);
+    }
   }
 
   /**
    * Tests to make sure the returned addresses are correct in case of federation
    * of setup.
    */
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testFederation() throws Exception {
     final int nsCount = 10;
     HdfsConfiguration conf = new HdfsConfiguration(false);
@@ -321,7 +347,7 @@ public class TestGetConf {
     String[] nnAddresses = setupAddress(conf,
         DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY, nsCount, 1000);
     setupAddress(conf, DFS_NAMENODE_RPC_ADDRESS_KEY, nsCount, 1500);
-    setupStaticHostResolution(nsCount);
+    setupStaticHostResolution(nsCount, "nn");
     String[] backupAddresses = setupAddress(conf,
         DFS_NAMENODE_BACKUP_ADDRESS_KEY, nsCount, 2000);
     String[] secondaryAddresses = setupAddress(conf,
@@ -348,8 +374,169 @@ public class TestGetConf {
     verifyAddresses(conf, TestType.SECONDARY, false, secondaryAddresses);
     verifyAddresses(conf, TestType.NNRPCADDRESSES, true, nnAddresses);
   }
-  
-  @Test(timeout=10000)
+
+  /**
+   * Tests for journal node addresses.
+   * @throws Exception
+   */
+  @Test
+  @Timeout(value = 10)
+  public void testGetJournalNodes() throws Exception {
+
+    final int nsCount = 3;
+    final String journalsBaseUri = "qjournal://jn0:8020;jn1:8020;jn2:8020";
+    setupStaticHostResolution(nsCount, "jn");
+
+    // With out Name service Id
+    HdfsConfiguration conf = new HdfsConfiguration(false);
+    conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY,
+        journalsBaseUri+"/");
+
+    Set<String> expected = new HashSet<>();
+    expected.add("jn0");
+    expected.add("jn1");
+    expected.add("jn2");
+
+    String expected1 = "";
+    StringBuilder buffer = new StringBuilder();
+    for (String val : expected) {
+      if (buffer.length() > 0) {
+        buffer.append(" ");
+      }
+      buffer.append(val);
+    }
+    buffer.append(System.lineSeparator());
+    expected1 = buffer.toString();
+
+    Set<String> actual = DFSUtil.getJournalNodeAddresses(conf);
+    assertEquals(expected.toString(), actual.toString());
+
+    String actual1 = getAddressListFromTool(TestType.JOURNALNODE,
+        conf, true);
+    assertEquals(expected1, actual1);
+    conf.clear();
+
+    //With out Name service Id
+    conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY,
+        journalsBaseUri + "/");
+
+    actual = DFSUtil.getJournalNodeAddresses(conf);
+    assertEquals(expected.toString(), actual.toString());
+
+    actual1 = getAddressListFromTool(TestType.JOURNALNODE,
+        conf, true);
+    assertEquals(expected1, actual1);
+    conf.clear();
+
+
+    //Federation with HA, but suffixed only with Name service Id
+    setupNameServices(conf, nsCount);
+    conf.set(DFS_HA_NAMENODES_KEY_PREFIX +".ns0",
+        "nn0,nn1");
+    conf.set(DFS_HA_NAMENODES_KEY_PREFIX +".ns1",
+        "nn0, nn1");
+    conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY+".ns0",
+        journalsBaseUri + "/ns0");
+    conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY+".ns1",
+        journalsBaseUri + "/ns1");
+
+    actual = DFSUtil.getJournalNodeAddresses(conf);
+    assertEquals(expected.toString(), actual.toString());
+
+    expected1 = getAddressListFromTool(TestType.JOURNALNODE,
+        conf, true);
+    assertEquals(expected1, actual1);
+
+    conf.clear();
+
+
+    // Federation with HA
+    setupNameServices(conf, nsCount);
+    conf.set(DFS_HA_NAMENODES_KEY_PREFIX + ".ns0", "nn0,nn1");
+    conf.set(DFS_HA_NAMENODES_KEY_PREFIX + ".ns1", "nn0, nn1");
+    conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY + ".ns0.nn0",
+        journalsBaseUri + "/ns0");
+    conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY + ".ns0.nn1",
+        journalsBaseUri + "/ns0");
+    conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY + ".ns1.nn2",
+        journalsBaseUri + "/ns1");
+    conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY + ".ns1.nn3",
+        journalsBaseUri + "/ns1");
+
+    actual = DFSUtil.getJournalNodeAddresses(conf);
+    assertEquals(expected.toString(), actual.toString());
+
+    actual1 = getAddressListFromTool(TestType.JOURNALNODE,
+        conf, true);
+    assertEquals(expected1, actual1);
+
+    conf.clear();
+
+    // Name service setup, but no journal node
+    setupNameServices(conf, nsCount);
+
+    expected = new HashSet<>();
+    actual = DFSUtil.getJournalNodeAddresses(conf);
+    assertEquals(expected.toString(), actual.toString());
+
+    actual1 = System.lineSeparator();
+    expected1 = getAddressListFromTool(TestType.JOURNALNODE,
+        conf, true);
+    assertEquals(expected1, actual1);
+    conf.clear();
+
+    //name node edits dir is present, but set
+    //to location of storage shared directory
+    conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY,
+        "file:///mnt/filer1/dfs/ha-name-dir-shared");
+
+    expected = new HashSet<>();
+    actual = DFSUtil.getJournalNodeAddresses(conf);
+    assertEquals(expected.toString(), actual.toString());
+
+    expected1 = getAddressListFromTool(TestType.JOURNALNODE,
+        conf, true);
+    actual1 = System.lineSeparator();
+    assertEquals(expected1, actual1);
+    conf.clear();
+  }
+
+  /*
+   ** Test for unknown journal node host exception.
+  */
+  @Test
+  @Timeout(value = 10)
+  public void testUnknownJournalNodeHost()
+      throws URISyntaxException, IOException {
+    assertThrows(UnknownHostException.class, () -> {
+      String journalsBaseUri = "qjournal://jn1:8020;jn2:8020;jn3:8020";
+      HdfsConfiguration conf = new HdfsConfiguration(false);
+      conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY,
+          journalsBaseUri + "/jndata");
+      DFSUtil.getJournalNodeAddresses(conf);
+    });
+  }
+
+  /*
+   ** Test for malformed journal node urisyntax exception.
+  */
+  @Test
+  @Timeout(value = 10)
+  public void testJournalNodeUriError()
+      throws URISyntaxException, IOException {
+    assertThrows(URISyntaxException.class, () -> {
+      final int nsCount = 3;
+      String journalsBaseUri = "qjournal://jn0 :8020;jn1:8020;jn2:8020";
+      setupStaticHostResolution(nsCount, "jn");
+      HdfsConfiguration conf = new HdfsConfiguration(false);
+      conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY,
+          journalsBaseUri + "/jndata");
+      DFSUtil.getJournalNodeAddresses(conf);
+    });
+  }
+
+  @Test
+  @Timeout(value = 10)
   public void testGetSpecificKey() throws Exception {
     HdfsConfiguration conf = new HdfsConfiguration();
     conf.set("mykey", " myval ");
@@ -358,7 +545,8 @@ public class TestGetConf {
     assertEquals(String.format("myval%n"), toolResult);
   }
   
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testExtraArgsThrowsError() throws Exception {
     HdfsConfiguration conf = new HdfsConfiguration();
     conf.set("mykey", "myval");
@@ -371,7 +559,8 @@ public class TestGetConf {
    * Tests commands other than {@link Command#NAMENODE}, {@link Command#BACKUP},
    * {@link Command#SECONDARY} and {@link Command#NNRPCADDRESSES}
    */
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testTool() throws Exception {
     HdfsConfiguration conf = new HdfsConfiguration(false);
     for (Command cmd : Command.values()) {
@@ -422,7 +611,7 @@ public class TestGetConf {
     setupAddress(conf, DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY, nsCount, 1000);
     setupAddress(conf, DFS_NAMENODE_RPC_ADDRESS_KEY, nsCount, 1500);
     conf.set(DFS_INTERNAL_NAMESERVICES_KEY, "ns1");
-    setupStaticHostResolution(nsCount);
+    setupStaticHostResolution(nsCount, "nn");
 
     String[] includedNN = new String[] {"nn1:1001"};
     verifyAddresses(conf, TestType.NAMENODE, false, includedNN);

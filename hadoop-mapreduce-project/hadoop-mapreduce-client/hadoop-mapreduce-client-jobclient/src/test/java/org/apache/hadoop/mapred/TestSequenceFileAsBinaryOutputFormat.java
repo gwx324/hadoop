@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.mapred;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.io.IOException;
+import java.util.Random;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.BooleanWritable;
@@ -30,18 +30,17 @@ import org.apache.hadoop.io.DoubleWritable;
 import org.apache.hadoop.io.FloatWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.SequenceFile.CompressionType;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.util.Random;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestSequenceFileAsBinaryOutputFormat {
-  private static final Log LOG =
-      LogFactory.getLog(TestSequenceFileAsBinaryOutputFormat.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestSequenceFileAsBinaryOutputFormat.class);
   private static final int RECORDS = 10000;
   // A random task attempt id for testing.
   private static final String attempt = "attempt_200707121733_0001_m_000000_0";
@@ -123,21 +122,19 @@ public class TestSequenceFileAsBinaryOutputFormat {
         while (reader.next(iwritable, dwritable)) {
           sourceInt = r.nextInt();
           sourceDouble = r.nextDouble();
-          assertEquals(
-              "Keys don't match: " + "*" + iwritable.get() + ":" + 
-                                           sourceInt + "*",
-              sourceInt, iwritable.get());
-          assertTrue(
+          assertEquals(sourceInt, iwritable.get(),
+              "Keys don't match: " + "*" + iwritable.get() + ":" + sourceInt + "*");
+          assertThat(dwritable.get()).withFailMessage(
               "Vals don't match: " + "*" + dwritable.get() + ":" +
-                                           sourceDouble + "*",
-              Double.compare(dwritable.get(), sourceDouble) == 0 );
+                  sourceDouble + "*")
+              .isEqualTo(sourceDouble);
           ++count;
         }
       } finally {
         reader.close();
       }
     }
-    assertEquals("Some records not found", RECORDS, count);
+    assertEquals(RECORDS, count, "Some records not found");
   }
 
   @Test
@@ -150,29 +147,24 @@ public class TestSequenceFileAsBinaryOutputFormat {
     job.setOutputKeyClass(FloatWritable.class);
     job.setOutputValueClass(BooleanWritable.class);
 
-    assertEquals("SequenceFileOutputKeyClass should default to ouputKeyClass", 
-             FloatWritable.class,
-             SequenceFileAsBinaryOutputFormat.getSequenceFileOutputKeyClass(
-                                                                         job));
-    assertEquals("SequenceFileOutputValueClass should default to " 
-             + "ouputValueClass", 
-             BooleanWritable.class,
-             SequenceFileAsBinaryOutputFormat.getSequenceFileOutputValueClass(
-                                                                         job));
+    assertEquals(FloatWritable.class,
+        SequenceFileAsBinaryOutputFormat.getSequenceFileOutputKeyClass(job),
+        "SequenceFileOutputKeyClass should default to ouputKeyClass");
+    assertEquals(BooleanWritable.class,
+        SequenceFileAsBinaryOutputFormat.getSequenceFileOutputValueClass(job),
+        "SequenceFileOutputValueClass should default to ouputValueClass");
 
     SequenceFileAsBinaryOutputFormat.setSequenceFileOutputKeyClass(job, 
                                           IntWritable.class );
     SequenceFileAsBinaryOutputFormat.setSequenceFileOutputValueClass(job, 
                                           DoubleWritable.class ); 
 
-    assertEquals("SequenceFileOutputKeyClass not updated", 
-             IntWritable.class,
-             SequenceFileAsBinaryOutputFormat.getSequenceFileOutputKeyClass(
-                                                                         job));
-    assertEquals("SequenceFileOutputValueClass not updated", 
-             DoubleWritable.class,
-             SequenceFileAsBinaryOutputFormat.getSequenceFileOutputValueClass(
-                                                                         job));
+    assertEquals(IntWritable.class,
+        SequenceFileAsBinaryOutputFormat.getSequenceFileOutputKeyClass(job),
+        "SequenceFileOutputKeyClass not updated");
+    assertEquals(DoubleWritable.class,
+        SequenceFileAsBinaryOutputFormat.getSequenceFileOutputValueClass(job),
+        "SequenceFileOutputValueClass not updated");
   }
 
   @Test

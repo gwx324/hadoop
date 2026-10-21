@@ -19,12 +19,25 @@ package org.apache.hadoop.security;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION;
 import static org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod.*;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import javax.security.auth.kerberos.KerberosPrincipal;
 
@@ -32,15 +45,24 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.alias.CredentialProvider;
+import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.security.alias.LocalJavaKeyStoreProvider;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.util.StringUtils;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.util.ZKUtil.ZKAuthInfo;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
+import org.apache.hadoop.thirdparty.com.google.common.io.Files;
+
 public class TestSecurityUtil {
-  @BeforeClass
+
+  private static final String ZK_AUTH_VALUE = "a_scheme:a_password";
+
+  @BeforeAll
   public static void unsetKerberosRealm() {
     // prevent failures if kinit-ed or on os x with no realm
     System.setProperty("java.security.krb5.kdc", "");
@@ -117,6 +139,17 @@ public class TestSecurityUtil {
                  SecurityUtil.getServerPrincipal("hdfs/_HOST@REALM", (String)null));
     assertEquals("hdfs/" + local + "@REALM",
                  SecurityUtil.getServerPrincipal("hdfs/_HOST@REALM", "0.0.0.0"));
+    // The IPv6 wildcard as configured, as InetSocketAddress#getHostName
+    // returns it, and as the host of a URI
+    for (String wildcard : new String[] {"::", "[::]", "0:0:0:0:0:0:0:0", "[0:0:0:0:0:0:0:0]"}) {
+      assertEquals("hdfs/" + local + "@REALM",
+          SecurityUtil.getServerPrincipal("hdfs/_HOST@REALM", wildcard));
+    }
+    // Other IP addresses are not replaced
+    assertEquals("hdfs/2001:db8::1@REALM",
+        SecurityUtil.getServerPrincipal("hdfs/_HOST@REALM", "2001:db8::1"));
+    assertEquals("hdfs/fe80::1%nosuchif@REALM",
+        SecurityUtil.getServerPrincipal("hdfs/_HOST@REALM", "fe80::1%nosuchif"));
   }
   
   @Test
@@ -133,7 +166,7 @@ public class TestSecurityUtil {
       // expected
       gotException=true;
     }
-    assertTrue("Exception for empty keytabfile name was expected", gotException);
+    assertTrue(gotException, "Exception for empty keytabfile name was expected");
   }
   
   @Test
@@ -226,7 +259,7 @@ public class TestSecurityUtil {
     } catch (IllegalArgumentException e) {
       bad = true;
     } finally {
-      assertTrue("should be bad: '"+arg+"'", bad);
+      assertTrue(bad, "should be bad: '"+arg+"'");
     }
     for (int port : ports) {
       if (validIfPosPort && port > 0) continue;
@@ -237,7 +270,7 @@ public class TestSecurityUtil {
       } catch (IllegalArgumentException e) {
         bad = true;
       } finally {
-        assertTrue("should be bad: '"+arg+"' (default port:"+port+")", bad);
+        assertTrue(bad, "should be bad: '"+arg+"' (default port:"+port+")");
       }
     }
   }
@@ -275,7 +308,7 @@ public class TestSecurityUtil {
     String serviceHost = useIp ? ip : StringUtils.toLowerCase(host);
     
     Token<?> token = new Token<TokenIdentifier>();
-    Text service = new Text(serviceHost+":"+port);
+    Text service = new Text(NetUtils.getHostPortString(serviceHost, port));
     
     assertEquals(service, SecurityUtil.buildTokenService(addr));
     SecurityUtil.setTokenService(token, addr);
@@ -345,6 +378,14 @@ public class TestSecurityUtil {
   }
 
   @Test
+  public void testSocketAddrWithIPv6() throws Exception {
+    String host = "::1";
+    NetUtils.addStaticResolution(host, host);
+    InetSocketAddress addr = NetUtils.createSocketAddr("[::1]:123");
+    verifyAddress(addr, host, InetAddress.getByName(host).getHostAddress(), 123);
+  }
+
+  @Test
   public void testSocketAddrWithNameToStaticName() {
     String staticHost = "host1";
     NetUtils.addStaticResolution(staticHost, "localhost");
@@ -356,6 +397,16 @@ public class TestSecurityUtil {
     String staticHost = "host3";
     NetUtils.addStaticResolution(staticHost, "255.255.255.255");
     verifyServiceAddr(staticHost, "255.255.255.255");
+  }
+
+  @Test
+  public void testSocketAddrWithChangeIP() {
+    String staticHost = "host4";
+    NetUtils.addStaticResolution(staticHost, "255.255.255.255");
+    verifyServiceAddr(staticHost, "255.255.255.255");
+
+    NetUtils.addStaticResolution(staticHost, "255.255.255.254");
+    verifyServiceAddr(staticHost, "255.255.255.254");
   }
 
   // this is a bizarre case, but it's if a test tries to remap an ip address
@@ -403,5 +454,191 @@ public class TestSecurityUtil {
     // kerberos
     SecurityUtil.setAuthenticationMethod(KERBEROS, conf);
     assertEquals("kerberos", conf.get(HADOOP_SECURITY_AUTHENTICATION));
+  }
+
+  @Test
+  public void testAuthPlainPasswordProperty() throws Exception {
+    Configuration conf = new Configuration();
+    conf.set(CommonConfigurationKeys.ZK_AUTH, ZK_AUTH_VALUE);
+    List<ZKAuthInfo> zkAuths = SecurityUtil.getZKAuthInfos(conf,
+        CommonConfigurationKeys.ZK_AUTH);
+    assertEquals(1, zkAuths.size());
+    ZKAuthInfo zkAuthInfo = zkAuths.get(0);
+    assertEquals("a_scheme", zkAuthInfo.getScheme());
+    assertArrayEquals("a_password".getBytes(), zkAuthInfo.getAuth());
+  }
+
+  @Test
+  public void testAuthPlainTextFile() throws Exception {
+    Configuration conf = new Configuration();
+    File passwordTxtFile = File.createTempFile(
+        getClass().getSimpleName() +  ".testAuthAtPathNotation-", ".txt");
+    Files.asCharSink(passwordTxtFile, StandardCharsets.UTF_8)
+        .write(ZK_AUTH_VALUE);
+    try {
+      conf.set(CommonConfigurationKeys.ZK_AUTH,
+          "@" + passwordTxtFile.getAbsolutePath());
+      List<ZKAuthInfo> zkAuths = SecurityUtil.getZKAuthInfos(conf,
+          CommonConfigurationKeys.ZK_AUTH);
+      assertEquals(1, zkAuths.size());
+      ZKAuthInfo zkAuthInfo = zkAuths.get(0);
+      assertEquals("a_scheme", zkAuthInfo.getScheme());
+      assertArrayEquals("a_password".getBytes(), zkAuthInfo.getAuth());
+    } finally {
+      boolean deleted = passwordTxtFile.delete();
+      assertTrue(deleted);
+    }
+  }
+
+  @Test
+  public void testAuthLocalJceks() throws Exception {
+    File localJceksFile = File.createTempFile(
+        getClass().getSimpleName() +".testAuthLocalJceks-", ".localjceks");
+    populateLocalJceksTestFile(localJceksFile.getAbsolutePath());
+    try {
+      String localJceksUri = "localjceks://file/" +
+          localJceksFile.getAbsolutePath();
+      Configuration conf = new Configuration();
+      conf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+          localJceksUri);
+      List<ZKAuthInfo> zkAuths = SecurityUtil.getZKAuthInfos(conf,
+          CommonConfigurationKeys.ZK_AUTH);
+      assertEquals(1, zkAuths.size());
+      ZKAuthInfo zkAuthInfo = zkAuths.get(0);
+      assertEquals("a_scheme", zkAuthInfo.getScheme());
+      assertArrayEquals("a_password".getBytes(), zkAuthInfo.getAuth());
+    } finally {
+      boolean deleted = localJceksFile.delete();
+      assertTrue(deleted);
+    }
+  }
+
+  private void populateLocalJceksTestFile(String path) throws IOException {
+    Configuration conf = new Configuration();
+    conf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
+        "localjceks://file/" + path);
+    CredentialProvider provider =
+        CredentialProviderFactory.getProviders(conf).get(0);
+    assertEquals(LocalJavaKeyStoreProvider.class.getName(),
+        provider.getClass().getName());
+    provider.createCredentialEntry(CommonConfigurationKeys.ZK_AUTH,
+        ZK_AUTH_VALUE.toCharArray());
+    provider.flush();
+  }
+
+  @Test
+  public void testInitiateHostResolver() throws Exception {
+    // 1. useIP is false and cache interval is 0
+    Configuration conf = new Configuration();
+    conf.setBoolean(CommonConfigurationKeys.HADOOP_SECURITY_TOKEN_SERVICE_USE_IP, false);
+    conf.setTimeDuration(
+        CommonConfigurationKeys.HADOOP_SECURITY_HOSTNAME_CACHE_EXPIRE_INTERVAL_SECONDS,
+        0, TimeUnit.SECONDS);
+    SecurityUtil.setConfiguration(conf);
+    SecurityUtil.HostResolver hostResolver = SecurityUtil.hostResolver;
+    assertTrue(hostResolver instanceof SecurityUtil.QualifiedHostResolver,
+        "Resolver should be a QualifiedHostResolver");
+    SecurityUtil.CacheableHostResolver cacheableHostResolver =
+        (SecurityUtil.QualifiedHostResolver) hostResolver;
+    assertNull(cacheableHostResolver.getCache(),
+        "Cache should be null when caching interval is less than or equal 0");
+
+
+    // 2. useIP is false and cache interval is 10
+    conf.setBoolean(CommonConfigurationKeys.HADOOP_SECURITY_TOKEN_SERVICE_USE_IP, false);
+    conf.setTimeDuration(
+        CommonConfigurationKeys.HADOOP_SECURITY_HOSTNAME_CACHE_EXPIRE_INTERVAL_SECONDS,
+        10, TimeUnit.SECONDS);
+    SecurityUtil.setConfiguration(conf);
+    hostResolver = SecurityUtil.hostResolver;
+    assertTrue(hostResolver instanceof SecurityUtil.QualifiedHostResolver,
+        "Resolver should be a QualifiedHostResolver");
+    cacheableHostResolver = (SecurityUtil.QualifiedHostResolver) hostResolver;
+    assertNotNull(cacheableHostResolver.getCache(),
+        "Cache should be set when caching interval is enabled");
+
+    // 3. useIP is true and cache interval is 0
+    conf.setBoolean(CommonConfigurationKeys.HADOOP_SECURITY_TOKEN_SERVICE_USE_IP, true);
+    conf.setTimeDuration(
+        CommonConfigurationKeys.HADOOP_SECURITY_HOSTNAME_CACHE_EXPIRE_INTERVAL_SECONDS,
+        0, TimeUnit.SECONDS);
+    SecurityUtil.setConfiguration(conf);
+    hostResolver = SecurityUtil.hostResolver;
+    assertTrue(hostResolver instanceof SecurityUtil.StandardHostResolver,
+        "Resolver should be a StandardHostResolver");
+    cacheableHostResolver = (SecurityUtil.StandardHostResolver) hostResolver;
+    assertNull(cacheableHostResolver.getCache(),
+        "Cache should be null when caching interval is less than or equal 0");
+
+    // 4. useIP is true and cache interval is 10
+    conf.setBoolean(CommonConfigurationKeys.HADOOP_SECURITY_TOKEN_SERVICE_USE_IP, true);
+    conf.setTimeDuration(
+        CommonConfigurationKeys.HADOOP_SECURITY_HOSTNAME_CACHE_EXPIRE_INTERVAL_SECONDS,
+        10, TimeUnit.SECONDS);
+    SecurityUtil.setConfiguration(conf);
+    hostResolver = SecurityUtil.hostResolver;
+    assertTrue(hostResolver instanceof SecurityUtil.StandardHostResolver,
+        "Resolver should be a StandardHostResolver");
+    cacheableHostResolver = (SecurityUtil.StandardHostResolver) hostResolver;
+    assertNotNull(cacheableHostResolver.getCache(),
+        "Cache should be set when caching interval is enabled");
+  }
+
+  /**
+   * Test caching behavior in QualifiedHostResolver when caching is enabled.
+   */
+  @Test
+  public void testQualifiedHostResolverCachingEnabled() throws Exception {
+    // Create a QualifiedHostResolver with expiry interval > 0
+    SecurityUtil.QualifiedHostResolver
+        resolver = new SecurityUtil.QualifiedHostResolver(1);
+    testCacheableResolve(resolver);
+  }
+
+  /**
+   * Test caching behavior in StandardHostResolver when caching is enabled.
+   */
+  @Test
+  public void testStandardHostResolverCachingEnabled() throws Exception {
+    // Create a StandardHostResolver with expiry interval > 0
+    SecurityUtil.StandardHostResolver
+        resolver = new SecurityUtil.StandardHostResolver(1);
+    testCacheableResolve(resolver);
+  }
+
+  private void  testCacheableResolve(SecurityUtil.CacheableHostResolver resolver)
+      throws Exception {
+    // Call getByName twice with the same host
+    InetAddress addr1 = resolver.getByName("127.0.0.1");
+    InetAddress addr2 = resolver.getByName("127.0.0.1");
+    assertNotNull(addr1);
+    assertNotNull(addr2);
+    // Both addresses should be the same instance (cached value)
+    assertSame(addr1, addr2);
+
+    // wait for timeout of cache item
+    Thread.sleep(1500);
+    InetAddress addr3 = resolver.getByName("127.0.0.1");
+    assertNotNull(addr3);
+    assertNotSame(addr1, addr3);
+  }
+
+  /**
+   * Test resolving non-existent hostname, show throw UnknownHostException.
+   */
+  @Test
+  public void testInvalidHostThrowsException() {
+    SecurityUtil.StandardHostResolver
+        standardHostResolver = new SecurityUtil.StandardHostResolver(10);
+    String invalidHost = "invalid_host_name_which_does_not_exist";
+    assertThrows(UnknownHostException.class, () -> {
+      standardHostResolver.getByName(invalidHost);
+    }, "Resolving an invalid host should throw UnknownHostException");
+
+    SecurityUtil.QualifiedHostResolver
+        qualifiedHostResolver = new SecurityUtil.QualifiedHostResolver(10);
+    assertThrows(UnknownHostException.class, () -> {
+      qualifiedHostResolver.getByName(invalidHost);
+    }, "Resolving an invalid host should throw UnknownHostException");
   }
 }

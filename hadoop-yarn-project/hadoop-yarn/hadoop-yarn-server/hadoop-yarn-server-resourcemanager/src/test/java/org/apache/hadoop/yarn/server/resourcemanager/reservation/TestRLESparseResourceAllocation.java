@@ -17,9 +17,11 @@
  *******************************************************************************/
 package org.apache.hadoop.yarn.server.resourcemanager.reservation;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -34,16 +36,19 @@ import org.apache.hadoop.yarn.server.resourcemanager.reservation.RLESparseResour
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.exceptions.PlanningException;
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
-import org.junit.Assert;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Testing the class {@link RLESparseResourceAllocation}.
+ */
+@SuppressWarnings("checkstyle:nowhitespaceafter")
 public class TestRLESparseResourceAllocation {
 
-  private static final Logger LOG = LoggerFactory
-      .getLogger(TestRLESparseResourceAllocation.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestRLESparseResourceAllocation.class);
 
   @Test
   public void testMergeAdd() throws PlanningException {
@@ -196,7 +201,8 @@ public class TestRLESparseResourceAllocation {
       // Expected!
     }
 
-    // Testing that the subtractTestNonNegative detects problems even if only one
+    // Testing that the subtractTestNonNegative detects problems even if only
+    // one
     // of the resource dimensions is "<0"
     a.put(10L, Resource.newInstance(10, 5));
     b.put(11L, Resource.newInstance(5, 6));
@@ -246,7 +252,7 @@ public class TestRLESparseResourceAllocation {
   }
 
   @Test
-  @Ignore
+  @Disabled
   public void testMergeSpeed() throws PlanningException {
 
     for (int j = 0; j < 100; j++) {
@@ -286,9 +292,8 @@ public class TestRLESparseResourceAllocation {
   public void testRangeOverlapping() {
     ResourceCalculator resCalc = new DefaultResourceCalculator();
 
-    RLESparseResourceAllocation r =
-        new RLESparseResourceAllocation(resCalc);
-    int[] alloc = {10, 10, 10, 10, 10, 10};
+    RLESparseResourceAllocation r = new RLESparseResourceAllocation(resCalc);
+    int[] alloc = { 10, 10, 10, 10, 10, 10 };
     int start = 100;
     Set<Entry<ReservationInterval, Resource>> inputs =
         generateAllocation(start, alloc, false).entrySet();
@@ -299,9 +304,9 @@ public class TestRLESparseResourceAllocation {
     long d = r.getLatestNonNullTime();
 
     // tries to trigger "out-of-range" bug
-    r =  r.getRangeOverlapping(s, d);
-    r = r.getRangeOverlapping(s-1, d-1);
-    r = r.getRangeOverlapping(s+1, d+1);
+    r = r.getRangeOverlapping(s, d);
+    r = r.getRangeOverlapping(s - 1, d - 1);
+    r = r.getRangeOverlapping(s + 1, d + 1);
   }
 
   @Test
@@ -318,26 +323,26 @@ public class TestRLESparseResourceAllocation {
       rleSparseVector.addInterval(ip.getKey(), ip.getValue());
     }
     LOG.info(rleSparseVector.toString());
-    Assert.assertFalse(rleSparseVector.isEmpty());
-    Assert.assertEquals(Resource.newInstance(0, 0),
+    assertFalse(rleSparseVector.isEmpty());
+    assertEquals(Resource.newInstance(0, 0),
         rleSparseVector.getCapacityAtTime(99));
-    Assert.assertEquals(Resource.newInstance(0, 0),
+    assertEquals(Resource.newInstance(0, 0),
         rleSparseVector.getCapacityAtTime(start + alloc.length + 1));
     for (int i = 0; i < alloc.length; i++) {
-      Assert.assertEquals(Resource.newInstance(1024 * (alloc[i]), (alloc[i])),
+      assertEquals(Resource.newInstance(1024 * (alloc[i]), (alloc[i])),
           rleSparseVector.getCapacityAtTime(start + i));
     }
-    Assert.assertEquals(Resource.newInstance(0, 0),
+    assertEquals(Resource.newInstance(0, 0),
         rleSparseVector.getCapacityAtTime(start + alloc.length + 2));
     for (Entry<ReservationInterval, Resource> ip : inputs) {
       rleSparseVector.removeInterval(ip.getKey(), ip.getValue());
     }
     LOG.info(rleSparseVector.toString());
     for (int i = 0; i < alloc.length; i++) {
-      Assert.assertEquals(Resource.newInstance(0, 0),
+      assertEquals(Resource.newInstance(0, 0),
           rleSparseVector.getCapacityAtTime(start + i));
     }
-    Assert.assertTrue(rleSparseVector.isEmpty());
+    assertTrue(rleSparseVector.isEmpty());
   }
 
   @Test
@@ -370,25 +375,29 @@ public class TestRLESparseResourceAllocation {
     // Current bug prevents this to pass. The RLESparseResourceAllocation
     // does not handle removal of "partial"
     // allocations correctly.
-    Assert.assertEquals(102400, rleSparseVector.getCapacityAtTime(10)
-        .getMemorySize());
-    Assert.assertEquals(0, rleSparseVector.getCapacityAtTime(13).getMemorySize());
-    Assert.assertEquals(0, rleSparseVector.getCapacityAtTime(19).getMemorySize());
-    Assert.assertEquals(102400, rleSparseVector.getCapacityAtTime(21)
-        .getMemorySize());
-    Assert.assertEquals(2 * 102400, rleSparseVector.getCapacityAtTime(26)
-        .getMemorySize());
+    assertEquals(102400,
+        rleSparseVector.getCapacityAtTime(10).getMemorySize());
+    assertEquals(0,
+        rleSparseVector.getCapacityAtTime(13).getMemorySize());
+    assertEquals(0,
+        rleSparseVector.getCapacityAtTime(19).getMemorySize());
+    assertEquals(102400,
+        rleSparseVector.getCapacityAtTime(21).getMemorySize());
+    assertEquals(2 * 102400,
+        rleSparseVector.getCapacityAtTime(26).getMemorySize());
 
     ReservationInterval riRemove2 = new ReservationInterval(9, 13);
     rleSparseVector.removeInterval(riRemove2, rr);
     LOG.info(rleSparseVector.toString());
 
-    Assert.assertEquals(0, rleSparseVector.getCapacityAtTime(11).getMemorySize());
-    Assert.assertEquals(-102400, rleSparseVector.getCapacityAtTime(9)
-        .getMemorySize());
-    Assert.assertEquals(0, rleSparseVector.getCapacityAtTime(13).getMemorySize());
-    Assert.assertEquals(102400, rleSparseVector.getCapacityAtTime(20)
-        .getMemorySize());
+    assertEquals(0,
+        rleSparseVector.getCapacityAtTime(11).getMemorySize());
+    assertEquals(-102400,
+        rleSparseVector.getCapacityAtTime(9).getMemorySize());
+    assertEquals(0,
+        rleSparseVector.getCapacityAtTime(13).getMemorySize());
+    assertEquals(102400,
+        rleSparseVector.getCapacityAtTime(20).getMemorySize());
 
   }
 
@@ -406,27 +415,27 @@ public class TestRLESparseResourceAllocation {
       rleSparseVector.addInterval(ip.getKey(), ip.getValue());
     }
     LOG.info(rleSparseVector.toString());
-    Assert.assertFalse(rleSparseVector.isEmpty());
-    Assert.assertEquals(Resource.newInstance(0, 0),
+    assertFalse(rleSparseVector.isEmpty());
+    assertEquals(Resource.newInstance(0, 0),
         rleSparseVector.getCapacityAtTime(99));
-    Assert.assertEquals(Resource.newInstance(0, 0),
+    assertEquals(Resource.newInstance(0, 0),
         rleSparseVector.getCapacityAtTime(start + alloc.length + 1));
     for (int i = 0; i < alloc.length; i++) {
-      Assert.assertEquals(
+      assertEquals(
           Resource.newInstance(1024 * (alloc[i] + i), (alloc[i] + i)),
           rleSparseVector.getCapacityAtTime(start + i));
     }
-    Assert.assertEquals(Resource.newInstance(0, 0),
+    assertEquals(Resource.newInstance(0, 0),
         rleSparseVector.getCapacityAtTime(start + alloc.length + 2));
     for (Entry<ReservationInterval, Resource> ip : inputs) {
       rleSparseVector.removeInterval(ip.getKey(), ip.getValue());
     }
     LOG.info(rleSparseVector.toString());
     for (int i = 0; i < alloc.length; i++) {
-      Assert.assertEquals(Resource.newInstance(0, 0),
+      assertEquals(Resource.newInstance(0, 0),
           rleSparseVector.getCapacityAtTime(start + i));
     }
-    Assert.assertTrue(rleSparseVector.isEmpty());
+    assertTrue(rleSparseVector.isEmpty());
   }
 
   @Test
@@ -443,27 +452,27 @@ public class TestRLESparseResourceAllocation {
       rleSparseVector.addInterval(ip.getKey(), ip.getValue());
     }
     LOG.info(rleSparseVector.toString());
-    Assert.assertFalse(rleSparseVector.isEmpty());
-    Assert.assertEquals(Resource.newInstance(0, 0),
+    assertFalse(rleSparseVector.isEmpty());
+    assertEquals(Resource.newInstance(0, 0),
         rleSparseVector.getCapacityAtTime(99));
-    Assert.assertEquals(Resource.newInstance(0, 0),
+    assertEquals(Resource.newInstance(0, 0),
         rleSparseVector.getCapacityAtTime(start + alloc.length + 1));
     for (int i = 0; i < alloc.length; i++) {
-      Assert.assertEquals(
+      assertEquals(
           Resource.newInstance(1024 * (alloc[i] + i), (alloc[i] + i)),
           rleSparseVector.getCapacityAtTime(start + i));
     }
-    Assert.assertEquals(Resource.newInstance(0, 0),
+    assertEquals(Resource.newInstance(0, 0),
         rleSparseVector.getCapacityAtTime(start + alloc.length + 2));
     for (Entry<ReservationInterval, Resource> ip : inputs) {
       rleSparseVector.removeInterval(ip.getKey(), ip.getValue());
     }
     LOG.info(rleSparseVector.toString());
     for (int i = 0; i < alloc.length; i++) {
-      Assert.assertEquals(Resource.newInstance(0, 0),
+      assertEquals(Resource.newInstance(0, 0),
           rleSparseVector.getCapacityAtTime(start + i));
     }
-    Assert.assertTrue(rleSparseVector.isEmpty());
+    assertTrue(rleSparseVector.isEmpty());
   }
 
   @Test
@@ -474,9 +483,9 @@ public class TestRLESparseResourceAllocation {
     rleSparseVector.addInterval(new ReservationInterval(0, Long.MAX_VALUE),
         Resource.newInstance(0, 0));
     LOG.info(rleSparseVector.toString());
-    Assert.assertEquals(Resource.newInstance(0, 0),
+    assertEquals(Resource.newInstance(0, 0),
         rleSparseVector.getCapacityAtTime(new Random().nextLong()));
-    Assert.assertTrue(rleSparseVector.isEmpty());
+    assertTrue(rleSparseVector.isEmpty());
   }
 
   @Test
@@ -488,7 +497,7 @@ public class TestRLESparseResourceAllocation {
 
     // Check empty
     mapAllocations = rleSparseVector.toIntervalMap();
-    Assert.assertTrue(mapAllocations.isEmpty());
+    assertTrue(mapAllocations.isEmpty());
 
     // Check full
     int[] alloc = { 0, 5, 10, 10, 5, 0, 5, 0 };
@@ -499,32 +508,74 @@ public class TestRLESparseResourceAllocation {
       rleSparseVector.addInterval(ip.getKey(), ip.getValue());
     }
     mapAllocations = rleSparseVector.toIntervalMap();
-    Assert.assertTrue(mapAllocations.size() == 5);
-    for (Entry<ReservationInterval, Resource> entry : mapAllocations.entrySet()) {
+    assertTrue(mapAllocations.size() == 5);
+    for (Entry<ReservationInterval, Resource> entry : mapAllocations
+        .entrySet()) {
       ReservationInterval interval = entry.getKey();
       Resource resource = entry.getValue();
       if (interval.getStartTime() == 101L) {
-        Assert.assertTrue(interval.getEndTime() == 102L);
-        Assert.assertEquals(resource, Resource.newInstance(5 * 1024, 5));
+        assertTrue(interval.getEndTime() == 102L);
+        assertEquals(resource, Resource.newInstance(5 * 1024, 5));
       } else if (interval.getStartTime() == 102L) {
-        Assert.assertTrue(interval.getEndTime() == 104L);
-        Assert.assertEquals(resource, Resource.newInstance(10 * 1024, 10));
+        assertTrue(interval.getEndTime() == 104L);
+        assertEquals(resource, Resource.newInstance(10 * 1024, 10));
       } else if (interval.getStartTime() == 104L) {
-        Assert.assertTrue(interval.getEndTime() == 105L);
-        Assert.assertEquals(resource, Resource.newInstance(5 * 1024, 5));
+        assertTrue(interval.getEndTime() == 105L);
+        assertEquals(resource, Resource.newInstance(5 * 1024, 5));
       } else if (interval.getStartTime() == 105L) {
-        Assert.assertTrue(interval.getEndTime() == 106L);
-        Assert.assertEquals(resource, Resource.newInstance(0 * 1024, 0));
+        assertTrue(interval.getEndTime() == 106L);
+        assertEquals(resource, Resource.newInstance(0 * 1024, 0));
       } else if (interval.getStartTime() == 106L) {
-        Assert.assertTrue(interval.getEndTime() == 107L);
-        Assert.assertEquals(resource, Resource.newInstance(5 * 1024, 5));
+        assertTrue(interval.getEndTime() == 107L);
+        assertEquals(resource, Resource.newInstance(5 * 1024, 5));
       } else {
-        Assert.fail();
+        fail();
       }
     }
   }
 
-  private void setupArrays(TreeMap<Long, Resource> a, TreeMap<Long, Resource> b) {
+  @Test
+  public void testMaxPeriodicCapacity() {
+    long[] timeSteps = { 0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L };
+    int[] alloc = { 2, 5, 7, 10, 3, 4, 6, 8 };
+    RLESparseResourceAllocation rleSparseVector = ReservationSystemTestUtil
+        .generateRLESparseResourceAllocation(alloc, timeSteps);
+    LOG.info(rleSparseVector.toString());
+    assertEquals(rleSparseVector.getMaximumPeriodicCapacity(0, 1),
+        Resource.newInstance(10, 10));
+    assertEquals(rleSparseVector.getMaximumPeriodicCapacity(0, 2),
+        Resource.newInstance(7, 7));
+    assertEquals(rleSparseVector.getMaximumPeriodicCapacity(0, 3),
+        Resource.newInstance(10, 10));
+    assertEquals(rleSparseVector.getMaximumPeriodicCapacity(0, 4),
+        Resource.newInstance(3, 3));
+    assertEquals(rleSparseVector.getMaximumPeriodicCapacity(0, 5),
+        Resource.newInstance(4, 4));
+    assertEquals(rleSparseVector.getMaximumPeriodicCapacity(0, 5),
+        Resource.newInstance(4, 4));
+    assertEquals(rleSparseVector.getMaximumPeriodicCapacity(7, 5),
+        Resource.newInstance(8, 8));
+    assertEquals(rleSparseVector.getMaximumPeriodicCapacity(10, 3),
+        Resource.newInstance(0, 0));
+  }
+
+  @Test
+  public void testGetMinimumCapacityInInterval() {
+    long[] timeSteps = { 0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L };
+    int[] alloc = { 2, 5, 7, 10, 3, 4, 0, 8 };
+    RLESparseResourceAllocation rleSparseVector = ReservationSystemTestUtil
+        .generateRLESparseResourceAllocation(alloc, timeSteps);
+    LOG.info(rleSparseVector.toString());
+    assertEquals(rleSparseVector.getMinimumCapacityInInterval(
+        new ReservationInterval(1L, 3L)), Resource.newInstance(5, 5));
+    assertEquals(rleSparseVector.getMinimumCapacityInInterval(
+        new ReservationInterval(2L, 5L)), Resource.newInstance(3, 3));
+    assertEquals(rleSparseVector.getMinimumCapacityInInterval(
+        new ReservationInterval(1L, 7L)), Resource.newInstance(0, 0));
+  }
+
+  private void setupArrays(TreeMap<Long, Resource> a,
+      TreeMap<Long, Resource> b) {
     a.put(10L, Resource.newInstance(5, 5));
     a.put(20L, Resource.newInstance(10, 10));
     a.put(30L, Resource.newInstance(15, 15));
@@ -566,8 +617,8 @@ public class TestRLESparseResourceAllocation {
         numContainers = alloc[i];
       }
       req.put(new ReservationInterval(startTime + i, startTime + i + 1),
-          ReservationSystemUtil.toResource(ReservationRequest.newInstance(
-              Resource.newInstance(1024, 1), (numContainers))));
+          ReservationSystemUtil.toResource(ReservationRequest
+              .newInstance(Resource.newInstance(1024, 1), (numContainers))));
     }
     return req;
   }

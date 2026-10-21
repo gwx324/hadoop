@@ -1,9 +1,4 @@
 /*
- * $HeadURL$
- * $Revision$
- * $Date$
- *
- * ====================================================================
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,12 +15,6 @@
  * KIND, either express or implied.  See the License for the
  * specific language governing permissions and limitations
  * under the License.
- * ====================================================================
- *
- * This software consists of voluntary contributions made by many
- * individuals on behalf of the Apache Software Foundation.  For more
- * information on the Apache Software Foundation, please see
- * <http://www.apache.org/>.
  *
  */
 
@@ -42,9 +31,12 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
-import java.util.StringTokenizer;
 import java.util.TreeSet;
 
+import javax.naming.NamingException;
+import javax.naming.directory.Attribute;
+import javax.naming.ldap.LdapName;
+import javax.naming.ldap.Rdn;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
@@ -53,6 +45,8 @@ import javax.net.ssl.SSLSocket;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  ************************************************************************
@@ -67,15 +61,15 @@ import org.apache.hadoop.util.StringUtils;
  * or X509Certificate, or ultimately (they all end up calling this one),
  * String.  (It's easier to supply JUnit with Strings instead of mock
  * SSLSession objects!)
- * </p><p>Our check() methods throw exceptions if the name is
+ * <p>Our check() methods throw exceptions if the name is
  * invalid, whereas javax.net.ssl.HostnameVerifier just returns true/false.
- * <p/>
+ * <p>
  * We provide the HostnameVerifier.DEFAULT, HostnameVerifier.STRICT, and
  * HostnameVerifier.ALLOW_ALL implementations.  We also provide the more
  * specialized HostnameVerifier.DEFAULT_AND_LOCALHOST, as well as
  * HostnameVerifier.STRICT_IE6.  But feel free to define your own
  * implementations!
- * <p/>
+ * <p>
  * Inspired by Sebastian Hauer's original StrictSSLProtocolSocketFactory in the
  * HttpClient "contrib" repository.
  */
@@ -118,10 +112,10 @@ public interface SSLHostnameVerifier extends javax.net.ssl.HostnameVerifier {
 
     /**
      * The DEFAULT HostnameVerifier works the same way as Curl and Firefox.
-     * <p/>
+     * <p>
      * The hostname must match either the first CN, or any of the subject-alts.
      * A wildcard can occur in the CN, and in any of the subject-alts.
-     * <p/>
+     * <p>
      * The only difference between DEFAULT and STRICT is that a wildcard (such
      * as "*.foo.com") with DEFAULT matches all subdomains, including
      * "a.b.foo.com".
@@ -167,13 +161,13 @@ public interface SSLHostnameVerifier extends javax.net.ssl.HostnameVerifier {
      * Java 1.4, Sun Java 5, Sun Java 6.  It's also pretty close to IE6.
      * This implementation appears to be compliant with RFC 2818 for dealing
      * with wildcards.
-     * <p/>
+     * <p>
      * The hostname must match either the first CN, or any of the subject-alts.
      * A wildcard can occur in the CN, and in any of the subject-alts.  The
      * one divergence from IE6 is how we only check the first CN.  IE6 allows
      * a match against any of the CNs present.  We decided to follow in
      * Sun Java 1.4's footsteps and only check the first CN.
-     * <p/>
+     * <p>
      * A wildcard such as "*.foo.com" matches only subdomains in the same
      * level, for example "a.foo.com".  It does not match deeper subdomains
      * such as "a.b.foo.com".
@@ -229,10 +223,16 @@ public interface SSLHostnameVerifier extends javax.net.ssl.HostnameVerifier {
     abstract class AbstractVerifier implements SSLHostnameVerifier {
 
         /**
+         * Writes as SSLFactory logs as it is the only consumer of this verifier
+         * class.
+         */
+        static final Logger LOG = LoggerFactory.getLogger(SSLFactory.class);
+
+        /**
          * This contains a list of 2nd-level domains that aren't allowed to
          * have wildcards when combined with country-codes.
          * For example: [*.co.uk].
-         * <p/>
+         * <p>
          * The [*.co.uk] problem is an interesting one.  Should we just hope
          * that CA's would never foolishly allow such a certificate to happen?
          * Looks like we're the only implementation guarding against this.
@@ -354,15 +354,26 @@ public interface SSLHostnameVerifier extends javax.net.ssl.HostnameVerifier {
             throws SSLException {
             String[] cns = Certificates.getCNs(cert);
             String[] subjectAlts = Certificates.getDNSSubjectAlts(cert);
-            check(host, cns, subjectAlts);
+            try {
+                check(host, cns, subjectAlts);
+            } catch (SSLException e) {
+                LOG.error("Host check error {}", e);
+                throw e;
+            }
         }
 
         public void check(final String[] hosts, final String[] cns,
                           final String[] subjectAlts, final boolean ie6,
                           final boolean strictWithSubDomains)
             throws SSLException {
+            if (LOG.isTraceEnabled()) {
+                LOG.trace("Hosts:{}, CNs:{} subjectAlts:{}, ie6:{}, " +
+                    "strictWithSubDomains{}", Arrays.toString(hosts),
+                    Arrays.toString(cns), Arrays.toString(subjectAlts), ie6,
+                    strictWithSubDomains);
+            }
             // Build up lists of allowed hosts For logging/debugging purposes.
-            StringBuffer buf = new StringBuffer(32);
+            StringBuilder buf = new StringBuilder(32);
             buf.append('<');
             for (int i = 0; i < hosts.length; i++) {
                 String h = hosts[i];
@@ -400,18 +411,18 @@ public interface SSLHostnameVerifier extends javax.net.ssl.HostnameVerifier {
                 throw new SSLException(msg);
             }
 
-            // StringBuffer for building the error message.
-            buf = new StringBuffer();
+            // StringBuilder for building the error message.
+            buf = new StringBuilder();
 
             boolean match = false;
             out:
             for (Iterator<String> it = names.iterator(); it.hasNext();) {
                 // Don't trim the CN, though!
                 final String cn = StringUtils.toLowerCase(it.next());
-                // Store CN in StringBuffer in case we need to report an error.
-                buf.append(" <");
-                buf.append(cn);
-                buf.append('>');
+                // Store CN in StringBuilder in case we need to report an error.
+            buf.append(" <")
+            .append(cn)
+            .append('>');
                 if (it.hasNext()) {
                     buf.append(" OR");
                 }
@@ -510,38 +521,38 @@ public interface SSLHostnameVerifier extends javax.net.ssl.HostnameVerifier {
     }
 
     static class Certificates {
+      /**
+       * Extracts the Common Name (CN) values from the subject of an
+       * X509Certificate, in most-significant-first order.  Returns null if
+       * there aren't any.
+
+       *
+       * @param cert X509Certificate
+       * @return Array of CN values stored in the subject, null if none.
+       */
       public static String[] getCNs(X509Certificate cert) {
-        final List<String> cnList = new LinkedList<String>();
-        /*
-          Sebastian Hauer's original StrictSSLProtocolSocketFactory used
-          getName() and had the following comment:
-
-             Parses a X.500 distinguished name for the value of the
-             "Common Name" field.  This is done a bit sloppy right
-             now and should probably be done a bit more according to
-             <code>RFC 2253</code>.
-
-           I've noticed that toString() seems to do a better job than
-           getName() on these X500Principal objects, so I'm hoping that
-           addresses Sebastian's concern.
-
-           For example, getName() gives me this:
-           1.2.840.113549.1.9.1=#16166a756c6975736461766965734063756362632e636f6d
-
-           whereas toString() gives me this:
-           EMAILADDRESS=juliusdavies@cucbc.com
-
-           Looks like toString() even works with non-ascii domain names!
-           I tested it with "&#x82b1;&#x5b50;.co.jp" and it worked fine.
-          */
-        String subjectPrincipal = cert.getSubjectX500Principal().toString();
-        StringTokenizer st = new StringTokenizer(subjectPrincipal, ",");
-        while (st.hasMoreTokens()) {
-            String tok = st.nextToken();
-            int x = tok.indexOf("CN=");
-            if (x >= 0) {
-                cnList.add(tok.substring(x + 3));
+        final List<String> cnList = new LinkedList<>();
+        try {
+          LdapName dn =
+              new LdapName(cert.getSubjectX500Principal().getName());
+          // getRdns() returns least-significant-first; walk it in reverse so
+          // the first CN in the subject stays first in the result.
+          final List<Rdn> rdns = dn.getRdns();
+          for (int i = rdns.size() - 1; i >= 0; i--) {
+            // "cn" lookup is case-insensitive and covers multi-valued RDNs.
+            Attribute cn = rdns.get(i).toAttributes().get("cn");
+            if (cn != null) {
+              for (int k = 0; k < cn.size(); k++) {
+                Object value = cn.get(k);
+                if (value != null) {
+                  cnList.add(value.toString());
+                }
+              }
             }
+          }
+        } catch (NamingException e) {
+          AbstractVerifier.LOG.warn("Unable to read subject from certificate {}",
+              cert.getSubjectX500Principal(), e);
         }
         if (!cnList.isEmpty()) {
             String[] cns = new String[cnList.size()];
@@ -556,11 +567,11 @@ public interface SSLHostnameVerifier extends javax.net.ssl.HostnameVerifier {
       /**
        * Extracts the array of SubjectAlt DNS names from an X509Certificate.
        * Returns null if there aren't any.
-       * <p/>
+       * <p>
        * Note:  Java doesn't appear able to extract international characters
        * from the SubjectAlts.  It can only extract international characters
        * from the CN field.
-       * <p/>
+       * <p>
        * (Or maybe the version of OpenSSL I'm using to test isn't storing the
        * international characters correctly in the SubjectAlts?).
        *

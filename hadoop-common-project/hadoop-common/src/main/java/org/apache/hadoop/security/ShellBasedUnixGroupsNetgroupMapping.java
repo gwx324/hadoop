@@ -23,12 +23,12 @@ import java.util.List;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.Shell.ExitCodeException;
 
 import org.apache.hadoop.security.NetgroupCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A simple shell-based implementation of {@link GroupMappingServiceProvider} 
@@ -40,8 +40,8 @@ import org.apache.hadoop.security.NetgroupCache;
 public class ShellBasedUnixGroupsNetgroupMapping
   extends ShellBasedUnixGroupsMapping {
   
-  private static final Log LOG =
-    LogFactory.getLog(ShellBasedUnixGroupsNetgroupMapping.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ShellBasedUnixGroupsNetgroupMapping.class);
 
   /**
    * Get unix groups (parent) and netgroups for given user
@@ -92,6 +92,7 @@ public class ShellBasedUnixGroupsNetgroupMapping
    *
    * @param netgroup return users for this netgroup
    * @return list of users for a given netgroup
+   * @throws IOException raised on errors performing I/O.
    */
   protected List<String> getUsersForNetgroup(String netgroup) 
     throws IOException {
@@ -128,12 +129,13 @@ public class ShellBasedUnixGroupsNetgroupMapping
    *
    * @param netgroup get users for this netgroup
    * @return string of users for a given netgroup in getent netgroups format
+   * @throws IOException raised on errors performing I/O.
    */
   protected String execShellGetUserForNetgroup(final String netgroup)
       throws IOException {
     String result = "";
     try {
-      // shell command does not expect '@' at the begining of the group name
+      // shell command does not expect '@' at the beginning of the group name
       result = Shell.execCommand(
         Shell.getUsersForNetgroupCommand(netgroup.substring(1)));
     } catch (ExitCodeException e) {

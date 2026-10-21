@@ -18,24 +18,23 @@
 
 package org.apache.hadoop.yarn.webapp.view;
 
-import com.google.inject.Injector;
-
 import java.io.PrintWriter;
+
+import com.google.inject.Injector;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.yarn.webapp.WebAppException;
 import org.apache.hadoop.yarn.webapp.test.WebAppTests;
-import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
-import org.apache.hadoop.yarn.webapp.view.HtmlPage;
 
-import org.junit.Test;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.verify;
 
 public class TestHtmlBlock {
   public static class TestBlock extends HtmlBlock {
     @Override
     public void render(Block html) {
       html.
-        p("#testid")._("test note")._();
+        p("#testid").__("test note").__();
     }
   }
 
@@ -43,20 +42,21 @@ public class TestHtmlBlock {
     @Override
     public void render(Block html) {
       html.
-        p()._("should throw");
+        p().__("should throw");
     }
   }
 
   public static class ShortPage extends HtmlPage {
     @Override
-    public void render(Page.HTML<_> html) {
+    public void render(Page.HTML<__> html) {
       html.
         title("short test").
-        _(ShortBlock.class);
+          __(ShortBlock.class);
     }
   }
 
-  @Test public void testUsual() {
+  @Test
+  void testUsual() {
     Injector injector = WebAppTests.testBlock(TestBlock.class);
     PrintWriter out = injector.getInstance(PrintWriter.class);
 
@@ -64,11 +64,17 @@ public class TestHtmlBlock {
     verify(out).print("test note");
   }
 
-  @Test(expected=WebAppException.class) public void testShortBlock() {
-    WebAppTests.testBlock(ShortBlock.class);
+  @Test
+  void testShortBlock() {
+    assertThrows(WebAppException.class, () -> {
+      WebAppTests.testBlock(ShortBlock.class);
+    });
   }
 
-  @Test(expected=WebAppException.class) public void testShortPage() {
-    WebAppTests.testPage(ShortPage.class);
+  @Test
+  void testShortPage() {
+    assertThrows(WebAppException.class, () -> {
+      WebAppTests.testPage(ShortPage.class);
+    });
   }
 }

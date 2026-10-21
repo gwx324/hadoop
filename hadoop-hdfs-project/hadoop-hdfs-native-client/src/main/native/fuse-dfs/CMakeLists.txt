@@ -16,6 +16,8 @@
 # limitations under the License.
 #
 
+cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
+
 set(CMAKE_SKIP_RPATH TRUE)
 
 # Flatten a list into a string.

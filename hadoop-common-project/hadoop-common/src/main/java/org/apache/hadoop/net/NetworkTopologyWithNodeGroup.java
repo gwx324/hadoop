@@ -36,7 +36,7 @@ public class NetworkTopologyWithNodeGroup extends NetworkTopology {
   public final static String DEFAULT_NODEGROUP = "/default-nodegroup";
 
   public NetworkTopologyWithNodeGroup() {
-    clusterMap = new InnerNodeWithNodeGroup(InnerNode.ROOT);
+    clusterMap = new InnerNodeWithNodeGroup(NodeBase.ROOT);
   }
 
   @Override
@@ -58,7 +58,7 @@ public class NetworkTopologyWithNodeGroup extends NetworkTopology {
   public String getRack(String loc) {
     netlock.readLock().lock();
     try {
-      loc = InnerNode.normalize(loc);
+      loc = NodeBase.normalize(loc);
       Node locNode = getNode(loc);
       if (locNode instanceof InnerNodeWithNodeGroup) {
         InnerNodeWithNodeGroup node = (InnerNodeWithNodeGroup) locNode;
@@ -90,7 +90,7 @@ public class NetworkTopologyWithNodeGroup extends NetworkTopology {
   public String getNodeGroup(String loc) {
     netlock.readLock().lock();
     try {
-      loc = InnerNode.normalize(loc);
+      loc = NodeBase.normalize(loc);
       Node locNode = getNode(loc);
       if (locNode instanceof InnerNodeWithNodeGroup) {
         InnerNodeWithNodeGroup node = (InnerNodeWithNodeGroup) locNode;
@@ -168,7 +168,7 @@ public class NetworkTopologyWithNodeGroup extends NetworkTopology {
   }
 
   /** Add a leaf node
-   * Update node counter & rack counter if necessary
+   * Update node counter &amp; rack counter if necessary
    * @param node node to be added; can be null
    * @exception IllegalArgumentException if add a node to a leave 
    *                                     or node to be added is not a leaf
@@ -238,7 +238,7 @@ public class NetworkTopologyWithNodeGroup extends NetworkTopology {
       if (clusterMap.remove(node)) {
         Node nodeGroup = getNode(node.getNetworkLocation());
         if (nodeGroup == null) {
-          nodeGroup = new InnerNode(node.getNetworkLocation());
+          nodeGroup = factory.newInnerNode(node.getNetworkLocation());
         }
         InnerNode rack = (InnerNode)getNode(nodeGroup.getNetworkLocation());
         if (rack == null) {
@@ -272,7 +272,7 @@ public class NetworkTopologyWithNodeGroup extends NetworkTopology {
 
   /**
    * Sort nodes array by their distances to <i>reader</i>.
-   * <p/>
+   * <p>
    * This is the same as {@link NetworkTopology#sortByDistance(Node, Node[],
    * int)} except with a four-level network topology which contains the
    * additional network distance of a "node group" which is between local and
@@ -302,31 +302,22 @@ public class NetworkTopologyWithNodeGroup extends NetworkTopology {
   /** InnerNodeWithNodeGroup represents a switch/router of a data center, rack
    * or physical host. Different from a leaf node, it has non-null children.
    */
-  static class InnerNodeWithNodeGroup extends InnerNode {
-    public InnerNodeWithNodeGroup(String name, String location, 
-        InnerNode parent, int level) {
-      super(name, location, parent, level);
-    }
-
-    public InnerNodeWithNodeGroup(String name, String location) {
-      super(name, location);
-    }
-
+  static class InnerNodeWithNodeGroup extends InnerNodeImpl {
     public InnerNodeWithNodeGroup(String path) {
       super(path);
     }
 
     @Override
-    boolean isRack() {
+    public boolean isRack() {
       // it is node group
       if (getChildren().isEmpty()) {
         return false;
       }
 
-      Node firstChild = children.get(0);
+      Node firstChild = getChildren().get(0);
 
       if (firstChild instanceof InnerNode) {
-        Node firstGrandChild = (((InnerNode) firstChild).children).get(0);
+        Node firstGrandChild = (((InnerNode) firstChild).getChildren()).get(0);
         if (firstGrandChild instanceof InnerNode) {
           // it is datacenter
           return false;
@@ -343,31 +334,15 @@ public class NetworkTopologyWithNodeGroup extends NetworkTopology {
      * @return true if it has no child or its children are not InnerNodes
      */
     boolean isNodeGroup() {
-      if (children.isEmpty()) {
+      if (getChildren().isEmpty()) {
         return true;
       }
-      Node firstChild = children.get(0);
+      Node firstChild = getChildren().get(0);
       if (firstChild instanceof InnerNode) {
         // it is rack or datacenter
         return false;
       }
       return true;
-    }
-    
-    @Override
-    protected boolean isLeafParent() {
-      return isNodeGroup();
-    }
-
-    @Override
-    protected InnerNode createParentNode(String parentName) {
-      return new InnerNodeWithNodeGroup(parentName, getPath(this), this,
-          this.getLevel() + 1);
-    }
-
-    @Override
-    protected boolean areChildrenLeaves() {
-      return isNodeGroup();
     }
   }
 }

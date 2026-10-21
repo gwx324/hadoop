@@ -17,14 +17,14 @@
  */
 package org.apache.hadoop.ipc.metrics;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.metrics2.annotation.Metric;
 import org.apache.hadoop.metrics2.annotation.Metrics;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.lib.MetricsRegistry;
-import org.apache.hadoop.metrics2.lib.MutableRates;
+import org.apache.hadoop.metrics2.lib.MutableRatesWithAggregation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class is for maintaining RPC method related statistics
@@ -33,18 +33,32 @@ import org.apache.hadoop.metrics2.lib.MutableRates;
 @InterfaceAudience.Private
 @Metrics(about="Per method RPC metrics", context="rpcdetailed")
 public class RpcDetailedMetrics {
+  static final String DEFERRED_PREFIX = "Deferred";
+  static final String OVERALL_PROCESSING_PREFIX = "Overall";
 
-  @Metric MutableRates rates;
+  // per-method RPC processing time
+  @Metric MutableRatesWithAggregation rates;
+  @Metric MutableRatesWithAggregation deferredRpcRates;
+  /**
+   * per-method overall RPC processing time, from request arrival to when the
+   * response is sent back.
+   */
+  @Metric MutableRatesWithAggregation overallRpcProcessingRates;
 
-  static final Log LOG = LogFactory.getLog(RpcDetailedMetrics.class);
+  static final Logger LOG = LoggerFactory.getLogger(RpcDetailedMetrics.class);
   final MetricsRegistry registry;
   final String name;
+
+  // Mainly to facilitate testing in TestRPC.java
+  public MutableRatesWithAggregation getOverallRpcProcessingRates() {
+    return overallRpcProcessingRates;
+  }
 
   RpcDetailedMetrics(int port) {
     name = "RpcDetailedActivityForPort"+ port;
     registry = new MetricsRegistry("rpcdetailed")
         .tag("port", "RPC port", String.valueOf(port));
-    LOG.debug(registry.info());
+    LOG.debug(registry.info().toString());
   }
 
   public String name() { return name; }
@@ -60,21 +74,38 @@ public class RpcDetailedMetrics {
    */
   public void init(Class<?> protocol) {
     rates.init(protocol);
+    deferredRpcRates.init(protocol, DEFERRED_PREFIX);
+    overallRpcProcessingRates.init(protocol, OVERALL_PROCESSING_PREFIX);
   }
 
   /**
    * Add an RPC processing time sample
-   * @param name  of the RPC call
+   * @param rpcCallName of the RPC call
    * @param processingTime  the processing time
    */
   //@Override // some instrumentation interface
-  public void addProcessingTime(String name, int processingTime) {
-    rates.add(name, processingTime);
+  public void addProcessingTime(String rpcCallName, long processingTime) {
+    rates.add(rpcCallName, processingTime);
+  }
+
+  public void addDeferredProcessingTime(String name, long processingTime) {
+    deferredRpcRates.add(name, processingTime);
+  }
+
+  /**
+   * Add an overall RPC processing time sample.
+   * @param rpcCallName of the RPC call
+   * @param overallProcessingTime  the overall RPC processing time
+   */
+  public void addOverallProcessingTime(String rpcCallName, long overallProcessingTime) {
+    overallRpcProcessingRates.add(rpcCallName, overallProcessingTime);
   }
 
   /**
    * Shutdown the instrumentation for the process
    */
   //@Override // some instrumentation interface
-  public void shutdown() {}
+  public void shutdown() {
+    DefaultMetricsSystem.instance().unregisterSource(name);
+  }
 }

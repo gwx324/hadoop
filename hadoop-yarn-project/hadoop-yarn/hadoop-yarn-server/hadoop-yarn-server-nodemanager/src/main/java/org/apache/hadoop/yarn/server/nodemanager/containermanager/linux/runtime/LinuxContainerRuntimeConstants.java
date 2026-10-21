@@ -31,6 +31,16 @@ public final class LinuxContainerRuntimeConstants {
   private LinuxContainerRuntimeConstants() {
   }
 
+  /**
+   * Linux container runtime types for {@link DelegatingLinuxContainerRuntime}.
+   */
+  public enum RuntimeType {
+    DEFAULT,
+    DOCKER,
+    JAVASANDBOX,
+    RUNC;
+  }
+
   public static final Attribute<Map> LOCALIZED_RESOURCES = Attribute
       .attribute(Map.class, "localized_resources");
   public static final Attribute<List> CONTAINER_LAUNCH_PREFIX_COMMANDS =
@@ -49,6 +59,10 @@ public final class LinuxContainerRuntimeConstants {
       Attribute.attribute(Path.class, "nm_private_container_script_path");
   public static final Attribute<Path> NM_PRIVATE_TOKENS_PATH = Attribute
       .attribute(Path.class, "nm_private_tokens_path");
+  public static final Attribute<Path> NM_PRIVATE_KEYSTORE_PATH = Attribute
+      .attribute(Path.class, "nm_private_keystore_path");
+  public static final Attribute<Path> NM_PRIVATE_TRUSTSTORE_PATH = Attribute
+      .attribute(Path.class, "nm_private_truststore_path");
   public static final Attribute<Path> PID_FILE_PATH = Attribute.attribute(
       Path.class, "pid_file_path");
   public static final Attribute<List> LOCAL_DIRS = Attribute.attribute(
@@ -61,12 +75,18 @@ public final class LinuxContainerRuntimeConstants {
       List.class, "user_local_dirs");
   public static final Attribute<List> CONTAINER_LOCAL_DIRS = Attribute
       .attribute(List.class, "container_local_dirs");
+  public static final Attribute<List> USER_FILECACHE_DIRS = Attribute
+      .attribute(List.class, "user_filecache_dirs");
+  public static final Attribute<List> APPLICATION_LOCAL_DIRS = Attribute
+      .attribute(List.class, "application_local_dirs");
   public static final Attribute<List> CONTAINER_LOG_DIRS = Attribute.attribute(
       List.class, "container_log_dirs");
   public static final Attribute<String> RESOURCES_OPTIONS = Attribute.attribute(
       String.class, "resources_options");
   public static final Attribute<String> TC_COMMAND_FILE = Attribute.attribute(
       String.class, "tc_command_file");
+  public static final Attribute<List> CONTAINER_RUN_CMDS = Attribute.attribute(
+      List.class, "container_run_cmds");
   public static final Attribute<String> CGROUP_RELATIVE_PATH = Attribute
       .attribute(String.class, "cgroup_relative_path");
 
@@ -74,4 +94,6 @@ public final class LinuxContainerRuntimeConstants {
       String.class, "pid");
   public static final Attribute<ContainerExecutor.Signal> SIGNAL = Attribute
       .attribute(ContainerExecutor.Signal.class, "signal");
+  public static final Attribute<String> PROCFS = Attribute.attribute(
+      String.class, "procfs");
 }

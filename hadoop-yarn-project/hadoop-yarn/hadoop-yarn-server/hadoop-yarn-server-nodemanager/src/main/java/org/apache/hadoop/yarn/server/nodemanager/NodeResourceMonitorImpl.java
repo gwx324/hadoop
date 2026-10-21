@@ -18,13 +18,20 @@
 
 package org.apache.hadoop.yarn.server.nodemanager;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.service.AbstractService;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.api.records.ResourceUtilization;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.gpu.GpuNodeResourceUpdateHandler;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.gpu.GpuResourcePlugin;
+import org.apache.hadoop.yarn.server.nodemanager.metrics.NodeManagerMetrics;
 import org.apache.hadoop.yarn.util.ResourceCalculatorPlugin;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Implementation of the node resource monitor. It periodically tracks the
@@ -34,8 +41,8 @@ public class NodeResourceMonitorImpl extends AbstractService implements
     NodeResourceMonitor {
 
   /** Logging infrastructure. */
-  final static Log LOG = LogFactory
-      .getLog(NodeResourceMonitorImpl.class);
+  final static Logger LOG =
+       LoggerFactory.getLogger(NodeResourceMonitorImpl.class);
 
   /** Interval to monitor the node resource utilization. */
   private long monitoringInterval;
@@ -45,15 +52,24 @@ public class NodeResourceMonitorImpl extends AbstractService implements
   /** Resource calculator. */
   private ResourceCalculatorPlugin resourceCalculatorPlugin;
 
+  /** Gpu related plugin. */
+  private GpuResourcePlugin gpuResourcePlugin;
+  private GpuNodeResourceUpdateHandler gpuNodeResourceUpdateHandler;
+
   /** Current <em>resource utilization</em> of the node. */
-  private ResourceUtilization nodeUtilization;
+
+  private Map<String, Float> customResources = new HashMap<>();
+
+  private ResourceUtilization nodeUtilization =
+      ResourceUtilization.newInstance(0, 0, 0f, customResources);
+  private Context nmContext;
 
   /**
    * Initialize the node resource monitor.
    */
-  public NodeResourceMonitorImpl() {
+  public NodeResourceMonitorImpl(Context context) {
     super(NodeResourceMonitorImpl.class.getName());
-
+    this.nmContext = context;
     this.monitoringThread = new MonitoringThread();
   }
 
@@ -66,12 +82,20 @@ public class NodeResourceMonitorImpl extends AbstractService implements
         conf.getLong(YarnConfiguration.NM_RESOURCE_MON_INTERVAL_MS,
             YarnConfiguration.DEFAULT_NM_RESOURCE_MON_INTERVAL_MS);
 
-    Class<? extends ResourceCalculatorPlugin> clazz =
-        conf.getClass(YarnConfiguration.NM_MON_RESOURCE_CALCULATOR, null,
-            ResourceCalculatorPlugin.class);
-
     this.resourceCalculatorPlugin =
-        ResourceCalculatorPlugin.getResourceCalculatorPlugin(clazz, conf);
+        ResourceCalculatorPlugin.getNodeResourceMonitorPlugin(conf);
+
+    if (nmContext.getResourcePluginManager() != null) {
+      this.gpuResourcePlugin =
+          (GpuResourcePlugin)nmContext.getResourcePluginManager().
+          getNameToPlugins().get(ResourceInformation.GPU_URI);
+
+      if (gpuResourcePlugin != null) {
+        this.gpuNodeResourceUpdateHandler =
+            (GpuNodeResourceUpdateHandler)gpuResourcePlugin.
+                getNodeResourceHandlerInstance();
+      }
+    }
 
     LOG.info(" Using ResourceCalculatorPlugin : "
         + this.resourceCalculatorPlugin);
@@ -82,6 +106,11 @@ public class NodeResourceMonitorImpl extends AbstractService implements
    * @return <em>true</em> if we can monitor the node resource utilization.
    */
   private boolean isEnabled() {
+    if (this.monitoringInterval <= 0) {
+      LOG.info("Node Resource monitoring interval is <=0. "
+          + this.getClass().getName() + " is disabled.");
+      return false;
+    }
     if (resourceCalculatorPlugin == null) {
       LOG.info("ResourceCalculatorPlugin is unavailable on this system. "
           + this.getClass().getName() + " is disabled.");
@@ -142,11 +171,35 @@ public class NodeResourceMonitorImpl extends AbstractService implements
             resourceCalculatorPlugin.getVirtualMemorySize()
                 - resourceCalculatorPlugin.getAvailableVirtualMemorySize();
         float vcores = resourceCalculatorPlugin.getNumVCoresUsed();
+
+        float totalNodeGpuUtilization = 0F;
+        try {
+          if (gpuNodeResourceUpdateHandler != null) {
+            totalNodeGpuUtilization =
+                gpuNodeResourceUpdateHandler.getTotalNodeGpuUtilization();
+          }
+        } catch (Exception e) {
+          LOG.error("Get Node GPU Utilization error: " + e);
+        }
+
+        customResources.
+            put(ResourceInformation.GPU_URI, totalNodeGpuUtilization);
         nodeUtilization =
             ResourceUtilization.newInstance(
                 (int) (pmem >> 20), // B -> MB
                 (int) (vmem >> 20), // B -> MB
-                vcores); // Used Virtual Cores
+                vcores,     // Used Virtual Cores
+                customResources);  // Used GPUs
+
+        // Publish the node utilization metrics to node manager
+        // metrics system.
+        NodeManagerMetrics nmMetrics = nmContext.getNodeManagerMetrics();
+        if (nmMetrics != null) {
+          nmMetrics.setNodeUsedMemGB(nodeUtilization.getPhysicalMemory());
+          nmMetrics.setNodeUsedVMemGB(nodeUtilization.getVirtualMemory());
+          nmMetrics.setNodeCpuUtilization(nodeUtilization.getCPU());
+          nmMetrics.setNodeGpuUtilization(totalNodeGpuUtilization);
+        }
 
         try {
           Thread.sleep(monitoringInterval);

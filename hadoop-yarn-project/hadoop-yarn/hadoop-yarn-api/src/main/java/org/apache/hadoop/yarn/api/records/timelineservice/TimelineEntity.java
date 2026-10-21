@@ -29,10 +29,13 @@ import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlElement;
 import javax.xml.bind.annotation.XmlRootElement;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.yarn.util.TimelineServiceHelper;
-import org.codehaus.jackson.annotate.JsonSetter;
+
+import com.fasterxml.jackson.annotation.JsonSetter;
 
 /**
  * The basic timeline entity data structure for timeline service v2. Timeline
@@ -52,8 +55,11 @@ import org.codehaus.jackson.annotate.JsonSetter;
 @XmlAccessorType(XmlAccessType.NONE)
 @InterfaceAudience.Public
 @InterfaceStability.Unstable
+@JsonIgnoreProperties(ignoreUnknown = true,
+    value = {"infoJAXB", "configsJAXB", "isRelatedToEntitiesJAXB", "relatesToEntitiesJAXB"})
 public class TimelineEntity implements Comparable<TimelineEntity> {
   protected final static String SYSTEM_INFO_KEY_PREFIX = "SYSTEM_INFO_";
+  public final static long DEFAULT_ENTITY_PREFIX = 0L;
 
   /**
    * Identifier of timeline entity(entity id + entity type).
@@ -145,6 +151,7 @@ public class TimelineEntity implements Comparable<TimelineEntity> {
   private HashMap<String, Set<String>> isRelatedToEntities = new HashMap<>();
   private HashMap<String, Set<String>> relatesToEntities = new HashMap<>();
   private Long createdTime;
+  private long idPrefix;
 
   public TimelineEntity() {
     identifier = new Identifier();
@@ -189,6 +196,7 @@ public class TimelineEntity implements Comparable<TimelineEntity> {
   }
 
   @XmlElement(name = "id")
+  @JsonIgnore
   public String getId() {
     if (real == null) {
       return identifier.id;
@@ -224,6 +232,7 @@ public class TimelineEntity implements Comparable<TimelineEntity> {
   // required by JAXB
   @InterfaceAudience.Private
   @XmlElement(name = "info")
+  @JsonIgnore
   public HashMap<String, Object> getInfoJAXB() {
     if (real == null) {
       return info;
@@ -520,6 +529,7 @@ public class TimelineEntity implements Comparable<TimelineEntity> {
     }
   }
 
+  @JsonIgnore
   public boolean isValid() {
     return (getId() != null && getType() != null);
   }
@@ -547,20 +557,10 @@ public class TimelineEntity implements Comparable<TimelineEntity> {
   public int compareTo(TimelineEntity other) {
     int comparison = getType().compareTo(other.getType());
     if (comparison == 0) {
-      if (getCreatedTime() == null) {
-        if (other.getCreatedTime() == null) {
-          return getId().compareTo(other.getId());
-        } else {
-          return 1;
-        }
-      }
-      if (other.getCreatedTime() == null) {
+      if (getIdPrefix() > other.getIdPrefix()) {
+        // Descending order by entity id prefix
         return -1;
-      }
-      if (getCreatedTime() > other.getCreatedTime()) {
-        // Order by created time desc
-        return -1;
-      } else if (getCreatedTime() < other.getCreatedTime()) {
+      } else if (getIdPrefix() < other.getIdPrefix()) {
         return 1;
       } else {
         return getId().compareTo(other.getId());
@@ -579,6 +579,40 @@ public class TimelineEntity implements Comparable<TimelineEntity> {
       return identifier.toString();
     } else {
       return real.toString();
+    }
+  }
+
+  @XmlElement(name = "idprefix")
+  public long getIdPrefix() {
+    if (real == null) {
+      return idPrefix;
+    } else {
+      return real.getIdPrefix();
+    }
+  }
+
+  /**
+   * Sets idPrefix for an entity.
+   * <p>
+   * <b>Note</b>: Entities will be stored in the order of idPrefix specified.
+   * If users decide to set idPrefix for an entity, they <b>MUST</b> provide
+   * the same prefix for every update of this entity.
+   * </p>
+   * Example: <blockquote><pre>
+   * TimelineEntity entity = new TimelineEntity();
+   * entity.setIdPrefix(value);
+   * </pre></blockquote>
+   * Users can use {@link TimelineServiceHelper#invertLong(long)} to invert
+   * the prefix if necessary.
+   *
+   * @param entityIdPrefix prefix for an entity.
+   */
+  @JsonSetter("idprefix")
+  public void setIdPrefix(long entityIdPrefix) {
+    if (real == null) {
+      this.idPrefix = entityIdPrefix;
+    } else {
+      real.setIdPrefix(entityIdPrefix);
     }
   }
 }

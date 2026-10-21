@@ -20,8 +20,6 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -30,16 +28,21 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Cont
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperation;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationException;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationExecutor;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.util.List;
 
-import static org.mockito.Matchers.eq;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
@@ -49,8 +52,8 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 public class TestTrafficControlBandwidthHandlerImpl {
-  private static final Log LOG =
-      LogFactory.getLog(TestTrafficControlBandwidthHandlerImpl.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestTrafficControlBandwidthHandlerImpl.class);
   private static final int ROOT_BANDWIDTH_MBIT = 100;
   private static final int YARN_BANDWIDTH_MBIT = 70;
   private static final int TEST_CLASSID = 100;
@@ -67,13 +70,13 @@ public class TestTrafficControlBandwidthHandlerImpl {
   ContainerId containerIdMock;
   Container containerMock;
 
-  @Before
+  @BeforeEach
   public void setup() {
     privilegedOperationExecutorMock = mock(PrivilegedOperationExecutor.class);
     cGroupsHandlerMock = mock(CGroupsHandler.class);
     trafficControllerMock = mock(TrafficController.class);
     conf = new YarnConfiguration();
-    tmpPath = new StringBuffer(System.getProperty("test.build.data")).append
+    tmpPath = new StringBuilder(System.getProperty("test.build.data")).append
         ('/').append("hadoop.tmp.dir").toString();
     device = YarnConfiguration.DEFAULT_NM_NETWORK_RESOURCE_INTERFACE;
     containerIdMock = mock(ContainerId.class);
@@ -99,7 +102,7 @@ public class TestTrafficControlBandwidthHandlerImpl {
 
     try {
       handlerImpl.bootstrap(conf);
-      verify(cGroupsHandlerMock).mountCGroupController(
+      verify(cGroupsHandlerMock).initializeCGroupController(
           eq(CGroupsHandler.CGroupController.NET_CLS));
       verifyNoMoreInteractions(cGroupsHandlerMock);
       verify(trafficControllerMock).bootstrap(eq(device),
@@ -108,7 +111,7 @@ public class TestTrafficControlBandwidthHandlerImpl {
       verifyNoMoreInteractions(trafficControllerMock);
     } catch (ResourceHandlerException e) {
       LOG.error("Unexpected exception: " + e);
-      Assert.fail("Caught unexpected ResourceHandlerException!");
+      fail("Caught unexpected ResourceHandlerException!");
     }
   }
 
@@ -126,7 +129,7 @@ public class TestTrafficControlBandwidthHandlerImpl {
       testPostComplete(trafficControllerSpy, handlerImpl);
     } catch (ResourceHandlerException e) {
       LOG.error("Unexpected exception: " + e);
-      Assert.fail("Caught unexpected ResourceHandlerException!");
+      fail("Caught unexpected ResourceHandlerException!");
     }
   }
 
@@ -159,7 +162,7 @@ public class TestTrafficControlBandwidthHandlerImpl {
     //Now check the privileged operations being returned
     //We expect two operations - one for adding pid to tasks file and another
     //for a tc modify operation
-    Assert.assertEquals(2, ops.size());
+    assertEquals(2, ops.size());
 
     //Verify that the add pid op is correct
     PrivilegedOperation addPidOp = ops.get(0);
@@ -167,20 +170,20 @@ public class TestTrafficControlBandwidthHandlerImpl {
         TEST_TASKS_FILE;
     List<String> addPidOpArgs = addPidOp.getArguments();
 
-    Assert.assertEquals(PrivilegedOperation.OperationType.ADD_PID_TO_CGROUP,
+    assertEquals(PrivilegedOperation.OperationType.ADD_PID_TO_CGROUP,
         addPidOp.getOperationType());
-    Assert.assertEquals(1, addPidOpArgs.size());
-    Assert.assertEquals(expectedAddPidOpArg, addPidOpArgs.get(0));
+    assertEquals(1, addPidOpArgs.size());
+    assertEquals(expectedAddPidOpArg, addPidOpArgs.get(0));
 
     //Verify that that tc modify op is correct
     PrivilegedOperation tcModifyOp = ops.get(1);
     List<String> tcModifyOpArgs = tcModifyOp.getArguments();
 
-    Assert.assertEquals(PrivilegedOperation.OperationType.TC_MODIFY_STATE,
+    assertEquals(PrivilegedOperation.OperationType.TC_MODIFY_STATE,
         tcModifyOp.getOperationType());
-    Assert.assertEquals(1, tcModifyOpArgs.size());
+    assertEquals(1, tcModifyOpArgs.size());
     //verify that the tc command file exists
-    Assert.assertTrue(new File(tcModifyOpArgs.get(0)).exists());
+    assertTrue(new File(tcModifyOpArgs.get(0)).exists());
   }
 
   private void testPostComplete(TrafficController trafficControllerSpy,
@@ -208,23 +211,23 @@ public class TestTrafficControlBandwidthHandlerImpl {
 
       List<String> args = opCaptor.getValue().getArguments();
 
-      Assert.assertEquals(PrivilegedOperation.OperationType.TC_MODIFY_STATE,
+      assertEquals(PrivilegedOperation.OperationType.TC_MODIFY_STATE,
           opCaptor.getValue().getOperationType());
-      Assert.assertEquals(1, args.size());
+      assertEquals(1, args.size());
       //ensure that tc command file exists
-      Assert.assertTrue(new File(args.get(0)).exists());
+      assertTrue(new File(args.get(0)).exists());
 
       verify(trafficControllerSpy).releaseClassId(TEST_CLASSID);
     } catch (PrivilegedOperationException e) {
       LOG.error("Caught exception: " + e);
-      Assert.fail("Unexpected PrivilegedOperationException from mock!");
+      fail("Unexpected PrivilegedOperationException from mock!");
     }
 
     //We don't expect any operations to be returned here
-    Assert.assertNull(ops);
+    assertNull(ops);
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     FileUtil.fullyDelete(new File(tmpPath));
   }

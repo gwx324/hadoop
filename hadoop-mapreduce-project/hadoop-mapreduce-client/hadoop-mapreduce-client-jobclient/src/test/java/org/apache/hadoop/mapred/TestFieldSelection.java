@@ -23,9 +23,10 @@ import org.apache.hadoop.mapred.lib.*;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil;
 import org.apache.hadoop.mapreduce.lib.fieldsel.FieldSelectionHelper;
 import org.apache.hadoop.mapreduce.lib.fieldsel.TestMRFieldSelection;
-import org.junit.Test;
-import static org.junit.Assert.assertEquals;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import java.nio.charset.StandardCharsets;
 import java.text.NumberFormat;
 
 public class TestFieldSelection {
@@ -60,7 +61,7 @@ private static NumberFormat idFormat = NumberFormat.getInstance();
     TestMRFieldSelection.constructInputOutputData(inputData,
       expectedOutput, numOfInputLines);
     FSDataOutputStream fileOut = fs.create(new Path(INPUT_DIR, inputFile));
-    fileOut.write(inputData.toString().getBytes("utf-8"));
+    fileOut.write(inputData.toString().getBytes(StandardCharsets.UTF_8));
     fileOut.close();
 
     System.out.println("inputData:");
@@ -77,7 +78,7 @@ private static NumberFormat idFormat = NumberFormat.getInstance();
     job.setOutputFormat(TextOutputFormat.class);
     job.setNumReduceTasks(1);
 
-    job.set(FieldSelectionHelper.DATA_FIELD_SEPERATOR, "-");
+    job.set(FieldSelectionHelper.DATA_FIELD_SEPARATOR, "-");
     job.set(FieldSelectionHelper.MAP_OUTPUT_KEY_VALUE_SPEC, "6,5,1-3:0-");
     job.set(FieldSelectionHelper.REDUCE_OUTPUT_KEY_VALUE_SPEC, ":4,3,2,1,0,0-");
 

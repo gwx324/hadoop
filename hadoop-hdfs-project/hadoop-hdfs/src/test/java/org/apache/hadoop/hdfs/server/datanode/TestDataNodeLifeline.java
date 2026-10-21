@@ -18,16 +18,22 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_LIFELINE_INTERVAL_SECONDS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_LIFELINE_RPC_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_STALE_DATANODE_INTERVAL_KEY;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerFaultInjector;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStatistics;
+import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
 import static org.apache.hadoop.test.MetricsAsserts.getLongCounter;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
@@ -45,44 +51,41 @@ import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeLifelineProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.datanode.metrics.DataNodeMetrics;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.HeartbeatResponse;
+import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
-import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.test.GenericTestUtils;
 
-import org.apache.log4j.Level;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
-
+import org.junit.jupiter.api.Timeout;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 /**
  * Test suite covering lifeline protocol handling in the DataNode.
  */
+@Timeout(60)
 public class TestDataNodeLifeline {
 
   private static final Logger LOG = LoggerFactory.getLogger(
       TestDataNodeLifeline.class);
 
   static {
-    GenericTestUtils.setLogLevel(DataNode.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(DataNode.LOG, Level.TRACE);
   }
-
-  @Rule
-  public Timeout timeout = new Timeout(60000);
 
   private MiniDFSCluster cluster;
   private HdfsConfiguration conf;
@@ -90,8 +93,16 @@ public class TestDataNodeLifeline {
   private DataNodeMetrics metrics;
   private DatanodeProtocolClientSideTranslatorPB namenode;
   private FSNamesystem namesystem;
+  private DataNode dn;
+  private BPServiceActor bpsa;
+  private final BlockManagerFaultInjector injector = new BlockManagerFaultInjector() {
+    @Override
+    public void mockAnException() {
+      throw new UnknownError("Unknown exception");
+    }
+  };
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     // Configure cluster with lifeline RPC server enabled, and down-tune
     // heartbeat timings to try to force quick dead/stale DataNodes.
@@ -106,7 +117,7 @@ public class TestDataNodeLifeline {
     namesystem = cluster.getNameNode().getNamesystem();
 
     // Set up spies on RPC proxies so that we can inject failures.
-    DataNode dn = cluster.getDataNodes().get(0);
+    dn = cluster.getDataNodes().get(0);
     metrics = dn.getMetrics();
     assertNotNull(metrics);
     List<BPOfferService> allBpos = dn.getAllBpOs();
@@ -118,27 +129,34 @@ public class TestDataNodeLifeline {
     assertNotNull(allBpsa);
     assertEquals(1, allBpsa.size());
 
-    final BPServiceActor bpsa = allBpsa.get(0);
+    bpsa = allBpsa.get(0);
     assertNotNull(bpsa);
 
     // Lifeline RPC proxy gets created on separate thread, so poll until found.
     GenericTestUtils.waitFor(new Supplier<Boolean>() {
           @Override
           public Boolean get() {
-            if (bpsa.getLifelineNameNodeProxy() != null) {
-              lifelineNamenode = spy(bpsa.getLifelineNameNodeProxy());
-              bpsa.setLifelineNameNode(lifelineNamenode);
-            }
-            return lifelineNamenode != null;
+            return bpsa.getLifelineNameNodeProxy() != null;
           }
         }, 100, 10000);
 
+    // The spies are handed to the actor by installSpies(), once stubbed.
+    lifelineNamenode = spy(bpsa.getLifelineNameNodeProxy());
     assertNotNull(bpsa.getNameNodeProxy());
     namenode = spy(bpsa.getNameNodeProxy());
-    bpsa.setNameNode(namenode);
   }
 
-  @After
+  /**
+   * Hands the spies to the BPServiceActor. Call this only after stubbing
+   * them: Mockito stubbing is not safe while the heartbeat and lifeline
+   * threads are calling the same spy, and a racing call kills the actor.
+   */
+  private void installSpies() {
+    bpsa.setNameNode(namenode);
+    bpsa.setLifelineNameNode(lifelineNamenode);
+  }
+
+  @AfterEach
   public void shutdown() {
     if (cluster != null) {
       cluster.shutdown();
@@ -163,8 +181,10 @@ public class TestDataNodeLifeline {
             anyInt(),
             anyInt(),
             anyInt(),
-            any(VolumeFailureSummary.class),
-            anyBoolean());
+            any(),
+            anyBoolean(),
+            any(SlowPeerReports.class),
+            any(SlowDiskReports.class));
 
     // Intercept lifeline to trigger latch count-down on each call.
     doAnswer(new LatchCountingAnswer<Void>(lifelinesSent))
@@ -176,18 +196,23 @@ public class TestDataNodeLifeline {
             anyInt(),
             anyInt(),
             anyInt(),
-            any(VolumeFailureSummary.class));
+            any());
+    installSpies();
 
     // While waiting on the latch for the expected number of lifeline messages,
     // poll DataNode tracking information.  Thanks to the lifeline, we expect
     // that the DataNode always stays alive, and never goes stale or dead.
     while (!lifelinesSent.await(1, SECONDS)) {
-      assertEquals("Expect DataNode to be kept alive by lifeline.", 1,
-          namesystem.getNumLiveDataNodes());
-      assertEquals("Expect DataNode not marked dead due to lifeline.", 0,
-          namesystem.getNumDeadDataNodes());
-      assertEquals("Expect DataNode not marked stale due to lifeline.", 0,
-          namesystem.getNumStaleDataNodes());
+      assertEquals(1, namesystem.getNumLiveDataNodes(),
+          "Expect DataNode to be kept alive by lifeline.");
+      assertEquals(0, namesystem.getNumDeadDataNodes(),
+          "Expect DataNode not marked dead due to lifeline.");
+      assertEquals(0, namesystem.getNumStaleDataNodes(),
+          "Expect DataNode not marked stale due to lifeline.");
+      // add a new volume on the next heartbeat
+      cluster.getDataNodes().get(0).reconfigurePropertyImpl(
+          DFS_DATANODE_DATA_DIR_KEY,
+          cluster.getDataDirectory().concat("/data-new"));
     }
 
     // Verify that we did in fact call the lifeline RPC.
@@ -199,15 +224,15 @@ public class TestDataNodeLifeline {
         anyInt(),
         anyInt(),
         anyInt(),
-        any(VolumeFailureSummary.class));
+        any());
 
     // Also verify lifeline call through metrics.  We expect at least
     // numLifelines, guaranteed by waiting on the latch.  There is a small
     // possibility of extra lifeline calls depending on timing, so we allow
     // slack in the assertion.
-    assertTrue("Expect metrics to count at least " + numLifelines + " calls.",
-        getLongCounter("LifelinesNumOps", getMetrics(metrics.name())) >=
-            numLifelines);
+    assertTrue(getLongCounter("LifelinesNumOps",
+            getMetrics(metrics.name())) >= numLifelines,
+        "Expect metrics to count at least " + numLifelines + " calls.");
   }
 
   @Test
@@ -226,19 +251,22 @@ public class TestDataNodeLifeline {
             anyInt(),
             anyInt(),
             anyInt(),
-            any(VolumeFailureSummary.class),
-            anyBoolean());
+            any(),
+            anyBoolean(),
+            any(SlowPeerReports.class),
+            any(SlowDiskReports.class));
+    installSpies();
 
     // While waiting on the latch for the expected number of heartbeat messages,
     // poll DataNode tracking information.  We expect that the DataNode always
     // stays alive, and never goes stale or dead.
     while (!heartbeatsSent.await(1, SECONDS)) {
-      assertEquals("Expect DataNode to be kept alive by lifeline.", 1,
-          namesystem.getNumLiveDataNodes());
-      assertEquals("Expect DataNode not marked dead due to lifeline.", 0,
-          namesystem.getNumDeadDataNodes());
-      assertEquals("Expect DataNode not marked stale due to lifeline.", 0,
-          namesystem.getNumStaleDataNodes());
+      assertEquals(1, namesystem.getNumLiveDataNodes(),
+          "Expect DataNode to be kept alive by lifeline.");
+      assertEquals(0, namesystem.getNumDeadDataNodes(),
+          "Expect DataNode not marked dead due to lifeline.");
+      assertEquals(0, namesystem.getNumStaleDataNodes(),
+          "Expect DataNode not marked stale due to lifeline.");
     }
 
     // Verify that we did not call the lifeline RPC.
@@ -250,11 +278,37 @@ public class TestDataNodeLifeline {
         anyInt(),
         anyInt(),
         anyInt(),
-        any(VolumeFailureSummary.class));
+        any());
 
     // Also verify no lifeline calls through metrics.
-    assertEquals("Expect metrics to count no lifeline calls.", 0,
-        getLongCounter("LifelinesNumOps", getMetrics(metrics.name())));
+    assertEquals(0, getLongCounter("LifelinesNumOps", getMetrics(metrics.name())),
+        "Expect metrics to count no lifeline calls.");
+  }
+
+  @Test
+  public void testLifelineForDeadNode() throws Exception {
+    long initialCapacity = cluster.getNamesystem(0).getCapacityTotal();
+    assertTrue(initialCapacity > 0);
+    dn.setHeartbeatsDisabledForTests(true);
+    cluster.setDataNodesDead();
+    assertEquals(0, cluster.getNamesystem(0).getCapacityTotal(),
+        "Capacity should be 0 after all DNs dead");
+    bpsa.sendLifelineForTests();
+    assertEquals(0, cluster.getNamesystem(0).getCapacityTotal(),
+        "Lifeline should be ignored for dead node");
+    // Wait for re-registration and heartbeat
+    dn.setHeartbeatsDisabledForTests(false);
+    final DatanodeDescriptor dnDesc = cluster.getNamesystem(0).getBlockManager()
+        .getDatanodeManager().getDatanodes().iterator().next();
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+
+      @Override
+      public Boolean get() {
+        return dnDesc.isAlive() && dnDesc.isHeartbeatedSinceRegistration();
+      }
+    }, 100, 5000);
+    assertEquals(initialCapacity, cluster.getNamesystem(0).getCapacityTotal(),
+        "Capacity should include only live capacity");
   }
 
   /**
@@ -295,6 +349,59 @@ public class TestDataNodeLifeline {
       latch.countDown();
       LOG.info("Countdown, remaining latch count is {}.", latch.getCount());
       return result;
+    }
+  }
+
+  /**
+   * Mock an exception in HeartbeatManager#updateHeartbeat and HeartbeatManager#updateLifeline
+   * respectively, and trigger the heartbeat and lifeline in sequence. The capacityTotal obtained
+   * before and after this operation should be the same.
+   * @throws Exception
+   */
+  @Test
+  public void testHeartbeatAndLifelineOnError() throws Exception {
+    final Configuration config = new HdfsConfiguration();
+    config.set(DFS_NAMENODE_LIFELINE_RPC_ADDRESS_KEY, "0.0.0.0:0");
+
+    try(MiniDFSCluster cluster =
+            new MiniDFSCluster.Builder(config).numDataNodes(1).build()) {
+      cluster.waitActive();
+      final FSNamesystem fsNamesystem = cluster.getNamesystem();
+
+      // Get capacityTotal before triggering heartbeat and lifeline.
+      DatanodeStatistics datanodeStatistics =
+          fsNamesystem.getBlockManager().getDatanodeManager().getDatanodeStatistics();
+      long capacityTotalBefore = datanodeStatistics.getCapacityTotal();
+
+      // Mock an exception in HeartbeatManager#updateHeartbeat and HeartbeatManager#updateLifeline.
+      BlockManagerFaultInjector oldInjector = BlockManagerFaultInjector.getInstance();
+      BlockManagerFaultInjector.instance = injector;
+      try {
+        DataNode dataNode = cluster.getDataNodes().get(0);
+        BlockPoolManager blockPoolManager = dataNode.getBlockPoolManager();
+        for (BPOfferService bpos : blockPoolManager.getAllNamenodeThreads()) {
+          if (bpos != null) {
+            for (BPServiceActor actor : bpos.getBPServiceActors()) {
+              try {
+                actor.triggerHeartbeatForTests();
+                actor.sendLifelineForTests();
+              } catch (Throwable e) {
+                assertTrue(e.getMessage().contains("Unknown exception"));
+              }
+            }
+          }
+        }
+
+        // Get capacityTotal after triggering heartbeat and lifeline.
+        long capacityTotalAfter = datanodeStatistics.getCapacityTotal();
+        // The capacityTotal should be same.
+        assertEquals(capacityTotalBefore, capacityTotalAfter);
+      } finally {
+        // The injector is static: left in place, it fails every later heartbeat
+        // in this JVM, so a surefire rerun of another test here never sees its
+        // DataNode come up and hangs in MiniDFSCluster#waitActive.
+        BlockManagerFaultInjector.instance = oldInjector;
+      }
     }
   }
 }

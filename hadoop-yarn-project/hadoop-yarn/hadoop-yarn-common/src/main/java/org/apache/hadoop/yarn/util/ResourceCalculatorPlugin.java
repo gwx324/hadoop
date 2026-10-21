@@ -17,14 +17,15 @@
  */
 package org.apache.hadoop.yarn.util;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.SysInfo;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 
 /**
  * Plugin to calculate resource information on the system.
@@ -32,8 +33,8 @@ import org.apache.hadoop.util.SysInfo;
 @InterfaceAudience.LimitedPrivate({"YARN", "MAPREDUCE"})
 @InterfaceStability.Unstable
 public class ResourceCalculatorPlugin extends Configured {
-  private static final Log LOG =
-      LogFactory.getLog(ResourceCalculatorPlugin.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ResourceCalculatorPlugin.class);
 
   private final SysInfo sys;
 
@@ -189,10 +190,51 @@ public class ResourceCalculatorPlugin extends Configured {
     }
     try {
       return new ResourceCalculatorPlugin();
+    } catch (UnsupportedOperationException ue) {
+      LOG.warn("Failed to instantiate default resource calculator. "
+          + ue.getMessage());
     } catch (Throwable t) {
       LOG.warn(t + ": Failed to instantiate default resource calculator.", t);
     }
     return null;
+  }
+
+  /**
+   * Create the ResourceCalculatorPlugin for the containers monitor in the Node
+   * Manager and configure it. If the plugin is not configured, this method
+   * will try and return a memory calculator plugin available for this system.
+   *
+   * @param conf Configure the plugin with this.
+   * @return ResourceCalculatorPlugin or null if ResourceCalculatorPlugin is
+   *         not available for current system.
+   */
+  public static ResourceCalculatorPlugin getContainersMonitorPlugin(
+      Configuration conf) {
+    Class<? extends ResourceCalculatorPlugin> clazzNM = conf.getClass(
+        YarnConfiguration.NM_MON_RESOURCE_CALCULATOR, null,
+        ResourceCalculatorPlugin.class);
+    Class<? extends ResourceCalculatorPlugin> clazz = conf.getClass(
+        YarnConfiguration.NM_CONTAINER_MON_RESOURCE_CALCULATOR, clazzNM,
+        ResourceCalculatorPlugin.class);
+    return ResourceCalculatorPlugin.getResourceCalculatorPlugin(clazz, conf);
+  }
+
+  /**
+   * Create the ResourceCalculatorPlugin for the node resource monitor in the
+   * Node Manager and configure it. If the plugin is not configured, this
+   * method will try and return a memory calculator plugin available for this
+   * system.
+   *
+   * @param conf Configure the plugin with this.
+   * @return ResourceCalculatorPlugin or null if ResourceCalculatorPlugin is
+   *         not available for current system.
+   */
+  public static ResourceCalculatorPlugin getNodeResourceMonitorPlugin(
+      Configuration conf) {
+    Class<? extends ResourceCalculatorPlugin> clazz = conf.getClass(
+        YarnConfiguration.NM_MON_RESOURCE_CALCULATOR, null,
+        ResourceCalculatorPlugin.class);
+    return ResourceCalculatorPlugin.getResourceCalculatorPlugin(clazz, conf);
   }
 
 }

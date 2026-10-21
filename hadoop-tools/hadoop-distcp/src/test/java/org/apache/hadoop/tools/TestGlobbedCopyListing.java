@@ -27,16 +27,17 @@ import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.tools.util.DistCpUtils;
 import org.apache.hadoop.security.Credentials;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;
 import java.net.URI;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestGlobbedCopyListing {
 
@@ -46,7 +47,7 @@ public class TestGlobbedCopyListing {
 
   public static Map<String, String> expectedValues = new HashMap<String, String>();
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     cluster = new MiniDFSCluster.Builder(new Configuration()).build();
     createSourceData();
@@ -72,7 +73,7 @@ public class TestGlobbedCopyListing {
       recordInExpectedValues(path);
     }
     finally {
-      IOUtils.cleanup(null, fileSystem);
+      IOUtils.cleanupWithLogger(null, fileSystem);
     }
   }
 
@@ -85,7 +86,7 @@ public class TestGlobbedCopyListing {
       recordInExpectedValues(path);
     }
     finally {
-      IOUtils.cleanup(null, fileSystem, outputStream);
+      IOUtils.cleanupWithLogger(null, fileSystem, outputStream);
     }
   }
 
@@ -96,7 +97,7 @@ public class TestGlobbedCopyListing {
         new Path("/tmp/source"), sourcePath));
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     cluster.shutdown();
   }
@@ -109,9 +110,12 @@ public class TestGlobbedCopyListing {
     Path source = new Path(fileSystemPath.toString() + "/tmp/source");
     Path target = new Path(fileSystemPath.toString() + "/tmp/target");
     Path listingPath = new Path(fileSystemPath.toString() + "/tmp/META/fileList.seq");
-    DistCpOptions options = new DistCpOptions(Arrays.asList(source), target);
-    options.setTargetPathExists(false);
-    new GlobbedCopyListing(new Configuration(), CREDENTIALS).buildListing(listingPath, options);
+    DistCpOptions options = new DistCpOptions.Builder(
+        Collections.singletonList(source), target).build();
+    DistCpContext context = new DistCpContext(options);
+    context.setTargetPathExists(false);
+    new GlobbedCopyListing(new Configuration(), CREDENTIALS)
+        .buildListing(listingPath, context);
 
     verifyContents(listingPath);
   }
@@ -131,9 +135,9 @@ public class TestGlobbedCopyListing {
       actualValues.put(value.getPath().toString(), key.toString());
     }
 
-    Assert.assertEquals(expectedValues.size(), actualValues.size());
+    assertEquals(expectedValues.size(), actualValues.size());
     for (Map.Entry<String, String> entry : actualValues.entrySet()) {
-      Assert.assertEquals(entry.getValue(), expectedValues.get(entry.getKey()));
+      assertEquals(entry.getValue(), expectedValues.get(entry.getKey()));
     }
   }
 }

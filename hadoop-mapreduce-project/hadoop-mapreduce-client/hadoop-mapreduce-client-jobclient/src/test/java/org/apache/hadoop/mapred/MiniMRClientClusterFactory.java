@@ -50,12 +50,13 @@ public class MiniMRClientClusterFactory {
 
     FileSystem fs = FileSystem.get(conf);
 
-    Path testRootDir = new Path("target", identifier + "-tmpDir")
-        .makeQualified(fs);
+    Path testRootDir = fs.makeQualified(
+        new Path("target", identifier + "-tmpDir"));
     Path appJar = new Path(testRootDir, "MRAppJar.jar");
 
     // Copy MRAppJar and make it private.
-    Path appMasterJar = new Path(MiniMRYarnCluster.APPJAR);
+    Path appMasterJar =
+        new Path(MiniMRYarnCluster.copyAppJarIntoTestDir(identifier));
 
     fs.copyFromLocalFile(appMasterJar, appJar);
     fs.setPermission(appJar, new FsPermission("744"));
@@ -64,7 +65,7 @@ public class MiniMRClientClusterFactory {
 
     job.addFileToClassPath(appJar);
 
-    Path callerJar = new Path(JarFinder.getJar(caller));
+    Path callerJar = new Path(JarFinder.getJar(caller, identifier));
     Path remoteCallerJar = new Path(testRootDir, callerJar.getName());
     fs.copyFromLocalFile(callerJar, remoteCallerJar);
     fs.setPermission(remoteCallerJar, new FsPermission("744"));

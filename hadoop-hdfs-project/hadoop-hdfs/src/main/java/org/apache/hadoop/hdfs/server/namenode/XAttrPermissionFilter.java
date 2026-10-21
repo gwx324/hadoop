@@ -24,14 +24,14 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.hdfs.XAttrHelper;
 import org.apache.hadoop.security.AccessControlException;
+import org.apache.hadoop.util.Lists;
 
-import com.google.common.collect.Lists;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.SECURITY_XATTR_UNREADABLE_BY_SUPERUSER;
 
 /**
- * There are four types of extended attributes <XAttr> defined by the
+ * There are four types of extended attributes &lt;XAttr&gt; defined by the
  * following namespaces:
  * <br>
  * USER - extended user attributes: these can be assigned to files and
@@ -54,8 +54,9 @@ import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.SECURITY_
  *   attributes that sometimes need to be exposed. Like SYSTEM namespace
  *   attributes they are not visible to the user except when getXAttr/getXAttrs
  *   is called on a file or directory in the /.reserved/raw HDFS directory
- *   hierarchy. These attributes can only be accessed by the superuser.
- * </br>
+ *   hierarchy. These attributes can only be accessed by the user who have
+ *   read access.
+ * <br>
  */
 @InterfaceAudience.Private
 public class XAttrPermissionFilter {
@@ -64,25 +65,32 @@ public class XAttrPermissionFilter {
       boolean isRawPath)
       throws AccessControlException {
     final boolean isSuperUser = pc.isSuperUser();
+    final String xAttrString =
+        "XAttr [ns=" + xAttr.getNameSpace() + ", name=" + xAttr.getName() + "]";
     if (xAttr.getNameSpace() == XAttr.NameSpace.USER || 
         (xAttr.getNameSpace() == XAttr.NameSpace.TRUSTED && isSuperUser)) {
+      if (isSuperUser) {
+        // call the external enforcer for audit.
+        pc.checkSuperuserPrivilege(xAttrString);
+      }
       return;
     }
-    if (xAttr.getNameSpace() == XAttr.NameSpace.RAW &&
-        isRawPath && isSuperUser) {
+    if (xAttr.getNameSpace() == XAttr.NameSpace.RAW && isRawPath) {
       return;
     }
     if (XAttrHelper.getPrefixedName(xAttr).
         equals(SECURITY_XATTR_UNREADABLE_BY_SUPERUSER)) {
       if (xAttr.getValue() != null) {
-        throw new AccessControlException("Attempt to set a value for '" +
+        // Notify external enforcer for audit
+        String errorMessage = "Attempt to set a value for '" +
             SECURITY_XATTR_UNREADABLE_BY_SUPERUSER +
-            "'. Values are not allowed for this xattr.");
+            "'. Values are not allowed for this xattr.";
+        pc.denyUserAccess(xAttrString, errorMessage);
       }
       return;
     }
-    throw new AccessControlException("User doesn't have permission for xattr: "
-        + XAttrHelper.getPrefixedName(xAttr));
+    pc.denyUserAccess(xAttrString, "User doesn't have permission for xattr: "
+            + XAttrHelper.getPrefixedName(xAttr));
   }
 
   static void checkPermissionForApi(FSPermissionChecker pc,
@@ -112,15 +120,13 @@ public class XAttrPermissionFilter {
       } else if (xAttr.getNameSpace() == XAttr.NameSpace.TRUSTED && 
           isSuperUser) {
         filteredXAttrs.add(xAttr);
-      } else if (xAttr.getNameSpace() == XAttr.NameSpace.RAW &&
-          isSuperUser && isRawPath) {
+      } else if (xAttr.getNameSpace() == XAttr.NameSpace.RAW && isRawPath) {
         filteredXAttrs.add(xAttr);
       } else if (XAttrHelper.getPrefixedName(xAttr).
           equals(SECURITY_XATTR_UNREADABLE_BY_SUPERUSER)) {
         filteredXAttrs.add(xAttr);
       }
     }
-    
     return filteredXAttrs;
   }
 }

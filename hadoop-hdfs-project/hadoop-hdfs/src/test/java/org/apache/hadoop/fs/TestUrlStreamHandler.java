@@ -17,8 +17,9 @@
  */
 package org.apache.hadoop.fs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.io.File;
 import java.io.IOException;
@@ -32,15 +33,31 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.test.PathUtils;
-import org.junit.Test;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test of the URL stream handler.
  */
 public class TestUrlStreamHandler {
 
-  private static final File TEST_ROOT_DIR = PathUtils.getTestDir(TestUrlStreamHandler.class);
-    
+  private static final File TEST_ROOT_DIR =
+      PathUtils.getTestDir(TestUrlStreamHandler.class);
+
+  private static final FsUrlStreamHandlerFactory HANDLER_FACTORY
+      = new FsUrlStreamHandlerFactory();
+
+  @BeforeAll
+  public static void setupHandler() {
+
+    // Setup our own factory
+    // setURLStreamHandlerFactor is can be set at most once in the JVM
+    // the new URLStreamHandler is valid for all tests cases
+    // in TestStreamHandler
+    URL.setURLStreamHandlerFactory(HANDLER_FACTORY);
+  }
+
   /**
    * Test opening and reading from an InputStream through a hdfs:// URL.
    * <p>
@@ -55,15 +72,6 @@ public class TestUrlStreamHandler {
     Configuration conf = new HdfsConfiguration();
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
     FileSystem fs = cluster.getFileSystem();
-
-    // Setup our own factory
-    // setURLSteramHandlerFactor is can be set at most once in the JVM
-    // the new URLStreamHandler is valid for all tests cases 
-    // in TestStreamHandler
-    FsUrlStreamHandlerFactory factory =
-        new org.apache.hadoop.fs.FsUrlStreamHandlerFactory();
-    java.net.URL.setURLStreamHandlerFactory(factory);
-
     Path filePath = new Path("/thefile");
 
     try {
@@ -154,6 +162,24 @@ public class TestUrlStreamHandler {
       fs.close();
     }
 
+  }
+
+  @Test
+  public void testHttpDefaultHandler() throws Throwable {
+    assertNull(HANDLER_FACTORY.createURLStreamHandler("http"),
+        "Handler for HTTP is the Hadoop one");
+  }
+
+  @Test
+  public void testHttpsDefaultHandler() throws Throwable {
+    assertNull(HANDLER_FACTORY.createURLStreamHandler("https"),
+        "Handler for HTTPS is the Hadoop one");
+  }
+
+  @Test
+  public void testUnknownProtocol() throws Throwable {
+    assertNull(HANDLER_FACTORY.createURLStreamHandler("gopher"),
+        "Unknown protocols are not handled");
   }
 
 }

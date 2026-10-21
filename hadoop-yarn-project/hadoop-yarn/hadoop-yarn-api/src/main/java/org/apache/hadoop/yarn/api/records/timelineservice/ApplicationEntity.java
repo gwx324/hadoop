@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.yarn.api.records.timelineservice;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
@@ -42,11 +43,43 @@ public class ApplicationEntity extends HierarchicalTimelineEntity {
     }
   }
 
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public String getQueue() {
-    return getInfo().get(QUEUE_INFO_KEY).toString();
+    if (getInfo() != null && getInfo().containsKey(QUEUE_INFO_KEY)) {
+      return getInfo().get(QUEUE_INFO_KEY).toString();
+    }
+    return null;
   }
 
   public void setQueue(String queue) {
     addInfo(QUEUE_INFO_KEY, queue);
+  }
+
+  /**
+   * Checks if the input TimelineEntity object is an ApplicationEntity.
+   *
+   * @param te TimelineEntity object.
+   * @return true if input is an ApplicationEntity, false otherwise
+   */
+  public static boolean isApplicationEntity(TimelineEntity te) {
+    return (te == null ? false
+        : te.getType().equals(TimelineEntityType.YARN_APPLICATION.toString()));
+  }
+
+  /**
+   * @param te TimelineEntity object.
+   * @param eventId event with this id needs to be fetched
+   * @return TimelineEvent if TimelineEntity contains the desired event.
+   */
+  public static TimelineEvent getApplicationEvent(TimelineEntity te,
+      String eventId) {
+    if (isApplicationEntity(te)) {
+      for (TimelineEvent event : te.getEvents()) {
+        if (event.getId().equals(eventId)) {
+          return event;
+        }
+      }
+    }
+    return null;
   }
 }

@@ -18,7 +18,12 @@
 
 package org.apache.hadoop.mapreduce.v2.app;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
@@ -30,6 +35,8 @@ import java.io.PrintStream;
 import java.net.Proxy;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
+import java.nio.channels.ClosedChannelException;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
@@ -40,7 +47,9 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.JobContext;
+import org.apache.hadoop.mapreduce.CustomJobEndNotifier;
 import org.apache.hadoop.mapreduce.MRJobConfig;
+import org.apache.hadoop.mapreduce.v2.api.records.JobId;
 import org.apache.hadoop.mapreduce.v2.api.records.JobReport;
 import org.apache.hadoop.mapreduce.v2.api.records.JobState;
 import org.apache.hadoop.mapreduce.v2.app.client.ClientService;
@@ -52,9 +61,12 @@ import org.apache.hadoop.mapreduce.v2.app.rm.ContainerAllocator;
 import org.apache.hadoop.mapreduce.v2.app.rm.ContainerAllocatorEvent;
 import org.apache.hadoop.mapreduce.v2.app.rm.RMCommunicator;
 import org.apache.hadoop.mapreduce.v2.app.rm.RMHeartbeatHandler;
+import org.apache.hadoop.test.GenericTestUtils.LogCapturer;
+import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.yarn.exceptions.YarnException;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 /**
  * Tests job end notification
@@ -68,18 +80,16 @@ public class TestJobEndNotifier extends JobEndNotifier {
     conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_MAX_ATTEMPTS, "0");
     conf.set(MRJobConfig.MR_JOB_END_RETRY_ATTEMPTS, "10");
     setConf(conf);
-    Assert.assertTrue("Expected numTries to be 0, but was " + numTries,
-      numTries == 0 );
+    assertEquals(0, numTries, "Expected numTries to be 0, but was " + numTries);
 
     conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_MAX_ATTEMPTS, "1");
     setConf(conf);
-    Assert.assertTrue("Expected numTries to be 1, but was " + numTries,
-      numTries == 1 );
+    assertEquals(1, numTries, "Expected numTries to be 1, but was " + numTries);
 
     conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_MAX_ATTEMPTS, "20");
     setConf(conf);
-    Assert.assertTrue("Expected numTries to be 11, but was " + numTries,
-      numTries == 11 ); //11 because number of _retries_ is 10
+    assertEquals(11, numTries,
+        "Expected numTries to be 11, but was " + numTries); //11 because number of _retries_ is 10
   }
 
   //Test maximum retry interval is capped by
@@ -88,54 +98,67 @@ public class TestJobEndNotifier extends JobEndNotifier {
     conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_MAX_RETRY_INTERVAL, "5000");
     conf.set(MRJobConfig.MR_JOB_END_RETRY_INTERVAL, "1000");
     setConf(conf);
-    Assert.assertTrue("Expected waitInterval to be 1000, but was "
-      + waitInterval, waitInterval == 1000);
+    assertEquals(1000, waitInterval, "Expected waitInterval to be 1000, but was " + waitInterval);
 
     conf.set(MRJobConfig.MR_JOB_END_RETRY_INTERVAL, "10000");
     setConf(conf);
-    Assert.assertTrue("Expected waitInterval to be 5000, but was "
-      + waitInterval, waitInterval == 5000);
+    assertEquals(5000, waitInterval, "Expected waitInterval to be 5000, but was " + waitInterval);
 
     //Test negative numbers are set to default
     conf.set(MRJobConfig.MR_JOB_END_RETRY_INTERVAL, "-10");
     setConf(conf);
-    Assert.assertTrue("Expected waitInterval to be 5000, but was "
-      + waitInterval, waitInterval == 5000);
+    assertEquals(5000, waitInterval, "Expected waitInterval to be 5000, but was " + waitInterval);
   }
 
   private void testTimeout(Configuration conf) {
     conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_TIMEOUT, "1000");
     setConf(conf);
-    Assert.assertTrue("Expected timeout to be 1000, but was "
-      + timeout, timeout == 1000);
+    assertEquals(1000, timeout, "Expected timeout to be 1000, but was " + timeout);
   }
 
   private void testProxyConfiguration(Configuration conf) {
     conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "somehost");
     setConf(conf);
-    Assert.assertTrue("Proxy shouldn't be set because port wasn't specified",
-      proxyToUse.type() == Proxy.Type.DIRECT);
+    assertTrue(proxyToUse.type() == Proxy.Type.DIRECT,
+        "Proxy shouldn't be set because port wasn't specified");
     conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "somehost:someport");
     setConf(conf);
-    Assert.assertTrue("Proxy shouldn't be set because port wasn't numeric",
-      proxyToUse.type() == Proxy.Type.DIRECT);
+    assertTrue(proxyToUse.type() == Proxy.Type.DIRECT,
+        "Proxy shouldn't be set because port wasn't numeric");
     conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "somehost:1000");
     setConf(conf);
-    Assert.assertTrue("Proxy should have been set but wasn't ",
-      proxyToUse.toString().equals("HTTP @ somehost:1000"));
-    conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "socks@somehost:1000");
-    setConf(conf);
-    Assert.assertTrue("Proxy should have been socks but wasn't ",
-      proxyToUse.toString().equals("SOCKS @ somehost:1000"));
-    conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "SOCKS@somehost:1000");
-    setConf(conf);
-    Assert.assertTrue("Proxy should have been socks but wasn't ",
-      proxyToUse.toString().equals("SOCKS @ somehost:1000"));
-    conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "sfafn@somehost:1000");
-    setConf(conf);
-    Assert.assertTrue("Proxy should have been http but wasn't ",
-      proxyToUse.toString().equals("HTTP @ somehost:1000"));
-    
+    // JDK-8225499. The string format of unresolved address has been changed.
+    if (Shell.isJavaVersionAtLeast(14)) {
+      assertEquals("HTTP @ somehost/<unresolved>:1000", proxyToUse.toString(),
+          "Proxy should have been set but wasn't ");
+      conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "socks@somehost:1000");
+      setConf(conf);
+      assertEquals("SOCKS @ somehost/<unresolved>:1000", proxyToUse.toString(),
+          "Proxy should have been socks but wasn't ");
+      conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "SOCKS@somehost:1000");
+      setConf(conf);
+      assertEquals("SOCKS @ somehost/<unresolved>:1000", proxyToUse.toString(),
+          "Proxy should have been socks but wasn't ");
+      conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "sfafn@somehost:1000");
+      setConf(conf);
+      assertEquals("HTTP @ somehost/<unresolved>:1000", proxyToUse.toString(),
+          "Proxy should have been http but wasn't ");
+    } else {
+      assertEquals("HTTP @ somehost:1000", proxyToUse.toString(),
+          "Proxy should have been set but wasn't ");
+      conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "socks@somehost:1000");
+      setConf(conf);
+      assertEquals("SOCKS @ somehost:1000", proxyToUse.toString(),
+          "Proxy should have been socks but wasn't ");
+      conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "SOCKS@somehost:1000");
+      setConf(conf);
+      assertEquals("SOCKS @ somehost:1000", proxyToUse.toString(),
+          "Proxy should have been socks but wasn't ");
+      conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "sfafn@somehost:1000");
+      setConf(conf);
+      assertEquals("HTTP @ somehost:1000", proxyToUse.toString(),
+          "Proxy should have been http but wasn't ");
+    }
   }
 
   /**
@@ -148,6 +171,27 @@ public class TestJobEndNotifier extends JobEndNotifier {
     testWaitInterval(conf);
     testTimeout(conf);
     testProxyConfiguration(conf);
+  }
+
+  /**
+   * Test that an unparseable proxy port is logged through the SLF4J logger.
+   */
+  @Test
+  public void testUnparseableProxyPortIsLogged() {
+    LogCapturer logs = LogCapturer.captureLogs(
+        LoggerFactory.getLogger(JobEndNotifier.class));
+    try {
+      Configuration conf = new Configuration();
+      conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_PROXY, "somehost:someport");
+      setConf(conf);
+      assertTrue(proxyToUse.type() == Proxy.Type.DIRECT,
+          "Proxy shouldn't be set because port wasn't numeric");
+      assertTrue(logs.getOutput().contains("Job end notification couldn't"
+          + " parse configured proxy's port someport. Not going to use a proxy"),
+          "Expected unparseable port warning but got: " + logs.getOutput());
+    } finally {
+      logs.stopCapturing();
+    }
   }
 
   protected int notificationCount = 0;
@@ -175,10 +219,10 @@ public class TestJobEndNotifier extends JobEndNotifier {
     this.setConf(conf);
     this.notify(jobReport);
     long endTime = System.currentTimeMillis();
-    Assert.assertEquals("Only 1 try was expected but was : "
-      + this.notificationCount, 1, this.notificationCount);
-    Assert.assertTrue("Should have taken more than 5 seconds it took "
-      + (endTime - startTime), endTime - startTime > 5000);
+    assertEquals(1, this.notificationCount, "Only 1 try was expected but was : "
+        + this.notificationCount);
+    assertTrue(endTime - startTime > 5000, "Should have taken more than 5 seconds it took "
+        + (endTime - startTime));
 
     conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_MAX_ATTEMPTS, "3");
     conf.set(MRJobConfig.MR_JOB_END_RETRY_ATTEMPTS, "3");
@@ -190,15 +234,15 @@ public class TestJobEndNotifier extends JobEndNotifier {
     this.setConf(conf);
     this.notify(jobReport);
     endTime = System.currentTimeMillis();
-    Assert.assertEquals("Only 3 retries were expected but was : "
-      + this.notificationCount, 3, this.notificationCount);
-    Assert.assertTrue("Should have taken more than 9 seconds it took "
-      + (endTime - startTime), endTime - startTime > 9000);
+    assertEquals(3, this.notificationCount, "Only 3 retries were expected but was : " +
+        this.notificationCount);
+    assertTrue(endTime - startTime > 9000, "Should have taken more than 9 seconds it took " +
+        (endTime - startTime));
 
   }
 
-  @Test
-  public void testNotificationOnLastRetryNormalShutdown() throws Exception {
+  private void testNotificationOnLastRetry(boolean withRuntimeException)
+      throws Exception {
     HttpServer2 server = startHttpServer();
     // Act like it is the second attempt. Default max attempts is 2
     MRApp app = spy(new MRAppWithCustomContainerAllocator(
@@ -210,14 +254,29 @@ public class TestJobEndNotifier extends JobEndNotifier {
     JobImpl job = (JobImpl)app.submit(conf);
     app.waitForInternalState(job, JobStateInternal.SUCCEEDED);
     // Unregistration succeeds: successfullyUnregistered is set
+    if (withRuntimeException) {
+      YarnRuntimeException runtimeException = new YarnRuntimeException(
+          new ClosedChannelException());
+      doThrow(runtimeException).when(app).stop();
+    }
     app.shutDownJob();
-    Assert.assertTrue(app.isLastAMRetry());
-    Assert.assertEquals(1, JobEndServlet.calledTimes);
-    Assert.assertEquals("jobid=" + job.getID() + "&status=SUCCEEDED",
+    assertTrue(app.isLastAMRetry());
+    assertEquals(1, JobEndServlet.calledTimes);
+    assertEquals("jobid=" + job.getID() + "&status=SUCCEEDED",
         JobEndServlet.requestUri.getQuery());
-    Assert.assertEquals(JobState.SUCCEEDED.toString(),
-      JobEndServlet.foundJobState);
+    assertEquals(JobState.SUCCEEDED.toString(), JobEndServlet.foundJobState);
     server.stop();
+  }
+
+  @Test
+  public void testNotificationOnLastRetryNormalShutdown() throws Exception {
+    testNotificationOnLastRetry(false);
+  }
+
+  @Test
+  public void testNotificationOnLastRetryShutdownWithRuntimeException()
+      throws Exception {
+    testNotificationOnLastRetry(true);
   }
 
   @Test
@@ -240,10 +299,10 @@ public class TestJobEndNotifier extends JobEndNotifier {
     app.shutDownJob();
     // Not the last AM attempt. So user should that the job is still running.
     app.waitForState(job, JobState.RUNNING);
-    Assert.assertFalse(app.isLastAMRetry());
-    Assert.assertEquals(0, JobEndServlet.calledTimes);
-    Assert.assertNull(JobEndServlet.requestUri);
-    Assert.assertNull(JobEndServlet.foundJobState);
+    assertFalse(app.isLastAMRetry());
+    assertEquals(0, JobEndServlet.calledTimes);
+    assertNull(JobEndServlet.requestUri);
+    assertNull(JobEndServlet.foundJobState);
     server.stop();
   }
 
@@ -272,12 +331,51 @@ public class TestJobEndNotifier extends JobEndNotifier {
     // Unregistration fails: isLastAMRetry is recalculated, this is
     ///reboot will stop service internally, we don't need to shutdown twice
     app.waitForServiceToStop(10000);
-    Assert.assertFalse(app.isLastAMRetry());
+    assertFalse(app.isLastAMRetry());
     // Since it's not last retry, JobEndServlet didn't called
-    Assert.assertEquals(0, JobEndServlet.calledTimes);
-    Assert.assertNull(JobEndServlet.requestUri);
-    Assert.assertNull(JobEndServlet.foundJobState);
+    assertEquals(0, JobEndServlet.calledTimes);
+    assertNull(JobEndServlet.requestUri);
+    assertNull(JobEndServlet.foundJobState);
     server.stop();
+  }
+
+  @Test
+  public void testCustomNotifierClass() throws InterruptedException {
+    JobConf conf = new JobConf();
+    conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_URL,
+             "http://example.com?jobId=$jobId&jobStatus=$jobStatus");
+    conf.set(MRJobConfig.MR_JOB_END_NOTIFICATION_CUSTOM_NOTIFIER_CLASS,
+             CustomNotifier.class.getName());
+    this.setConf(conf);
+
+    JobReport jobReport = mock(JobReport.class);
+    JobId jobId = mock(JobId.class);
+    when(jobId.toString()).thenReturn("mock-Id");
+    when(jobReport.getJobId()).thenReturn(jobId);
+    when(jobReport.getJobState()).thenReturn(JobState.SUCCEEDED);
+
+    CustomNotifier.urlToNotify = null;
+    this.notify(jobReport);
+    final URL urlToNotify = CustomNotifier.urlToNotify;
+
+    assertEquals("http://example.com?jobId=mock-Id&jobStatus=SUCCEEDED",
+        urlToNotify.toString());
+  }
+
+  public static final class CustomNotifier implements CustomJobEndNotifier {
+
+    /**
+     * Once notifyOnce was invoked we'll store the URL in this variable
+     * so we can assert on it.
+     */
+    private static URL urlToNotify = null;
+
+    @Override
+    public boolean notifyOnce(final URL url, final Configuration jobConf) {
+      urlToNotify = url;
+      return true;
+    }
+
   }
 
   private static HttpServer2 startHttpServer() throws Exception {

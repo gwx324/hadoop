@@ -17,15 +17,21 @@
  */
 package org.apache.hadoop.util;
 
+import java.util.function.Supplier;
 import org.apache.commons.io.FileUtils;
-import org.apache.hadoop.security.alias.AbstractJavaKeyStoreProvider;
-import org.junit.Assert;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.Assertions;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.PrintWriter;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
@@ -37,22 +43,11 @@ import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.test.GenericTestUtils;
 
 import static org.apache.hadoop.util.Shell.*;
-import org.junit.Assume;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
-import org.junit.rules.Timeout;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
-public class TestShell extends Assert {
-  /**
-   * Set the timeout for every test
-   */
-  @Rule
-  public Timeout testTimeout = new Timeout(30000);
-
-  @Rule
-  public TestName methodName = new TestName();
+@Timeout(value = 30)
+public class TestShell extends Assertions {
 
   private File rootTestDir = GenericTestUtils.getTestDir();
 
@@ -89,11 +84,11 @@ public class TestShell extends Assert {
     }
   }
 
-  @Before
-  public void setup() {
+  @BeforeEach
+  public void setup(TestInfo testInfo) {
     rootTestDir.mkdirs();
-    assertTrue("Not a directory " + rootTestDir, rootTestDir.isDirectory());
-    methodDir = new File(rootTestDir, methodName.getMethodName());
+    assertTrue(rootTestDir.isDirectory(), "Not a directory " + rootTestDir);
+    methodDir = new File(rootTestDir, testInfo.getDisplayName());
   }
 
   @Test
@@ -110,7 +105,7 @@ public class TestShell extends Assert {
    * @param search what to search for it
    */
   private void assertInString(String string, String search) {
-    assertNotNull("Empty String", string);
+    assertNotNull(string, "Empty String");
     if (!string.contains(search)) {
       fail("Did not find \"" + search + "\" in " + string);
     }
@@ -128,7 +123,7 @@ public class TestShell extends Assert {
 
   @Test
   public void testShellCommandTimeout() throws Throwable {
-    Assume.assumeFalse(WINDOWS);
+    assumeFalse(WINDOWS);
     String rootDir = rootTestDir.getAbsolutePath();
     File shellFile = new File(rootDir, "timeout.sh");
     String timeoutCommand = "sleep 4; echo \"hello\"";
@@ -146,18 +141,18 @@ public class TestShell extends Assert {
       //When timing out exception is thrown.
     }
     shellFile.delete();
-    assertTrue("Script did not timeout" , shexc.isTimedOut());
+    assertTrue(shexc.isTimedOut(), "Script did not timeout");
   }
 
   @Test
   public void testEnvVarsWithInheritance() throws Exception {
-    Assume.assumeFalse(WINDOWS);
+    assumeFalse(WINDOWS);
     testEnvHelper(true);
   }
 
   @Test
   public void testEnvVarsWithoutInheritance() throws Exception {
-    Assume.assumeFalse(WINDOWS);
+    assumeFalse(WINDOWS);
     testEnvHelper(false);
   }
 
@@ -241,7 +236,7 @@ public class TestShell extends Assert {
       expectedCommand = new String[] {"bash", "-c", "kill -0 '" + anyPid +
             "'" };
     }
-    Assert.assertArrayEquals(expectedCommand, checkProcessAliveCommand);
+    assertArrayEquals(expectedCommand, checkProcessAliveCommand);
   }
 
   @Test
@@ -263,7 +258,7 @@ public class TestShell extends Assert {
       expectedCommand = new String[]{ "bash", "-c", "kill -9 '" + anyPid +
             "'"};
     }
-    Assert.assertArrayEquals(expectedCommand, checkProcessAliveCommand);
+    assertArrayEquals(expectedCommand, checkProcessAliveCommand);
   }
 
   private void testInterval(long interval) throws IOException {
@@ -383,7 +378,7 @@ public class TestShell extends Assert {
    */
   @Test
   public void testNoWinutilsOnUnix() throws Throwable {
-    Assume.assumeFalse(WINDOWS);
+    assumeFalse(WINDOWS);
     try {
       getWinUtilsFile();
     } catch (FileNotFoundException ex) {
@@ -470,5 +465,67 @@ public class TestShell extends Assert {
     assertEquals("'foobar'", Shell.bashQuote("foobar"));
     assertEquals("'foo'\\''bar'", Shell.bashQuote("foo'bar"));
     assertEquals("''\\''foo'\\''bar'\\'''", Shell.bashQuote("'foo'bar'"));
+  }
+
+  @Test
+  @Timeout(value = 120)
+  public void testDestroyAllShellProcesses() throws Throwable {
+    assumeFalse(WINDOWS);
+    StringBuilder sleepCommand = new StringBuilder();
+    sleepCommand.append("sleep 200");
+    String[] shellCmd = {"bash", "-c", sleepCommand.toString()};
+    final ShellCommandExecutor shexc1 = new ShellCommandExecutor(shellCmd);
+    final ShellCommandExecutor shexc2 = new ShellCommandExecutor(shellCmd);
+
+    Thread shellThread1 = new Thread() {
+      @Override
+      public void run() {
+        try {
+          shexc1.execute();
+        } catch(IOException ioe) {
+          //ignore IOException from thread interrupt
+        }
+      }
+    };
+    Thread shellThread2 = new Thread() {
+      @Override
+      public void run() {
+        try {
+          shexc2.execute();
+        } catch(IOException ioe) {
+          //ignore IOException from thread interrupt
+        }
+      }
+    };
+
+    shellThread1.start();
+    shellThread2.start();
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return shexc1.getProcess() != null;
+      }
+    }, 10, 10000);
+
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return shexc2.getProcess() != null;
+      }
+    }, 10, 10000);
+
+    Shell.destroyAllShellProcesses();
+    shexc1.getProcess().waitFor();
+    shexc2.getProcess().waitFor();
+  }
+
+  @Test
+  public void testIsJavaVersionAtLeast() {
+    assertTrue(Shell.isJavaVersionAtLeast(8));
+  }
+
+  @Test
+  public void testIsBashSupported() throws InterruptedIOException {
+    assumeTrue(Shell.checkIsBashSupported(), "Bash is not supported");
   }
 }

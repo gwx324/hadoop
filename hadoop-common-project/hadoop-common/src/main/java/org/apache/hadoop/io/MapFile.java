@@ -23,8 +23,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -37,6 +35,11 @@ import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.util.Options;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_MAP_INDEX_SKIP_DEFAULT;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_MAP_INDEX_SKIP_KEY;
 
 /** A file-based map from keys to values.
  * 
@@ -57,7 +60,7 @@ import org.apache.hadoop.util.ReflectionUtils;
 @InterfaceAudience.Public
 @InterfaceStability.Stable
 public class MapFile {
-  private static final Log LOG = LogFactory.getLog(MapFile.class);
+  private static final Logger LOG = LoggerFactory.getLogger(MapFile.class);
 
   /** The name of the index file. */
   public static final String INDEX_FILE_NAME = "index";
@@ -95,8 +98,16 @@ public class MapFile {
     private long lastIndexKeyCount = Long.MIN_VALUE;
 
 
-    /** Create the named map for keys of the named class. 
+    /**
+     * Create the named map for keys of the named class.
      * @deprecated Use Writer(Configuration, Path, Option...) instead.
+     *
+     * @param conf configuration.
+     * @param fs filesystem.
+     * @param dirName dirName.
+     * @param keyClass keyClass.
+     * @param valClass valClass.
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Writer(Configuration conf, FileSystem fs, String dirName,
@@ -105,8 +116,18 @@ public class MapFile {
       this(conf, new Path(dirName), keyClass(keyClass), valueClass(valClass));
     }
 
-    /** Create the named map for keys of the named class. 
+    /**
+     * Create the named map for keys of the named class.
      * @deprecated Use Writer(Configuration, Path, Option...) instead.
+     *
+     * @param conf configuration.
+     * @param fs fs.
+     * @param dirName dirName.
+     * @param keyClass keyClass.
+     * @param valClass valClass.
+     * @param compress compress.
+     * @param progress progress.
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Writer(Configuration conf, FileSystem fs, String dirName,
@@ -117,8 +138,19 @@ public class MapFile {
            compression(compress), progressable(progress));
     }
 
-    /** Create the named map for keys of the named class. 
+    /**
+     * Create the named map for keys of the named class.
      * @deprecated Use Writer(Configuration, Path, Option...) instead.
+     *
+     * @param conf configuration.
+     * @param fs FileSystem.
+     * @param dirName dirName.
+     * @param keyClass keyClass.
+     * @param valClass valClass.
+     * @param compress compress.
+     * @param codec codec.
+     * @param progress progress.
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Writer(Configuration conf, FileSystem fs, String dirName,
@@ -129,8 +161,16 @@ public class MapFile {
            compression(compress, codec), progressable(progress));
     }
 
-    /** Create the named map for keys of the named class. 
+    /**
+     * Create the named map for keys of the named class.
      * @deprecated Use Writer(Configuration, Path, Option...) instead.
+     * @param conf configuration.
+     * @param fs fs.
+     * @param dirName dirName.
+     * @param keyClass keyClass.
+     * @param valClass valClass.
+     * @param compress compress.
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Writer(Configuration conf, FileSystem fs, String dirName,
@@ -142,6 +182,12 @@ public class MapFile {
 
     /** Create the named map using the named key comparator. 
      * @deprecated Use Writer(Configuration, Path, Option...) instead.
+     * @param conf configuration.
+     * @param fs fs.
+     * @param dirName dirName.
+     * @param comparator comparator.
+     * @param valClass valClass.
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Writer(Configuration conf, FileSystem fs, String dirName,
@@ -151,7 +197,14 @@ public class MapFile {
            valueClass(valClass));
     }
 
-    /** Create the named map using the named key comparator. 
+    /** Create the named map using the named key comparator.
+     * @param conf configuration.
+     * @param fs filesystem.
+     * @param dirName dirName.
+     * @param comparator comparator.
+     * @param valClass valClass.
+     * @param compress compress.
+     * @throws IOException raised on errors performing I/O.
      * @deprecated Use Writer(Configuration, Path, Option...) instead.
      */
     @Deprecated
@@ -162,8 +215,18 @@ public class MapFile {
            valueClass(valClass), compression(compress));
     }
 
-    /** Create the named map using the named key comparator. 
+    /**
+     * Create the named map using the named key comparator.
      * @deprecated Use Writer(Configuration, Path, Option...)} instead.
+     *
+     * @param conf configuration.
+     * @param fs filesystem.
+     * @param dirName dirName.
+     * @param comparator comparator.
+     * @param valClass valClass.
+     * @param compress CompressionType.
+     * @param progress progress.
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Writer(Configuration conf, FileSystem fs, String dirName,
@@ -175,8 +238,19 @@ public class MapFile {
            progressable(progress));
     }
 
-    /** Create the named map using the named key comparator. 
+    /**
+     * Create the named map using the named key comparator.
      * @deprecated Use Writer(Configuration, Path, Option...) instead.
+     *
+     * @param conf configuration.
+     * @param fs FileSystem.
+     * @param dirName dirName.
+     * @param comparator comparator.
+     * @param valClass valClass.
+     * @param compress CompressionType.
+     * @param codec codec.
+     * @param progress progress.
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Writer(Configuration conf, FileSystem fs, String dirName,
@@ -282,16 +356,26 @@ public class MapFile {
       this.index = SequenceFile.createWriter(conf, indexOptions);      
     }
 
-    /** The number of entries that are added before an index entry is added.*/
+    /**
+     * The number of entries that are added before an index entry is added.
+     * @return indexInterval
+     */
     public int getIndexInterval() { return indexInterval; }
 
-    /** Sets the index interval.
+    /**
+     * Sets the index interval.
      * @see #getIndexInterval()
+     *
+     * @param interval interval.
      */
     public void setIndexInterval(int interval) { indexInterval = interval; }
 
-    /** Sets the index interval and stores it in conf
+    /**
+     * Sets the index interval and stores it in conf.
      * @see #getIndexInterval()
+     *
+     * @param conf configuration.
+     * @param interval interval.
      */
     public static void setIndexInterval(Configuration conf, int interval) {
       conf.setInt(INDEX_INTERVAL, interval);
@@ -304,8 +388,14 @@ public class MapFile {
       index.close();
     }
 
-    /** Append a key/value pair to the map.  The key must be greater or equal
-     * to the previous key added to the map. */
+    /**
+     * Append a key/value pair to the map.  The key must be greater or equal
+     * to the previous key added to the map.
+     *
+     * @param key key.
+     * @param val value.
+     * @throws IOException raised on errors performing I/O.
+     */
     public synchronized void append(WritableComparable key, Writable val)
       throws IOException {
 
@@ -367,10 +457,18 @@ public class MapFile {
     private WritableComparable[] keys;
     private long[] positions;
 
-    /** Returns the class of keys in this file. */
+    /**
+     * Returns the class of keys in this file.
+     *
+     * @return keyClass.
+     */
     public Class<?> getKeyClass() { return data.getKeyClass(); }
 
-    /** Returns the class of values in this file. */
+    /**
+     * Returns the class of values in this file.
+     *
+     * @return Value Class.
+     */
     public Class<?> getValueClass() { return data.getValueClass(); }
 
     public static interface Option extends SequenceFile.Reader.Option {}
@@ -395,12 +493,19 @@ public class MapFile {
         Options.getOption(ComparatorOption.class, opts);
       WritableComparator comparator =
         comparatorOption == null ? null : comparatorOption.getValue();
-      INDEX_SKIP = conf.getInt("io.map.index.skip", 0);
+      INDEX_SKIP = conf.getInt(
+          IO_MAP_INDEX_SKIP_KEY, IO_MAP_INDEX_SKIP_DEFAULT);
       open(dir, comparator, conf, opts);
     }
  
-    /** Construct a map reader for the named map.
+    /**
+     * Construct a map reader for the named map.
      * @deprecated
+     *
+     * @param fs FileSystem.
+     * @param dirName dirName.
+     * @param conf configuration.
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Reader(FileSystem fs, String dirName, 
@@ -408,8 +513,15 @@ public class MapFile {
       this(new Path(dirName), conf);
     }
 
-    /** Construct a map reader for the named map using the named comparator.
+    /**
+     * Construct a map reader for the named map using the named comparator.
      * @deprecated
+     *
+     * @param fs FileSystem.
+     * @param dirName dirName.
+     * @param comparator WritableComparator.
+     * @param conf Configuration.
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Reader(FileSystem fs, String dirName, WritableComparator comparator, 
@@ -446,6 +558,12 @@ public class MapFile {
     /**
      * Override this method to specialize the type of
      * {@link SequenceFile.Reader} returned.
+     *
+     * @param dataFile data file.
+     * @param conf configuration.
+     * @param options options.
+     * @throws IOException raised on errors performing I/O.
+     * @return SequenceFile.Reader.
      */
     protected SequenceFile.Reader 
       createDataFileReader(Path dataFile, Configuration conf,
@@ -512,13 +630,21 @@ public class MapFile {
       }
     }
 
-    /** Re-positions the reader before its first key. */
+    /**
+     * Re-positions the reader before its first key.
+     *
+     * @throws IOException raised on errors performing I/O.
+     */
     public synchronized void reset() throws IOException {
       data.seek(firstPosition);
     }
 
-    /** Get the key at approximately the middle of the file. Or null if the
-     *  file is empty. 
+    /**
+     * Get the key at approximately the middle of the file. Or null if the
+     *  file is empty.
+     *
+     * @throws IOException raised on errors performing I/O.
+     * @return WritableComparable.
      */
     public synchronized WritableComparable midKey() throws IOException {
 
@@ -530,9 +656,11 @@ public class MapFile {
       return keys[(count - 1) / 2];
     }
     
-    /** Reads the final key from the file.
+    /**
+     * Reads the final key from the file.
      *
      * @param key key to read into
+     * @throws IOException raised on errors performing I/O.
      */
     public synchronized void finalKey(WritableComparable key)
       throws IOException {
@@ -552,9 +680,14 @@ public class MapFile {
       }
     }
 
-    /** Positions the reader at the named key, or if none such exists, at the
+    /**
+     * Positions the reader at the named key, or if none such exists, at the
      * first entry after the named key.  Returns true iff the named key exists
      * in this map.
+     *
+     * @param key key.
+     * @throws IOException raised on errors performing I/O.
+     * @return if the named key exists in this map true, not false.
      */
     public synchronized boolean seek(WritableComparable key) throws IOException {
       return seekInternal(key) == 0;
@@ -665,15 +798,28 @@ public class MapFile {
       return -(low + 1);                          // key not found.
     }
 
-    /** Read the next key/value pair in the map into <code>key</code> and
+    /**
+     * Read the next key/value pair in the map into <code>key</code> and
      * <code>val</code>.  Returns true if such a pair exists and false when at
-     * the end of the map */
+     * the end of the map.
+     *
+     * @param key WritableComparable.
+     * @param val Writable.
+     * @return if such a pair exists true,not false.
+     * @throws IOException raised on errors performing I/O.
+     */
     public synchronized boolean next(WritableComparable key, Writable val)
       throws IOException {
       return data.next(key, val);
     }
 
-    /** Return the value for the named key, or null if none exists. */
+    /**
+     * Return the value for the named key, or null if none exists.
+     * @param key key.
+     * @param val val.
+     * @return Writable if such a pair exists true,not false.
+     * @throws IOException raised on errors performing I/O.
+     */
     public synchronized Writable get(WritableComparable key, Writable val)
       throws IOException {
       if (seek(key)) {
@@ -688,9 +834,10 @@ public class MapFile {
      * Returns <code>key</code> or if it does not exist, at the first entry
      * after the named key.
      * 
--     * @param key       - key that we're trying to find
--     * @param val       - data value if key is found
--     * @return          - the key that was the closest match or null if eof.
+     * @param key key that we're trying to find.
+     * @param val data value if key is found.
+     * @return the key that was the closest match or null if eof.
+     * @throws IOException raised on errors performing I/O.
      */
     public synchronized WritableComparable getClosest(WritableComparable key,
       Writable val)
@@ -707,6 +854,7 @@ public class MapFile {
      * the first entry that falls just before the <code>key</code>.  Otherwise,
      * return the record that sorts just after.
      * @return          - the key that was the closest match or null if eof.
+     * @throws IOException raised on errors performing I/O.
      */
     public synchronized WritableComparable getClosest(WritableComparable key,
         Writable val, final boolean before)
@@ -726,7 +874,10 @@ public class MapFile {
       return nextKey;
     }
 
-    /** Close the map. */
+    /**
+     * Close the map.
+     * @throws IOException raised on errors performing I/O.
+     */
     @Override
     public synchronized void close() throws IOException {
       if (!indexClosed) {
@@ -737,7 +888,13 @@ public class MapFile {
 
   }
 
-  /** Renames an existing map directory. */
+  /**
+   * Renames an existing map directory.
+   * @param fs fs.
+   * @param oldName oldName.
+   * @param newName newName.
+   * @throws IOException raised on errors performing I/O.
+   */
   public static void rename(FileSystem fs, String oldName, String newName)
     throws IOException {
     Path oldDir = new Path(oldName);
@@ -747,7 +904,12 @@ public class MapFile {
     }
   }
 
-  /** Deletes the named map file. */
+  /**
+   * Deletes the named map file.
+   * @param fs input fs.
+   * @param name input name.
+   * @throws IOException raised on errors performing I/O.
+   */
   public static void delete(FileSystem fs, String name) throws IOException {
     Path dir = new Path(name);
     Path data = new Path(dir, DATA_FILE_NAME);
@@ -765,8 +927,9 @@ public class MapFile {
    * @param keyClass key class (has to be a subclass of Writable)
    * @param valueClass value class (has to be a subclass of Writable)
    * @param dryrun do not perform any changes, just report what needs to be done
+   * @param conf configuration.
    * @return number of valid entries in this MapFile, or -1 if no fixing was needed
-   * @throws Exception
+   * @throws Exception Exception.
    */
   public static long fix(FileSystem fs, Path dir,
                          Class<? extends Writable> keyClass,
@@ -807,15 +970,40 @@ public class MapFile {
                                     (LongWritable.class));
     }
     try {
-      long pos = 0L;
+      /** What's the position (in bytes) we wrote when we got the last index */
+      long lastIndexPos = -1;
+      /**
+       * What was size when we last wrote an index. Set to MIN_VALUE to ensure
+       * that we have an index at position zero - midKey will throw an exception
+       * if this is not the case
+       */
+      long lastIndexKeyCount = Long.MIN_VALUE;
+      long pos = dataReader.getPosition();
       LongWritable position = new LongWritable();
+      long nextBlock = pos;
+      boolean blockCompressed = dataReader.isBlockCompressed();
       while(dataReader.next(key, value)) {
-        cnt++;
-        if (cnt % indexInterval == 0) {
-          position.set(pos);
-          if (!dryrun) indexWriter.append(key, position);
+        if (blockCompressed) {
+          long curPos = dataReader.getPosition();
+          if (curPos > nextBlock) {
+            pos = nextBlock;                       // current block position
+            nextBlock = curPos;
+          }
         }
-        pos = dataReader.getPosition();
+        // Follow the same logic as in
+        // {@link MapFile.Writer#append(WritableComparable, Writable)}
+        if (cnt >= lastIndexKeyCount + indexInterval && pos > lastIndexPos) {
+          position.set(pos);
+          if (!dryrun) {
+            indexWriter.append(key, position);
+          }
+          lastIndexPos = pos;
+          lastIndexKeyCount = cnt;
+        }
+        if (!blockCompressed) {
+          pos = dataReader.getPosition();         // next record position
+        }
+        cnt++;
       }
     } catch(Throwable t) {
       // truncated data file. swallow it.
@@ -841,11 +1029,12 @@ public class MapFile {
     }
 
     /**
-     * Merge multiple MapFiles to one Mapfile
+     * Merge multiple MapFiles to one Mapfile.
      *
-     * @param inMapFiles
-     * @param outMapFile
-     * @throws IOException
+     * @param inMapFiles input inMapFiles.
+     * @param deleteInputs deleteInputs.
+     * @param outMapFile input outMapFile.
+     * @throws IOException raised on errors performing I/O.
      */
     public void merge(Path[] inMapFiles, boolean deleteInputs,
         Path outMapFile) throws IOException {
@@ -982,23 +1171,22 @@ public class MapFile {
     Configuration conf = new Configuration();
     FileSystem fs = FileSystem.getLocal(conf);
     MapFile.Reader reader = null;
-    MapFile.Writer writer = null;
     try {
       reader = new MapFile.Reader(fs, in, conf);
-      writer =
-        new MapFile.Writer(conf, fs, out,
-            reader.getKeyClass().asSubclass(WritableComparable.class),
-            reader.getValueClass());
-
-      WritableComparable key = ReflectionUtils.newInstance(reader.getKeyClass()
-        .asSubclass(WritableComparable.class), conf);
+      WritableComparable<?> key = ReflectionUtils.newInstance(
+          reader.getKeyClass().asSubclass(WritableComparable.class), conf);
       Writable value = ReflectionUtils.newInstance(reader.getValueClass()
         .asSubclass(Writable.class), conf);
 
-      while (reader.next(key, value))               // copy all entries
-        writer.append(key, value);
+      try (MapFile.Writer writer = new MapFile.Writer(conf, fs, out,
+            reader.getKeyClass().asSubclass(WritableComparable.class),
+            reader.getValueClass())) {
+        while (reader.next(key, value)) {             // copy all entries
+          writer.append(key, value);
+        }
+      }
     } finally {
-      IOUtils.cleanup(LOG, writer, reader);
+      IOUtils.cleanupWithLogger(LOG, reader);
     }
   }
 }

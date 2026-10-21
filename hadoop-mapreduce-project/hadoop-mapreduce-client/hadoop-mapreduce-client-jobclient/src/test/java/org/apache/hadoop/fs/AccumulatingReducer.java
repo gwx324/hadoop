@@ -20,10 +20,10 @@ package org.apache.hadoop.fs;
 import java.io.IOException;
 import java.util.Iterator;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Reducer that accumulates values based on their type.
@@ -31,13 +31,13 @@ import org.apache.hadoop.mapred.*;
  * The type is specified in the key part of the key-value pair 
  * as a prefix to the key in the following way
  * <p>
- * <tt>type:key</tt>
+ * <code>type:key</code>
  * <p>
  * The values are accumulated according to the types:
  * <ul>
- * <li><tt>s:</tt> - string, concatenate</li>
- * <li><tt>f:</tt> - float, summ</li>
- * <li><tt>l:</tt> - long, summ</li>
+ * <li><code>s:</code> - string, concatenate</li>
+ * <li><code>f:</code> - float, summ</li>
+ * <li><code>l:</code> - long, summ</li>
  * </ul>
  * 
  */
@@ -47,7 +47,9 @@ public class AccumulatingReducer extends MapReduceBase
   static final String VALUE_TYPE_LONG = "l:";
   static final String VALUE_TYPE_FLOAT = "f:";
   static final String VALUE_TYPE_STRING = "s:";
-  private static final Log LOG = LogFactory.getLog(AccumulatingReducer.class);
+
+  private static final Logger LOG =
+      LoggerFactory.getLogger(AccumulatingReducer.class);
   
   protected String hostName;
   
@@ -71,7 +73,7 @@ public class AccumulatingReducer extends MapReduceBase
 
     // concatenate strings
     if (field.startsWith(VALUE_TYPE_STRING)) {
-      StringBuffer sSum = new StringBuffer();
+      StringBuilder sSum = new StringBuilder();
       while (values.hasNext())
         sSum.append(values.next().toString()).append(";");
       output.collect(key, new Text(sSum.toString()));

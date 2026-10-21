@@ -18,10 +18,13 @@
 package org.apache.hadoop.conf;
 
 import java.util.List;
+import org.junit.jupiter.api.Test;
 
-import junit.framework.TestCase;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
-public class TestGetInstances extends TestCase {
+public class TestGetInstances {
   
   interface SampleInterface {}
   
@@ -30,7 +33,7 @@ public class TestGetInstances extends TestCase {
   static class SampleClass implements SampleInterface {
     SampleClass() {}
   }
-	
+
   static class AnotherClass implements ChildInterface {
     AnotherClass() {}
   }
@@ -39,6 +42,7 @@ public class TestGetInstances extends TestCase {
    * Makes sure <code>Configuration.getInstances()</code> returns
    * instances of the required type.
    */
+  @Test
   public void testGetInstances() throws Exception {
     Configuration conf = new Configuration();
     

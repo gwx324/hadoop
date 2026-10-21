@@ -18,20 +18,24 @@
 
 package org.apache.hadoop.mapreduce;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapreduce.JobStatus.State;
+import org.apache.hadoop.mapreduce.lib.jobcontrol.ControlledJob;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestJob {
   @Test
@@ -49,9 +53,44 @@ public class TestJob {
     when(client.getTaskReports(jobid, TaskType.REDUCE)).thenReturn(
         new TaskReport[0]);
     when(client.getTaskCompletionEvents(jobid, 0, 10)).thenReturn(
-        new TaskCompletionEvent[0]);
+        TaskCompletionEvent.EMPTY_ARRAY);
     Job job = Job.getInstance(cluster, status, new JobConf());
-    Assert.assertNotNull(job.toString());
+    assertNotNull(job.toString());
+  }
+
+  @Test
+  public void testUnexpectedJobStatus() throws Exception {
+    Cluster cluster = mock(Cluster.class);
+    JobID jobid = new JobID("1014873536921", 6);
+    ClientProtocol clientProtocol = mock(ClientProtocol.class);
+    when(cluster.getClient()).thenReturn(clientProtocol);
+    JobStatus status = new JobStatus(jobid, 0f, 0f, 0f, 0f,
+        State.RUNNING, JobPriority.DEFAULT, "root",
+        "testUnexpectedJobStatus", "job file", "tracking URL");
+    when(clientProtocol.getJobStatus(jobid)).thenReturn(status);
+    Job job = Job.getInstance(cluster, status, new JobConf());
+
+    // ensurer job status is RUNNING
+    assertNotNull(job.getStatus());
+    assertTrue(job.getStatus().getState() == State.RUNNING);
+
+    // when updating job status, job client could not retrieve
+    // job status, and status reset to null
+    when(clientProtocol.getJobStatus(jobid)).thenReturn(null);
+
+    try {
+      job.updateStatus();
+    } catch (IOException e) {
+      assertTrue(e != null
+          && e.getMessage().contains("Job status not available"));
+    }
+
+    try {
+      ControlledJob cj = new ControlledJob(job, null);
+      assertNotNull(cj.toString());
+    } catch (NullPointerException e) {
+      fail("job API fails with NPE");
+    }
   }
 
   @Test

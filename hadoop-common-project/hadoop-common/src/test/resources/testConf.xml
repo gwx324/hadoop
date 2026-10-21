@@ -54,7 +54,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-ls \[-C\] \[-d\] \[-h\] \[-q\] \[-R\] \[-t\] \[-S\] \[-r\] \[-u\] \[&lt;path&gt; \.\.\.\] :( |\t)*</expected-output>
+          <expected-output>^-ls \[-C\] \[-d\] \[-h\] \[-q\] \[-R\] \[-t\] \[-S\] \[-r\] \[-u\] \[-e\] \[&lt;path&gt; \.\.\.\] :( |\t)*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -106,11 +106,11 @@
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*-q\s+Print \? instead of non-printable characters\.( )*</expected-output>
+          <expected-output>^\s*rather than a number of bytes\.( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*rather than a number of bytes\.( )*</expected-output>
+          <expected-output>^\s*-q\s+Print \? instead of non-printable characters\.( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -136,6 +136,10 @@
           <type>RegexpComparator</type>
           <expected-output>^( |\t)*display and sorting\.</expected-output>
         </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*-e\s+Display the erasure coding policy of files and directories\.</expected-output>
+        </comparator>
       </comparators>
     </test>
 
@@ -159,38 +163,6 @@
     </test>
 
     <test> <!-- TESTED -->
-      <description>help: help for get</description>
-      <test-commands>
-        <command>-help get</command>
-      </test-commands>
-      <cleanup-commands>
-        <!-- No cleanup -->
-      </cleanup-commands>
-      <comparators>
-        <comparator>
-          <type>RegexpComparator</type>
-          <expected-output>^-get( )*\[-f\]( )*\[-p\]( )*\[-ignoreCrc\]( )*\[-crc\]( )*&lt;src&gt; \.\.\. &lt;localdst&gt; :\s*</expected-output>
-        </comparator>
-        <comparator>
-          <type>RegexpComparator</type>
-          <expected-output>\s*Copy files that match the file pattern &lt;src&gt; to the local name.  &lt;src&gt; is kept.\s*</expected-output>
-        </comparator>
-        <comparator>
-          <type>RegexpComparator</type>
-           <expected-output>^( |\t)*When copying multiple files, the destination must be a directory. Passing -f( )*</expected-output>
-        </comparator>
-        <comparator>
-          <type>RegexpComparator</type>
-          <expected-output>^( |\t)*overwrites the destination if it already exists and -p preserves access and( )*</expected-output>
-        </comparator>
-        <comparator>
-          <type>RegexpComparator</type>
-         <expected-output>^( |\t)*modification times, ownership and the mode.*</expected-output>
-        </comparator>
-      </comparators>
-    </test>
-
-    <test> <!-- TESTED -->
       <description>help: help for du</description>
       <test-commands>
         <command>-help du</command>
@@ -200,7 +172,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-du \[-s\] \[-h\] &lt;path&gt; \.\.\. :\s*</expected-output>
+          <expected-output>^-du \[-s\] \[-h\] \[-v\] \[-x\] &lt;path&gt; \.\.\. :\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -225,6 +197,10 @@
         <comparator>
           <type>RegexpComparator</type>
           <expected-output>\s*of bytes.\s*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*-x\s*Excludes snapshots from being counted.\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -274,7 +250,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-count \[-q\] \[-h\] \[-v\] \[-t \[&lt;storage type&gt;\]\] \[-u\] &lt;path&gt; \.\.\. :( )*</expected-output>
+          <expected-output>^-count \[-q\] \[-h\] \[-v\] \[-t \[&lt;storage type&gt;\]\] \[-u\] \[-x\] \[-e\] \[-s\] &lt;path&gt; \.\.\. :( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -307,6 +283,10 @@
         <comparator>
           <type>RegexpComparator</type>
           <expected-output>^( |\t)*The -v option displays a header line.( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*The -x option excludes snapshots from being calculated.( )*</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -344,51 +324,72 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-cp \[-f\] \[-p \| -p\[topax\]\] \[-d\] &lt;src&gt; \.\.\. &lt;dst&gt; :\s*</expected-output>
+          <expected-output>^-cp \[-f\] \[-p \| -p\[topax\]\] \[-d\] \[-t &lt;thread count&gt;\] \[-q &lt;thread pool queue size&gt;\] &lt;src&gt; \.\.\. &lt;dst&gt; :\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*Copy files that match the file pattern &lt;src&gt; to a destination.  When copying( )*</expected-output>
+          <expected-output>^\s*Copy files that match the file pattern &lt;src&gt; to a destination. When copying( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*multiple files, the destination must be a directory.( )*Passing -p preserves status( )*</expected-output>
+          <expected-output>^( |\t)*multiple files, the destination must be a directory.( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*\[topax\] \(timestamps, ownership, permission, ACLs, XAttr\). If -p is specified( )*</expected-output>
+          <expected-output>^( |\t)*Flags :( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*with no &lt;arg&gt;, then preserves timestamps, ownership, permission. If -pa is( )*</expected-output>
+          <expected-output>^( |\t)*-p\[topax\]\s+Preserve file attributes \[topx\] \(timestamps,( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*specified, then preserves permission also because ACL is a super-set of( )*</expected-output>
+          <expected-output>^( |\t)*ownership, permission, ACL, XAttr\). If -p is( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*permission. Passing -f overwrites the destination if it already exists. raw( )*</expected-output>
+          <expected-output>^( |\t)*specified with no arg, then preserves timestamps,( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*namespace extended attributes are preserved if \(1\) they are supported \(HDFS( )*</expected-output>
+          <expected-output>^( |\t)*ownership, permission. If -pa is specified, then( )*</expected-output>
         </comparator>
         <comparator>
             <type>RegexpComparator</type>
-            <expected-output>^( |\t)*only\) and, \(2\) all of the source and target pathnames are in the \/\.reserved\/raw( )*</expected-output>
+            <expected-output>^( |\t)*preserves permission also because ACL is a( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*hierarchy. raw namespace xattr preservation is determined solely by the presence( )*</expected-output>
+          <expected-output>^( |\t)*super-set of permission. Determination of whether( )*</expected-output>
+        </comparator>
+
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*raw namespace extended attributes are preserved is( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*independent of the -p flag.( )*</expected-output>
         </comparator>
         <comparator>
             <type>RegexpComparator</type>
-          <expected-output>^\s*\(or absence\) of the \/\.reserved\/raw prefix and not by the -p option\. Passing -d( )*</expected-output>
+          <expected-output>^\s*-f\s+Overwrite the destination if it already exists.( )*</expected-output>
         </comparator>
         <comparator>
-            <type>RegexpComparator</type>
-            <expected-output>^\s*will skip creation of temporary file\(&lt;dst&gt;\._COPYING_\)\.( )*</expected-output>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*-d\s+Skip creation of temporary file\(&lt;dst&gt;\._COPYING_\).( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*-t &lt;thread count&gt;\s+Number of threads to be used, default is 1.( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*-q &lt;thread pool queue size&gt;\s+Thread pool queue size to be used, default is( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*1024.\s*</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -484,7 +485,10 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-put \[-f\] \[-p\] \[-l\] \[-d\] &lt;localsrc&gt; \.\.\. &lt;dst&gt; :( )*</expected-output>
+          <comparator>
+            <type>RegexpComparator</type>
+            <expected-output>^-put \[-f\] \[-p\] \[-l\] \[-d\] \[-t &lt;thread count&gt;\] \[-q &lt;thread pool queue size&gt;\] &lt;localsrc&gt; \.\.\. &lt;dst&gt; :\s*</expected-output>
+          </comparator>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -500,27 +504,39 @@
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*-p  Preserves access and modification times, ownership and the mode.( )*</expected-output>
+          <expected-output>^\s*-p\s+Preserves timestamps, ownership and the mode.( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*-f  Overwrites the destination if it already exists.( )*</expected-output>
+          <expected-output>^\s*-f\s+Overwrites the destination if it already exists.( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*-l  Allow DataNode to lazily persist the file to disk. Forces( )*</expected-output>
+          <expected-output>^\s*-t &lt;thread count&gt;\s+Number of threads to be used, default is 1.( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*replication factor of 1. This flag will result in reduced( )*</expected-output>
+          <expected-output>^\s*-q &lt;thread pool queue size&gt;\s+Thread pool queue size to be used, default is( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*durability. Use with care.( )*</expected-output>
+          <expected-output>^( |\t)*1024.\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*-d  Skip creation of temporary file\(&lt;dst&gt;\._COPYING_\).( )*</expected-output>
+          <expected-output>^\s*-l\s+Allow DataNode to lazily persist the file to disk.( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*Forces replication factor of 1. This flag will( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*result in reduced durability. Use with care.( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*-d\s+Skip creation of temporary file\(&lt;dst&gt;\._COPYING_\).( )*</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -535,7 +551,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-copyFromLocal \[-f\] \[-p\] \[-l\] \[-d\] &lt;localsrc&gt; \.\.\. &lt;dst&gt; :\s*</expected-output>
+          <expected-output>^-copyFromLocal \[-f\] \[-p\] \[-l\] \[-d\] \[-t &lt;thread count&gt;\] \[-q &lt;thread pool queue size&gt;\] &lt;localsrc&gt; \.\.\. &lt;dst&gt; :\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -554,11 +570,14 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-moveFromLocal &lt;localsrc&gt; \.\.\. &lt;dst&gt; :\s*</expected-output>
+          <expected-output>^-moveFromLocal \[-f\] \[-p\] \[-l\] \[-d\] &lt;localsrc&gt; \.\.\. &lt;dst&gt; :\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*Same as -put, except that the source is deleted after it's copied.</expected-output>
+          <expected-output>^( |\t)*Same as -put, except that the source is deleted after it's copied</expected-output>
+        </comparator><comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s* and -t option has not yet implemented.</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -574,7 +593,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-get( )*\[-f\]( )*\[-p\]( )*\[-ignoreCrc\]( )*\[-crc\]( )*&lt;src&gt; \.\.\. &lt;localdst&gt; :\s*</expected-output>
+          <expected-output>^-get \[-f\] \[-p\] \[-crc\] \[-ignoreCrc\] \[-t &lt;thread count&gt;\] \[-q &lt;thread pool queue size&gt;\] &lt;src&gt; \.\.\. &lt;localdst&gt; :\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -582,15 +601,39 @@
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*When copying multiple files, the destination must be a directory. Passing -f( )*</expected-output>
+          <expected-output>^( |\t)*When copying multiple files, the destination must be a directory.( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*overwrites the destination if it already exists and -p preserves access and( )*</expected-output>
+          <expected-output>^( |\t)*Flags:\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-         <expected-output>^( |\t)*modification times, ownership and the mode.*</expected-output>
+         <expected-output>^( |\t)*-p\s+Preserves timestamps, ownership and the mode.\s*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*-f\s+Overwrites the destination if it already exists.\s*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*-crc\s+ write CRC checksums for the files downloaded.\s*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*-ignoreCrc\s+ Skip CRC checks on the file\(s\) downloaded.\s*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*-t &lt;thread count&gt;\s+Number of threads to be used, default is 1.\s*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*-q &lt;thread pool queue size&gt;\s+Thread pool queue size to be used, default is\s*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*1024.\s*</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -662,7 +705,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-checksum &lt;src&gt; \.\.\. :\s*</expected-output>
+          <expected-output>^-checksum \[-v\] &lt;src&gt; \.\.\. :\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -697,7 +740,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-copyToLocal \[-f\] \[-p\] \[-ignoreCrc\] \[-crc\] &lt;src&gt; \.\.\. &lt;localdst&gt; :\s*</expected-output>
+          <expected-output>^-copyToLocal \[-f\] \[-p\] \[-crc\] \[-ignoreCrc\] \[-t &lt;thread count&gt;\] \[-q &lt;thread pool queue size&gt;\] &lt;src&gt; \.\.\. &lt;localdst&gt; :\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -770,7 +813,7 @@
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*rooted at &lt;path&gt;\.( )*</expected-output>
+          <expected-output>^\s*rooted at &lt;path&gt;\. The EC files will be ignored here\.( )*</expected-output>
         </comparator>
         <comparator>
             <type>RegexpComparator</type>
@@ -784,6 +827,57 @@
               <type>RegexpComparator</type>
               <expected-output>^( |\t)*-R\s+It is accepted for backwards compatibility\. It has no effect\.( )*</expected-output>
           </comparator>
+      </comparators>
+    </test>
+
+    <test> <!-- TESTED -->
+      <description>help: help for touch</description>
+      <test-commands>
+        <command>-help touch</command>
+      </test-commands>
+      <cleanup-commands>
+      </cleanup-commands>
+      <comparators>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^-touch \[-a\] \[-m\] \[-t TIMESTAMP \(yyyyMMdd\:HHmmss\) \] \[-c\] &lt;path&gt; \.\.\. :( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*Updates the access and modification times of the file specified by the &lt;path&gt; to( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*the current time. If the file does not exist, then a zero length file is created( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*at &lt;path&gt; with current time as the timestamp of that &lt;path&gt;.( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*-a\s+Change only the access time( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*-a\s+Change only the access time( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*-m\s+Change only the modification time( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*-t\s+TIMESTAMP\s+Use specified timestamp instead of current time( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*TIMESTAMP format yyyyMMdd\:HHmmss</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^\s*-c\s+Do not create any files( )*</expected-output>
+        </comparator>
       </comparators>
     </test>
 
@@ -820,7 +914,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-test -\[defsz\] &lt;path&gt; :\s*</expected-output>
+          <expected-output>^-test -\[defswrz\] &lt;path&gt; :\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -828,7 +922,7 @@
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^\s*-[defsz]\s+return 0 if .*</expected-output>
+          <expected-output>^\s*-[defswrz]\s+return 0 if .*</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -851,11 +945,15 @@
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*in the specified format. Format accepts filesize in( )*</expected-output>
+          <expected-output>^( |\t)*in the specified format. Format accepts permissions in( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*blocks \(%b\), type \(%F\), group name of owner \(%g\),( )*</expected-output>
+          <expected-output>^( |\t)*octal \(%a\) and symbolic \(%A\), filesize in( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*bytes \(%b\), type \(%F\), group name of owner \(%g\),( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -863,15 +961,19 @@
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*of owner \(%u\), modification date \(%y, %Y\).( )*</expected-output>
+          <expected-output>^( |\t)*of owner \(%u\), access date \(%x, %X\).( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*%y shows UTC date as "yyyy-MM-dd HH:mm:ss" and( )*</expected-output>
+          <expected-output>^( |\t)*modification date \(%y, %Y\).( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^( |\t)*%Y shows milliseconds since January 1, 1970 UTC.( )*</expected-output>
+          <expected-output>^( |\t)*%x and %y show UTC date as "yyyy-MM-dd HH:mm:ss" and( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*%X and %Y show milliseconds since January 1, 1970 UTC.( )*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -890,7 +992,7 @@
       <comparators>
         <comparator>
           <type>RegexpComparator</type>
-          <expected-output>^-tail \[-f\] &lt;file&gt; :\s*</expected-output>
+          <expected-output>^-tail \[-f\] \[-s &lt;sleep interval&gt;\] &lt;file&gt; :\s*</expected-output>
         </comparator>
         <comparator>
           <type>RegexpComparator</type>
@@ -899,6 +1001,10 @@
         <comparator>
           <type>RegexpComparator</type>
           <expected-output>^( |\t)*-f\s+Shows appended data as the file grows.( )*</expected-output>
+        </comparator>
+        <comparator>
+          <type>RegexpComparator</type>
+          <expected-output>^( |\t)*-s\s+With -f , defines the sleep interval between iterations in milliseconds.( )*</expected-output>
         </comparator>
       </comparators>
     </test>
@@ -1055,21 +1161,85 @@
   applies selected actions to them\. If no &lt;path&gt; is specified
   then defaults to the current working directory\. If no
   expression is specified then defaults to -print\.
-  
+\s*
   The following primary expressions are recognised:
+    -atime n
+    -amin n
+      Evaluates as true if the file access time subtracted from
+      the start time is n days \(or minutes if -amin is used\)\.
+\s*
+    -blocksize n
+      Evaluates to true if the block size of the file is n\.
+\s*
+    -empty
+      Evaluates as true if the file is empty or directory has no
+      contents\.
+\s*
+    -group groupname
+      Evaluates as true if the file belongs to the specified
+      group\.
+\s*
+    -mtime n
+    -mmin n
+      Evaluates as true if the file modification time subtracted
+      from the start time is n days \(or minutes if -mmin is used\)
+\s*
     -name pattern
     -iname pattern
       Evaluates as true if the basename of the file matches the
       pattern using standard file system globbing\.
       If -iname is used then the match is case insensitive\.
-  
+\s*
+    -newer file
+      Evaluates as true if the modification time of the current
+      file is more recent than the modification time of the
+      specified file\.
+\s*
+    -nogroup
+      Evaluates as true if the file does not have a valid group\.
+\s*
+    -nouser
+      Evaluates as true if the file does not have a valid owner\.
+\s*
+    -perm \[-\]mode
+    -perm \[-\]onum
+      Evaluates as true if the file permissions match that
+      specified\. If the hyphen is specified then the expression
+      shall evaluate as true if at least the bits specified
+      match, otherwise an exact match is required\.
+      The mode may be specified using either symbolic notation,
+      eg 'u=rwx,g\+x\+w' or as an octal number\.
+\s*
     -print
     -print0
       Always evaluates to true. Causes the current pathname to be
       written to standard output followed by a newline. If the -print0
       expression is used then an ASCII NULL character is appended rather
       than a newline.
-  
+\s*
+    -regex pattern
+    -iregex pattern
+      Evaluates as true if the whole file path matches the
+      regular expression pattern\. If -iregex is used then
+      the match is case insensitive\.
+\s*
+    -replicas n
+      Evaluates to true if the number of file replicas is n\.
+\s*
+    -size n\[c\]
+      Evaluates to true if the file size in 512 byte blocks is n\.
+      If n is followed by the character 'c' then the size is in
+      bytes\.
+\s*
+    -type filetype
+      Evaluates to true if the file type matches that specified.
+      The following file type values are supported:
+      'd' \(directory\), 'l' \(symbolic link\), 'f' \(regular file\)\.
+\s*
+    -user username
+      Evaluates as true if the owner of the file matches the
+      specified user\.
+\s*
   The following operators are recognised:
     expression -a expression
     expression -and expression

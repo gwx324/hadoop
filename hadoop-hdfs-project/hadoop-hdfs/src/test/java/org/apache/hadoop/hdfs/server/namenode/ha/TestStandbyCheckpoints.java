@@ -17,36 +17,6 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import com.google.common.base.Supplier;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
-import com.google.common.io.Files;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
-import org.apache.hadoop.hdfs.DFSTestUtil;
-import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.MiniDFSNNTopology;
-import org.apache.hadoop.hdfs.server.namenode.*;
-import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeFile;
-import org.apache.hadoop.hdfs.util.Canceler;
-import org.apache.hadoop.io.compress.CompressionCodecFactory;
-import org.apache.hadoop.io.compress.CompressionOutputStream;
-import org.apache.hadoop.io.compress.GzipCodec;
-import org.apache.hadoop.ipc.StandbyException;
-import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.hadoop.test.GenericTestUtils.DelayAnswer;
-import org.apache.hadoop.util.ThreadUtil;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.Mockito;
-
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -58,9 +28,52 @@ import java.net.URI;
 import java.net.URL;
 import java.util.List;
 import java.util.Random;
+import java.util.function.Supplier;
 
-import static org.junit.Assert.*;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.LogVerificationAppender;
+import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.MiniDFSNNTopology;
+import org.apache.hadoop.hdfs.server.common.Util;
+import org.apache.hadoop.hdfs.server.namenode.*;
+import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeFile;
+import org.apache.hadoop.hdfs.util.Canceler;
+import org.apache.hadoop.io.compress.CompressionCodecFactory;
+import org.apache.hadoop.io.compress.CompressionOutputStream;
+import org.apache.hadoop.io.compress.GzipCodec;
+import org.apache.hadoop.ipc.StandbyException;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.GenericTestUtils.DelayAnswer;
+import org.apache.hadoop.test.PathUtils;
+import org.apache.hadoop.util.Lists;
+import org.apache.hadoop.util.ThreadUtil;
+import org.apache.log4j.spi.LoggingEvent;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.mockito.Mockito;
 
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+
+@Tag("slow")
 public class TestStandbyCheckpoints {
   private static final int NUM_DIRS_IN_LOG = 200000;
   protected static int NUM_NNS = 3;
@@ -70,10 +83,10 @@ public class TestStandbyCheckpoints {
   private final Random random = new Random();
   protected File tmpOivImgDir;
   
-  private static final Log LOG = LogFactory.getLog(TestStandbyCheckpoints.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestStandbyCheckpoints.class);
 
   @SuppressWarnings("rawtypes")
-  @Before
+  @BeforeEach
   public void setupCluster() throws Exception {
     Configuration conf = setupCommonConfig();
 
@@ -119,7 +132,8 @@ public class TestStandbyCheckpoints {
   }
 
   protected Configuration setupCommonConfig() {
-    tmpOivImgDir = Files.createTempDir();
+    tmpOivImgDir = GenericTestUtils.getTestDir("TestStandbyCheckpoints");
+    tmpOivImgDir.mkdirs();
 
     Configuration conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_CHECK_PERIOD_KEY, 1);
@@ -135,17 +149,22 @@ public class TestStandbyCheckpoints {
     return conf;
   }
 
-  @After
+  @AfterEach
   public void shutdownCluster() throws IOException {
     if (cluster != null) {
       cluster.shutdown();
       cluster = null;
     }
+
+    if (tmpOivImgDir != null) {
+      FileUtil.fullyDelete(tmpOivImgDir);
+    }
   }
 
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testSBNCheckpoints() throws Exception {
-    JournalSet standbyJournalSet = NameNodeAdapter.spyOnJournalSet(nns[1]);
+    JournalSet standbyJournalSet = NameNodeAdapterMockitoUtil.spyOnJournalSet(nns[1]);
 
     doEdits(0, 10);
     HATestUtil.waitForStandbyToCatchUp(nns[0], nns[1]);
@@ -165,7 +184,7 @@ public class TestStandbyCheckpoints {
     }, 1000, 60000);
     
     // It should have saved the oiv image too.
-    assertEquals("One file is expected", 1, tmpOivImgDir.list().length);
+    assertEquals(1, tmpOivImgDir.list().length, "One file is expected");
     
     // It should also upload it back to the active.
     HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(12));
@@ -173,6 +192,44 @@ public class TestStandbyCheckpoints {
     // The standby should never try to purge edit logs on shared storage.
     Mockito.verify(standbyJournalSet, Mockito.never()).
       purgeLogsOlderThan(Mockito.anyLong());
+  }
+
+  @Test
+  public void testNewDirInitAfterCheckpointing() throws Exception {
+    File hdfsDir = new File(PathUtils.getTestDir(TestStandbyCheckpoints.class),
+        "testNewDirInitAfterCheckpointing");
+    File nameDir = new File(hdfsDir, "name1");
+    assert nameDir.mkdirs();
+
+    // Restart nn0 with an additional name dir.
+    String existingDir = cluster.getConfiguration(0).
+        get(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY);
+    cluster.getConfiguration(0).set(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY,
+        existingDir + "," + Util.fileAsURI(nameDir).toString());
+    cluster.restartNameNode(0);
+    nns[0] = cluster.getNameNode(0);
+    cluster.transitionToActive(0);
+
+    // "current" is created, but current/VERSION isn't.
+    File currDir = new File(nameDir, "current");
+    File versionFile = new File(currDir, "VERSION");
+    assert currDir.exists();
+    assert !versionFile.exists();
+
+    // Trigger a checkpointing and upload.
+    doEdits(0, 10);
+    HATestUtil.waitForStandbyToCatchUp(nns[0], nns[1]);
+
+    // The version file will be created if a checkpoint is uploaded.
+    // Wait for it to happen up to 10 seconds.
+    for (int i = 0; i < 20; i++) {
+      if (versionFile.exists()) {
+        break;
+      }
+      Thread.sleep(500);
+    }
+    // VERSION must have been created.
+    assert versionFile.exists();
   }
 
   /**
@@ -184,7 +241,8 @@ public class TestStandbyCheckpoints {
    * checkpoint for the given txid, but this should not cause
    * an abort, etc.
    */
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testBothNodesInStandbyState() throws Exception {
     doEdits(0, 10);
     
@@ -197,17 +255,91 @@ public class TestStandbyCheckpoints {
     HATestUtil.waitForCheckpoint(cluster, 1, ImmutableList.of(12));
     HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(12));
     
-    assertEquals(12, nns[0].getNamesystem().getFSImage()
-        .getMostRecentCheckpointTxId());
-    assertEquals(12, nns[1].getNamesystem().getFSImage()
-        .getMostRecentCheckpointTxId());
+    assertEquals(12, nns[0].getNamesystem().getFSImage().getMostRecentCheckpointTxId());
+    assertEquals(12, nns[1].getNamesystem().getFSImage().getMostRecentCheckpointTxId());
     
     List<File> dirs = Lists.newArrayList();
     dirs.addAll(FSImageTestUtil.getNameNodeCurrentDirs(cluster, 0));
     dirs.addAll(FSImageTestUtil.getNameNodeCurrentDirs(cluster, 1));
     FSImageTestUtil.assertParallelFilesAreIdentical(dirs, ImmutableSet.<String>of());
   }
-  
+
+  /**
+   * Test for the case of when there are observer NameNodes, Standby node is
+   * able to upload fsImage to Observer node as well.
+   */
+  @Test
+  @Timeout(value = 300)
+  public void testStandbyAndObserverState() throws Exception {
+    // Transition 2 to observer
+    cluster.transitionToObserver(2);
+    doEdits(0, 10);
+    // After a rollEditLog, Standby(nn1) 's next checkpoint would be
+    // ahead of observer(nn2).
+    nns[0].getRpcServer().rollEditLog();
+
+    // After standby creating a checkpoint, it will try to push the image to
+    // active and all observer, updating it's own txid to the most recent.
+    HATestUtil.waitForCheckpoint(cluster, 1, ImmutableList.of(12));
+    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(12));
+    HATestUtil.waitForCheckpoint(cluster, 2, ImmutableList.of(12));
+
+    assertEquals(12, nns[2].getNamesystem().getFSImage().getMostRecentCheckpointTxId());
+    assertEquals(12, nns[1].getNamesystem().getFSImage().getMostRecentCheckpointTxId());
+
+    List<File> dirs = Lists.newArrayList();
+    // observer and standby both have this same image.
+    dirs.addAll(FSImageTestUtil.getNameNodeCurrentDirs(cluster, 2));
+    dirs.addAll(FSImageTestUtil.getNameNodeCurrentDirs(cluster, 1));
+    FSImageTestUtil.assertParallelFilesAreIdentical(dirs, ImmutableSet.of());
+    // Restore 2 back to standby
+    cluster.transitionToStandby(2);
+  }
+
+  /**
+   * Tests that a null FSImage is handled gracefully by the ImageServlet.
+   * If putImage is called while a NameNode is still starting up, the FSImage
+   * may not have been initialized yet. See HDFS-15290.
+   */
+  @Test
+  @Timeout(value = 30)
+  public void testCheckpointBeforeNameNodeInitializationIsComplete()
+      throws Exception {
+    final LogVerificationAppender appender = new LogVerificationAppender();
+    final org.apache.log4j.Logger logger = org.apache.log4j.Logger
+        .getRootLogger();
+    logger.addAppender(appender);
+
+    // Transition 2 to observer
+    cluster.transitionToObserver(2);
+    doEdits(0, 10);
+    // After a rollEditLog, Standby(nn1)'s next checkpoint would be
+    // ahead of observer(nn2).
+    nns[0].getRpcServer().rollEditLog();
+
+    NameNode nn2 = nns[2];
+    FSImage nnFSImage = NameNodeAdapter.getAndSetFSImageInHttpServer(nn2, null);
+
+    // After standby creating a checkpoint, it will try to push the image to
+    // active and all observer, updating it's own txid to the most recent.
+    HATestUtil.waitForCheckpoint(cluster, 1, ImmutableList.of(12));
+    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(12));
+
+    NameNodeAdapter.getAndSetFSImageInHttpServer(nn2, nnFSImage);
+    cluster.transitionToStandby(2);
+    logger.removeAppender(appender);
+
+    for (LoggingEvent event : appender.getLog()) {
+      String message = event.getRenderedMessage();
+      if (message.contains("PutImage failed") &&
+          message.contains("FSImage has not been set in the NameNode.")) {
+        //Logs have the expected exception.
+        return;
+      }
+    }
+    fail("Expected exception not present in logs.");
+  }
+
   /**
    * Test for the case when the SBN is configured to checkpoint based
    * on a time period, but no transactions are happening on the
@@ -215,7 +347,8 @@ public class TestStandbyCheckpoints {
    * same txid, which is a no-op. This test makes sure this doesn't
    * cause any problem.
    */
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testCheckpointWhenNoNewTransactionsHappened()
       throws Exception {
     // Checkpoint as fast as we can, in a tight loop.
@@ -224,12 +357,12 @@ public class TestStandbyCheckpoints {
     cluster.restartNameNode(1);
     nns[1] = cluster.getNameNode(1);
 
-    FSImage spyImage1 = NameNodeAdapter.spyOnFsImage(nns[1]);
+    FSImage spyImage1 = NameNodeAdapterMockitoUtil.spyOnFsImage(nns[1]);
 
     // We shouldn't save any checkpoints at txid=0
     Thread.sleep(1000);
     Mockito.verify(spyImage1, Mockito.never())
-      .saveNamespace((FSNamesystem) Mockito.anyObject());
+      .saveNamespace(any());
  
     // Roll the primary and wait for the standby to catch up
     HATestUtil.waitForStandbyToCatchUp(nns[0], nns[1]);
@@ -237,15 +370,15 @@ public class TestStandbyCheckpoints {
     
     // We should make exactly one checkpoint at this new txid. 
     Mockito.verify(spyImage1, Mockito.times(1)).saveNamespace(
-        (FSNamesystem) Mockito.anyObject(), Mockito.eq(NameNodeFile.IMAGE),
-        (Canceler) Mockito.anyObject());
+        any(), Mockito.eq(NameNodeFile.IMAGE), any());
   }
   
   /**
    * Test cancellation of ongoing checkpoints when failover happens
    * mid-checkpoint. 
    */
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testCheckpointCancellation() throws Exception {
     cluster.transitionToStandby(0);
     
@@ -289,8 +422,13 @@ public class TestStandbyCheckpoints {
    * Test cancellation of ongoing checkpoints when failover happens
    * mid-checkpoint during image upload from standby to active NN.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 300)
   public void testCheckpointCancellationDuringUpload() throws Exception {
+    // 300s, not 60s: the internal waits alone (30s TransferFsImageUpload
+    // thread-death wait, two waitForStandbyToCatchUp/waitForCheckpoint
+    // rounds, three NameNode restarts, an upload throttled to 100 B/s)
+    // can exceed 60s on a loaded CI agent.  Sibling tests use 300s.
     // Set dfs.namenode.checkpoint.txns differently on the first NN to avoid it
     // doing checkpoint when it becomes a standby
     cluster.getConfiguration(0).setInt(
@@ -351,28 +489,89 @@ public class TestStandbyCheckpoints {
     // Assert that former active did not accept the canceled checkpoint file.
     assertEquals(0, nns[0].getFSImage().getMostRecentCheckpointTxId());
   }
-  
+
+  /**
+   * Test standby namenode upload fsiamge to multiple other namenodes in parallel, in the
+   * cluster with observer namenodes.
+   */
+  @Test
+  @Timeout(value = 300)
+  public void testCheckpointParallelUpload() throws Exception {
+    // Set dfs.namenode.checkpoint.txns differently on the first NN to avoid it
+    // doing checkpoint when it becomes a standby
+    cluster.getConfiguration(0).setInt(
+        DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_TXNS_KEY, 1000);
+
+    // don't compress, we want a big image
+    for (int i = 0; i < NUM_NNS; i++) {
+      cluster.getConfiguration(i).setBoolean(
+          DFSConfigKeys.DFS_IMAGE_COMPRESS_KEY, false);
+    }
+
+    // Throttle SBN upload to make it hang during upload to ANN, and enable parallel upload fsimage.
+    for (int i = 1; i < NUM_NNS; i++) {
+      cluster.getConfiguration(i).setLong(
+          DFSConfigKeys.DFS_IMAGE_TRANSFER_RATE_KEY, 100);
+      cluster.getConfiguration(i).setBoolean(
+          DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_PARALLEL_UPLOAD_ENABLED_KEY, true);
+    }
+    for (int i = 0; i < NUM_NNS; i++) {
+      cluster.restartNameNode(i);
+    }
+
+    // update references to each of the nns
+    setNNs();
+
+    cluster.transitionToActive(0);
+
+    doEdits(0, 100);
+
+    for (int i = 1; i < NUM_NNS; i++) {
+      HATestUtil.waitForStandbyToCatchUp(nns[0], nns[i]);
+      HATestUtil.waitForCheckpoint(cluster, i, ImmutableList.of(104));
+    }
+    cluster.transitionToStandby(0);
+    cluster.transitionToActive(1);
+
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        int transferThreadCount = 0;
+        ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
+        ThreadInfo[] threads = threadBean.getThreadInfo(
+            threadBean.getAllThreadIds(), 1);
+        for (ThreadInfo thread: threads) {
+          if (thread.getThreadName().startsWith("TransferFsImageUpload")) {
+            transferThreadCount++;
+          }
+        }
+        return transferThreadCount == NUM_NNS - 1;
+      }
+    }, 1000, 30000);
+  }
+
   /**
    * Make sure that clients will receive StandbyExceptions even when a
    * checkpoint is in progress on the SBN, and therefore the StandbyCheckpointer
    * thread will have FSNS lock. Regression test for HDFS-4591.
    */
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testStandbyExceptionThrownDuringCheckpoint() throws Exception {
     
     // Set it up so that we know when the SBN checkpoint starts and ends.
-    FSImage spyImage1 = NameNodeAdapter.spyOnFsImage(nns[1]);
+    FSImage spyImage1 = NameNodeAdapterMockitoUtil.spyOnFsImage(nns[1]);
     DelayAnswer answerer = new DelayAnswer(LOG);
     Mockito.doAnswer(answerer).when(spyImage1)
-        .saveNamespace(Mockito.any(FSNamesystem.class),
-            Mockito.eq(NameNodeFile.IMAGE), Mockito.any(Canceler.class));
+        .saveNamespace(any(FSNamesystem.class),
+            Mockito.eq(NameNodeFile.IMAGE), any(Canceler.class));
 
     // Perform some edits and wait for a checkpoint to start on the SBN.
     doEdits(0, 1000);
     nns[0].getRpcServer().rollEditLog();
     answerer.waitForCall();
-    assertTrue("SBN is not performing checkpoint but it should be.",
-        answerer.getFireCount() == 1 && answerer.getResultCount() == 0);
+    assertTrue(answerer.getFireCount() == 1 && answerer.getResultCount() == 0,
+        "SBN is not performing checkpoint but it should be.");
     
     // Make sure that the lock has actually been taken by the checkpointing
     // thread.
@@ -394,31 +593,32 @@ public class TestStandbyCheckpoints {
     
     // Make sure that the checkpoint is still going on, implying that the client
     // RPC to the SBN happened during the checkpoint.
-    assertTrue("SBN should have still been checkpointing.",
-        answerer.getFireCount() == 1 && answerer.getResultCount() == 0);
+    assertTrue(answerer.getFireCount() == 1 && answerer.getResultCount() == 0,
+        "SBN should have still been checkpointing.");
     answerer.proceed();
     answerer.waitForResult();
-    assertTrue("SBN should have finished checkpointing.",
-        answerer.getFireCount() == 1 && answerer.getResultCount() == 1);
+    assertTrue(answerer.getFireCount() == 1 && answerer.getResultCount() == 1,
+        "SBN should have finished checkpointing.");
   }
-  
-  @Test(timeout=300000)
+
+  @Test
+  @Timeout(value = 300)
   public void testReadsAllowedDuringCheckpoint() throws Exception {
     
     // Set it up so that we know when the SBN checkpoint starts and ends.
-    FSImage spyImage1 = NameNodeAdapter.spyOnFsImage(nns[1]);
+    FSImage spyImage1 = NameNodeAdapterMockitoUtil.spyOnFsImage(nns[1]);
     DelayAnswer answerer = new DelayAnswer(LOG);
     Mockito.doAnswer(answerer).when(spyImage1)
-        .saveNamespace(Mockito.any(FSNamesystem.class),
-            Mockito.any(NameNodeFile.class),
-            Mockito.any(Canceler.class));
+        .saveNamespace(any(FSNamesystem.class),
+            any(NameNodeFile.class),
+            any(Canceler.class));
     
     // Perform some edits and wait for a checkpoint to start on the SBN.
     doEdits(0, 1000);
     nns[0].getRpcServer().rollEditLog();
     answerer.waitForCall();
-    assertTrue("SBN is not performing checkpoint but it should be.",
-        answerer.getFireCount() == 1 && answerer.getResultCount() == 0);
+    assertTrue(answerer.getFireCount() == 1 && answerer.getResultCount() == 0,
+        "SBN is not performing checkpoint but it should be.");
     
     // Make sure that the lock has actually been taken by the checkpointing
     // thread.
@@ -453,12 +653,12 @@ public class TestStandbyCheckpoints {
     
     // Make sure that the checkpoint is still going on, implying that the client
     // RPC to the SBN happened during the checkpoint.
-    assertTrue("SBN should have still been checkpointing.",
-        answerer.getFireCount() == 1 && answerer.getResultCount() == 0);
+    assertTrue(answerer.getFireCount() == 1 && answerer.getResultCount() == 0,
+        "SBN should have still been checkpointing.");
     answerer.proceed();
     answerer.waitForResult();
-    assertTrue("SBN should have finished checkpointing.",
-        answerer.getFireCount() == 1 && answerer.getResultCount() == 1);
+    assertTrue(answerer.getFireCount() == 1 && answerer.getResultCount() == 1,
+        "SBN should have finished checkpointing.");
     
     t.join();
   }
@@ -467,7 +667,8 @@ public class TestStandbyCheckpoints {
    * Test for the case standby NNs can upload FSImage to ANN after
    * become non-primary standby NN. HDFS-9787
    */
-  @Test(timeout=300000)
+  @Test
+  @Timeout(value = 300)
   public void testNonPrimarySBNUploadFSImage() throws Exception {
     // Shutdown all standby NNs.
     for (int i = 1; i < NUM_NNS; i++) {
@@ -505,6 +706,73 @@ public class TestStandbyCheckpoints {
     HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(23));
   }
 
+  /**
+   * Test that checkpointing is still successful even if an issue
+   * was encountered while writing the legacy OIV image.
+   */
+  @Test
+  @Timeout(value = 300)
+  public void testCheckpointSucceedsWithLegacyOIVException() throws Exception {
+    // Delete the OIV image dir to cause an IOException while saving
+    FileUtil.fullyDelete(tmpOivImgDir);
+
+    doEdits(0, 10);
+    HATestUtil.waitForStandbyToCatchUp(nns[0], nns[1]);
+    // Once the standby catches up, it should notice that it needs to
+    // do a checkpoint and save one to its local directories.
+    HATestUtil.waitForCheckpoint(cluster, 1, ImmutableList.of(12));
+
+    // It should also upload it back to the active.
+    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(12));
+  }
+
+  /**
+   * Test that lastCheckpointTime is correctly updated at each checkpoint.
+   */
+  @Test
+  @Timeout(value = 300)
+  public void testLastCheckpointTime() throws Exception {
+    for (int i = 1; i < NUM_NNS; i++) {
+      cluster.shutdownNameNode(i);
+
+      // Make true checkpoint for DFS_NAMENODE_CHECKPOINT_PERIOD_KEY
+      cluster.getConfiguration(i).setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_PERIOD_KEY, 3);
+      cluster.getConfiguration(i).setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_TXNS_KEY, 1000);
+    }
+    doEdits(0, 10);
+    cluster.transitionToStandby(0);
+
+    // Standby NNs do checkpoint without active NN available.
+    for (int i = 1; i < NUM_NNS; i++) {
+      cluster.restartNameNode(i, false);
+    }
+    cluster.waitClusterUp();
+    setNNs();
+
+    for (int i = 0; i < NUM_NNS; i++) {
+      // Once the standby catches up, it should do a checkpoint
+      // and save to local directories.
+      HATestUtil.waitForCheckpoint(cluster, i, ImmutableList.of(12));
+    }
+
+    long snnCheckpointTime1 = nns[1].getNamesystem().getStandbyLastCheckpointTime();
+    long annCheckpointTime1 = nns[0].getNamesystem().getLastCheckpointTime();
+    cluster.transitionToActive(0);
+    cluster.transitionToObserver(2);
+
+    doEdits(11, 20);
+    nns[0].getRpcServer().rollEditLog();
+    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(23));
+
+    long snnCheckpointTime2 = nns[1].getNamesystem().getStandbyLastCheckpointTime();
+    long annCheckpointTime2 = nns[0].getNamesystem().getLastCheckpointTime();
+
+    // Make sure that both standby and active NNs' lastCheckpointTime intervals are larger
+    // than 3 DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_PERIOD_KEY.
+    assertTrue(snnCheckpointTime2 - snnCheckpointTime1 >= 3000
+        && annCheckpointTime2 - annCheckpointTime1 >= 3000);
+  }
+
   private void doEdits(int start, int stop) throws IOException {
     for (int i = start; i < stop; i++) {
       Path p = new Path("/test" + i);
@@ -519,8 +787,51 @@ public class TestStandbyCheckpoints {
     out.write(42);
     out.close();
   }
-  
-  
+
+  /**
+   * Test checkpoint still succeeds when no more than half of the fsimages upload failed.
+   */
+  @Test
+  @Timeout(value = 300)
+  public void testPutFsimagePartFailed() throws Exception {
+    for (int i = 1; i < NUM_NNS; i++) {
+      cluster.shutdownNameNode(i);
+
+      // Make true checkpoint for DFS_NAMENODE_CHECKPOINT_PERIOD_KEY
+      cluster.getConfiguration(i).setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_PERIOD_KEY, 3);
+      cluster.getConfiguration(i).setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_TXNS_KEY, 1000);
+    }
+    doEdits(0, 10);
+    cluster.transitionToStandby(0);
+
+    for (int i = 1; i < NUM_NNS; i++) {
+      cluster.restartNameNode(i, false);
+    }
+    cluster.waitClusterUp();
+    setNNs();
+
+    for (int i = 0; i < NUM_NNS; i++) {
+      // Once the standby catches up, it should do a checkpoint
+      // and save to local directories.
+      HATestUtil.waitForCheckpoint(cluster, i, ImmutableList.of(12));
+    }
+
+    long snnCheckpointTime1 = nns[1].getNamesystem().getStandbyLastCheckpointTime();
+    cluster.transitionToActive(0);
+    cluster.transitionToObserver(2);
+    cluster.shutdownNameNode(2);
+
+    doEdits(11, 20);
+    nns[0].getRpcServer().rollEditLog();
+    HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(23));
+
+    long snnCheckpointTime2 = nns[1].getNamesystem().getStandbyLastCheckpointTime();
+
+    // Make sure that standby namenode checkpoint success and update the lastCheckpointTime
+    // even though it send fsimage to nn2 failed because nn2 is shut down.
+    assertTrue(snnCheckpointTime2 > snnCheckpointTime1);
+  }
+
   /**
    * A codec which just slows down the saving of the image significantly
    * by sleeping a few milliseconds on every write. This makes it easy to

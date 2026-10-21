@@ -19,12 +19,16 @@
 package org.apache.hadoop.fs;
 
 import java.io.IOException;
+import java.io.InvalidObjectException;
+import java.io.ObjectInputValidation;
+import java.io.Serializable;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Optional;
 import java.util.regex.Pattern;
 
 import org.apache.avro.reflect.Stringable;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -33,11 +37,24 @@ import org.apache.hadoop.conf.Configuration;
 /**
  * Names a file or directory in a {@link FileSystem}.
  * Path strings use slash as the directory separator.
+ * <p>
+ * <b>Trailing slash and URI resolution:</b> {@link URI#resolve(String) URI.resolve()} treats
+ * a trailing slash as significant: it resolves a relative path against the last path segment
+ * when the URI has no trailing slash, and against the path as a directory when it has a
+ * trailing slash. The {@link #Path(URI)} constructor preserves the provided URI (after
+ * {@link URI#normalize()}), including any trailing slash, so {@code path.toUri().resolve("x")}
+ * behaves correctly when the Path was built from a URI. The {@link #Path(String)} constructor
+ * (and other constructors that use string path components) normalize the path and
+ * <em>remove trailing slashes</em> from non-root paths, so resolution via
+ * {@code new Path("hdfs://host/dir/").toUri().resolve("x")} yields {@code hdfs://host/x}
+ * rather than {@code hdfs://host/dir/x}. When resolution behavior matters, construct the Path
+ * from a URI or use path concatenation methods instead of relying on {@code toUri().resolve()}.
  */
 @Stringable
 @InterfaceAudience.Public
 @InterfaceStability.Stable
-public class Path implements Comparable {
+public class Path
+    implements Comparable<Path>, Serializable, ObjectInputValidation {
 
   /**
    * The directory separator, a slash.
@@ -65,6 +82,11 @@ public class Path implements Comparable {
    */
   private static final Pattern HAS_DRIVE_LETTER_SPECIFIER =
       Pattern.compile("^/?[a-zA-Z]:");
+
+  /** Pre-compiled regular expressions to detect duplicated slashes. */
+  private static final Pattern SLASHES = Pattern.compile("/+");
+
+  private static final long serialVersionUID = 0xad00f;
 
   private URI uri; // a hierarchical uri
 
@@ -168,6 +190,9 @@ public class Path implements Comparable {
   /**
    * Construct a path from a String.  Path strings are URIs, but with
    * unescaped elements and some additional normalization.
+   * Trailing slashes are removed from non-root paths during normalization.
+   * For URI resolution behavior that preserves a trailing slash, use
+   * {@link #Path(URI)} instead.
    *
    * @param pathString the path string
    */
@@ -213,7 +238,9 @@ public class Path implements Comparable {
   }
 
   /**
-   * Construct a path from a URI
+   * Construct a path from a URI. The URI is preserved after {@link URI#normalize()},
+   * including any trailing slash. This allows {@code path.toUri().resolve(relative)}
+   * to resolve correctly when the path represents a directory (trailing slash present).
    *
    * @param aUri the source URI
    */
@@ -248,7 +275,14 @@ public class Path implements Comparable {
   private void initialize(String scheme, String authority, String path,
       String fragment) {
     try {
-      this.uri = new URI(scheme, authority, normalizePath(scheme, path), null, fragment)
+      // Normalize the path
+      String normalizedPath = normalizePath(scheme, path);
+
+      // Windows-specific fix: file URIs must start with "/"
+      if ("file".equalsIgnoreCase(scheme) && normalizedPath.matches("^[A-Za-z]:.*")) {
+        normalizedPath = "/" + normalizedPath.replace("\\", "/");
+      }
+      this.uri = new URI(scheme, authority, normalizedPath, null, fragment)
         .normalize();
     } catch (URISyntaxException e) {
       throw new IllegalArgumentException(e);
@@ -285,8 +319,8 @@ public class Path implements Comparable {
    * @return the normalized path string
    */
   private static String normalizePath(String scheme, String path) {
-    // Remove double forward slashes.
-    path = StringUtils.replace(path, "//", "/");
+    // Remove duplicated slashes.
+    path = SLASHES.matcher(path).replaceAll("/");
 
     // Remove backslashes if this looks like a Windows path. Avoid
     // the substitution if it looks like a non-local URI.
@@ -411,22 +445,39 @@ public class Path implements Comparable {
   }
 
   /**
-   * Returns the parent of a path or null if at root.
+   * Returns the parent of a path or null if at root. Better alternative is
+   * {@link #getOptionalParentPath()} to handle nullable value for root path.
+   *
    * @return the parent of a path or null if at root
    */
   public Path getParent() {
+    return getParentUtil();
+  }
+
+  /**
+   * Returns the parent of a path as {@link Optional} or
+   * {@link Optional#empty()} i.e an empty Optional if at root.
+   *
+   * @return Parent of path wrappen in {@link Optional}.
+   * {@link Optional#empty()} i.e an empty Optional if at root.
+   */
+  public Optional<Path> getOptionalParentPath() {
+    return Optional.ofNullable(getParentUtil());
+  }
+
+  private Path getParentUtil() {
     String path = uri.getPath();
     int lastSlash = path.lastIndexOf('/');
     int start = startPositionWithoutWindowsDrive(path);
     if ((path.length() == start) ||               // empty path
-        (lastSlash == start && path.length() == start+1)) { // at root
+        (lastSlash == start && path.length() == start + 1)) { // at root
       return null;
     }
     String parent;
-    if (lastSlash==-1) {
+    if (lastSlash == -1) {
       parent = CUR_DIR;
     } else {
-      parent = path.substring(0, lastSlash==start?start+1:lastSlash);
+      parent = path.substring(0, lastSlash == start ? start + 1 : lastSlash);
     }
     return new Path(uri.getScheme(), uri.getAuthority(), parent);
   }
@@ -438,7 +489,12 @@ public class Path implements Comparable {
    * @return a new path with the suffix added
    */
   public Path suffix(String suffix) {
-    return new Path(getParent(), getName()+suffix);
+    Path parent = getParent();
+    if (parent == null) {
+      return new Path("/", getName() + suffix);
+    }
+
+    return new Path(parent, getName() + suffix);
   }
 
   @Override
@@ -447,12 +503,12 @@ public class Path implements Comparable {
     // illegal characters unescaped in the string, for glob processing, etc.
     StringBuilder buffer = new StringBuilder();
     if (uri.getScheme() != null) {
-      buffer.append(uri.getScheme());
-      buffer.append(":");
+      buffer.append(uri.getScheme())
+          .append(":");
     }
     if (uri.getAuthority() != null) {
-      buffer.append("//");
-      buffer.append(uri.getAuthority());
+      buffer.append("//")
+          .append(uri.getAuthority());
     }
     if (uri.getPath() != null) {
       String path = uri.getPath();
@@ -464,8 +520,8 @@ public class Path implements Comparable {
       buffer.append(path);
     }
     if (uri.getFragment() != null) {
-      buffer.append("#");
-      buffer.append(uri.getFragment());
+      buffer.append("#")
+          .append(uri.getFragment());
     }
     return buffer.toString();
   }
@@ -485,11 +541,10 @@ public class Path implements Comparable {
   }
 
   @Override
-  public int compareTo(Object o) {
-    Path that = (Path)o;
-    return this.uri.compareTo(that.uri);
+  public int compareTo(Path o) {
+    return this.uri.compareTo(o.uri);
   }
-  
+
   /**
    * Returns the number of elements in this path.
    * @return the number of elements in this path
@@ -564,5 +619,18 @@ public class Path implements Comparable {
       throw new IllegalArgumentException(e);
     }
     return new Path(newUri);
+  }
+
+  /**
+   * Validate the contents of a deserialized Path, so as
+   * to defend against malicious object streams.
+   * @throws InvalidObjectException if there's no URI
+   */
+  @Override
+  public void validateObject() throws InvalidObjectException {
+    if (uri == null) {
+      throw new InvalidObjectException("No URI in deserialized Path");
+    }
+
   }
 }

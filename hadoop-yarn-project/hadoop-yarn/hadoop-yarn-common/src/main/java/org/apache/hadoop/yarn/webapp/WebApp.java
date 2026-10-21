@@ -18,31 +18,31 @@
 
 package org.apache.hadoop.yarn.webapp;
 
-import static com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.hadoop.util.Preconditions.checkNotNull;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.http.HttpServer2;
+import org.apache.hadoop.util.Lists;
+import org.apache.hadoop.yarn.webapp.view.RobotsTextPage;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.CharMatcher;
-import com.google.common.base.Splitter;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
+
 import com.google.inject.Provides;
 import com.google.inject.servlet.GuiceFilter;
 import com.google.inject.servlet.ServletModule;
-import com.sun.jersey.api.container.filter.GZIPContentEncodingFilter;
-import com.sun.jersey.api.core.ResourceConfig;
-import com.sun.jersey.core.util.FeaturesAndProperties;
-import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
-import com.sun.jersey.spi.container.servlet.ServletContainer;
+
+import javax.servlet.Filter;
 
 /**
  * @see WebApps for a usage example
@@ -51,10 +51,11 @@ import com.sun.jersey.spi.container.servlet.ServletContainer;
 public abstract class WebApp extends ServletModule {
   private static final Logger LOG = LoggerFactory.getLogger(WebApp.class);
 
-  public enum HTTP { GET, POST, HEAD, PUT, DELETE };
+  public enum HTTP { GET, POST, HEAD, PUT, DELETE }
 
   private volatile String name;
-  private volatile List<String> servePathSpecs = new ArrayList<String>();
+  private volatile List<String> servePathSpecs = new ArrayList<>();
+
   // path to redirect to
   private volatile String redirectPath;
   private volatile String wsName;
@@ -158,7 +159,8 @@ public abstract class WebApp extends ServletModule {
   public void configureServlets() {
     setup();
 
-    serve("/", "/__stop").with(Dispatcher.class);
+    serve("/", "/__stop", RobotsTextPage.ROBOTS_TXT_PATH)
+        .with(Dispatcher.class);
 
     for (String path : this.servePathSpecs) {
       serve(path).with(Dispatcher.class);
@@ -174,24 +176,19 @@ public abstract class WebApp extends ServletModule {
     if (this.wsName != null) {
       // There seems to be an issue with the guice/jersey integration
       // where we have to list the stuff we don't want it to serve
-      // through the guicecontainer. In this case its everything except
-      // the the web services api prefix. We can't just change the filter
+      // through the guicecontainer. In this case It's everything except
+      // the web services api prefix. We can't just change the filter
       // from /* below - that doesn't work.
       String regex = "(?!/" + this.wsName + ")";
       serveRegex(regex).with(DefaultWrapperServlet.class);
-
-      Map<String, String> params = new HashMap<String, String>();
-      params.put(ResourceConfig.FEATURE_IMPLICIT_VIEWABLES, "true");
-      params.put(ServletContainer.FEATURE_FILTER_FORWARD_ON_404, "true");
-      params.put(FeaturesAndProperties.FEATURE_XMLROOTELEMENT_PROCESSING, "true");
-      params.put(ResourceConfig.PROPERTY_CONTAINER_REQUEST_FILTERS, GZIPContentEncodingFilter.class.getName());
-      params.put(ResourceConfig.PROPERTY_CONTAINER_RESPONSE_FILTERS, GZIPContentEncodingFilter.class.getName());
-      filter("/*").through(getWebAppFilterClass(), params);
+      if (getWebAppFilterClass() != null) {
+        filter("/*").through(getWebAppFilterClass(), new HashMap<>());
+      }
     }
   }
 
-  protected Class<? extends GuiceContainer> getWebAppFilterClass() {
-    return GuiceContainer.class;
+  protected Class<? extends Filter> getWebAppFilterClass() {
+    return null;
   }
 
   /**
@@ -206,6 +203,19 @@ public abstract class WebApp extends ServletModule {
     List<String> res = parseRoute(pathSpec);
     router.add(method, res.get(R_PATH), cls, action,
                res.subList(R_PARAMS, res.size()));
+  }
+
+  /**
+   * Setup of a webapp serving route without default views added to the page.
+   * @param pathSpec  the path spec in the form of /controller/action/:args etc.
+   * @param cls the controller class
+   * @param action the controller method
+   */
+  public void routeWithoutDefaultView(String pathSpec,
+                    Class<? extends Controller> cls, String action) {
+    List<String> res = parseRoute(pathSpec);
+    router.addWithoutDefaultView(HTTP.GET, res.get(R_PATH), cls, action,
+        res.subList(R_PARAMS, res.size()));
   }
 
   public void route(String pathSpec, Class<? extends Controller> cls,
@@ -260,7 +270,7 @@ public abstract class WebApp extends ServletModule {
 
   static String getPrefix(String pathSpec) {
     int start = 0;
-    while (CharMatcher.WHITESPACE.matches(pathSpec.charAt(start))) {
+    while (StringUtils.isAnyBlank(Character.toString(pathSpec.charAt(start)))) {
       ++start;
     }
     if (pathSpec.charAt(start) != '/') {
@@ -276,10 +286,14 @@ public abstract class WebApp extends ServletModule {
     char c;
     do {
       c = pathSpec.charAt(--ci);
-    } while (c == '/' || CharMatcher.WHITESPACE.matches(c));
+    } while (c == '/' || StringUtils.isAnyBlank(Character.toString(c)));
     return pathSpec.substring(start, ci + 1);
   }
 
   public abstract void setup();
 
+  @VisibleForTesting
+  public HttpServer2 getHttpServer() {
+    return httpServer;
+  }
 }

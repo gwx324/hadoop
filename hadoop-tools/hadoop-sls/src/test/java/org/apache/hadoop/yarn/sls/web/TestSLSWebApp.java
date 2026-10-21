@@ -18,38 +18,40 @@
 
 package org.apache.hadoop.yarn.sls.web;
 
-import org.junit.Assert;
+import org.junit.jupiter.api.Assertions;
 import org.apache.commons.io.FileUtils;
-import org.apache.hadoop.yarn.sls.SLSRunner;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.text.MessageFormat;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.HashMap;
 
 public class TestSLSWebApp {
 
   @Test
   public void testSimulateInfoPageHtmlTemplate() throws Exception {
     String simulateInfoTemplate = FileUtils.readFileToString(
-            new File("src/main/html/simulate.info.html.template"));
+            new File("src/main/html/simulate.info.html.template"), StandardCharsets.UTF_8);
 
-    SLSRunner.simulateInfoMap.put("Number of racks", 10);
-    SLSRunner.simulateInfoMap.put("Number of nodes", 100);
-    SLSRunner.simulateInfoMap.put("Node memory (MB)", 1024);
-    SLSRunner.simulateInfoMap.put("Node VCores", 1);
-    SLSRunner.simulateInfoMap.put("Number of applications", 100);
-    SLSRunner.simulateInfoMap.put("Number of tasks", 1000);
-    SLSRunner.simulateInfoMap.put("Average tasks per applicaion", 10);
-    SLSRunner.simulateInfoMap.put("Number of queues", 4);
-    SLSRunner.simulateInfoMap.put("Average applications per queue", 25);
-    SLSRunner.simulateInfoMap.put("Estimated simulate time (s)", 10000);
+    Map<String, Object> simulateInfoMap = new HashMap<>();
+    simulateInfoMap.put("Number of racks", 10);
+    simulateInfoMap.put("Number of nodes", 100);
+    simulateInfoMap.put("Node memory (MB)", 1024);
+    simulateInfoMap.put("Node VCores", 1);
+    simulateInfoMap.put("Number of applications", 100);
+    simulateInfoMap.put("Number of tasks", 1000);
+    simulateInfoMap.put("Average tasks per applicaion", 10);
+    simulateInfoMap.put("Number of queues", 4);
+    simulateInfoMap.put("Average applications per queue", 25);
+    simulateInfoMap.put("Estimated simulate time (s)", 10000);
 
     StringBuilder info = new StringBuilder();
     for (Map.Entry<String, Object> entry :
-            SLSRunner.simulateInfoMap.entrySet()) {
+        simulateInfoMap.entrySet()) {
       info.append("<tr>");
       info.append("<td class='td1'>" + entry.getKey() + "</td>");
       info.append("<td class='td2'>" + entry.getValue() + "</td>");
@@ -58,21 +60,20 @@ public class TestSLSWebApp {
 
     String simulateInfo =
             MessageFormat.format(simulateInfoTemplate, info.toString());
-    Assert.assertTrue("The simulate info html page should not be empty",
-            simulateInfo.length() > 0);
-    for (Map.Entry<String, Object> entry :
-            SLSRunner.simulateInfoMap.entrySet()) {
-      Assert.assertTrue("The simulate info html page should have information "
-              + "of " + entry.getKey(), simulateInfo.contains("<td class='td1'>"
+    Assertions.assertTrue(
+           simulateInfo.length() > 0, "The simulate info html page should not be empty");
+    for (Map.Entry<String, Object> entry : simulateInfoMap.entrySet()) {
+      Assertions.assertTrue(simulateInfo.contains("<td class='td1'>"
               + entry.getKey() + "</td><td class='td2'>"
-              + entry.getValue() + "</td>"));
+              + entry.getValue() + "</td>"), "The simulate info html page should have information "
+              + "of " + entry.getKey());
     }
   }
 
   @Test
   public void testSimulatePageHtmlTemplate() throws Exception {
     String simulateTemplate = FileUtils.readFileToString(
-            new File("src/main/html/simulate.html.template"));
+            new File("src/main/html/simulate.html.template"), StandardCharsets.UTF_8);
 
     Set<String> queues = new HashSet<String>();
     queues.add("sls_queue_1");
@@ -89,14 +90,14 @@ public class TestSLSWebApp {
     }
     String simulateInfo = MessageFormat.format(simulateTemplate,
             queueInfo, "s", 1000, 1000);
-    Assert.assertTrue("The simulate page html page should not be empty",
-            simulateInfo.length() > 0);
+    Assertions.assertTrue(
+           simulateInfo.length() > 0, "The simulate page html page should not be empty");
   }
 
   @Test
   public void testTrackPageHtmlTemplate() throws Exception {
     String trackTemplate = FileUtils.readFileToString(
-            new File("src/main/html/track.html.template"));
+            new File("src/main/html/track.html.template"), StandardCharsets.UTF_8);
     String trackedQueueInfo = "";
     Set<String> trackedQueues = new HashSet<String>();
     trackedQueues.add("sls_queue_1");
@@ -115,7 +116,7 @@ public class TestSLSWebApp {
     }
     String trackInfo = MessageFormat.format(trackTemplate, trackedQueueInfo,
             trackedAppInfo, "s", 1000, 1000);
-    Assert.assertTrue("The queue/app tracking html page should not be empty",
-            trackInfo.length() > 0);
+    Assertions.assertTrue(
+           trackInfo.length() > 0, "The queue/app tracking html page should not be empty");
   }
 }

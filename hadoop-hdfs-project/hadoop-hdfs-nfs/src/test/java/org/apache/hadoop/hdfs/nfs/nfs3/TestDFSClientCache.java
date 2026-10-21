@@ -18,21 +18,27 @@
 package org.apache.hadoop.hdfs.nfs.nfs3;
 
 import static org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod.KERBEROS;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSClient;
+import org.apache.hadoop.hdfs.nfs.conf.NfsConfigKeys;
 import org.apache.hadoop.hdfs.nfs.conf.NfsConfiguration;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 public class TestDFSClientCache {
+  @AfterEach
+  public void cleanup() {
+    UserGroupInformation.reset();
+  }
+
   @Test
   public void testEviction() throws IOException {
     NfsConfiguration conf = new NfsConfiguration();
@@ -43,15 +49,17 @@ public class TestDFSClientCache {
 
     DFSClientCache cache = new DFSClientCache(conf, MAX_CACHE_SIZE);
 
-    DFSClient c1 = cache.getDfsClient("test1");
-    assertTrue(cache.getDfsClient("test1").toString().contains("ugi=test1"));
-    assertEquals(c1, cache.getDfsClient("test1"));
+    int namenodeId = Nfs3Utils.getNamenodeId(conf);
+    DFSClient c1 = cache.getDfsClient("test1", namenodeId);
+    assertTrue(cache.getDfsClient("test1", namenodeId)
+        .toString().contains("ugi=test1"));
+    assertEquals(c1, cache.getDfsClient("test1", namenodeId));
     assertFalse(isDfsClientClose(c1));
 
-    cache.getDfsClient("test2");
+    cache.getDfsClient("test2", namenodeId);
     assertTrue(isDfsClientClose(c1));
-    assertTrue("cache size should be the max size or less",
-        cache.clientCache.size() <= MAX_CACHE_SIZE);
+    assertTrue(cache.getClientCache().size() <= MAX_CACHE_SIZE,
+        "cache size should be the max size or less");
   }
 
   @Test
@@ -61,6 +69,7 @@ public class TestDFSClientCache {
 
 
     NfsConfiguration conf = new NfsConfiguration();
+    conf.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://localhost");
     UserGroupInformation currentUserUgi
             = UserGroupInformation.createRemoteUser(currentUser);
     currentUserUgi.setAuthenticationMethod(KERBEROS);
@@ -70,11 +79,10 @@ public class TestDFSClientCache {
     UserGroupInformation ugiResult
             = cache.getUserGroupInformation(userName, currentUserUgi);
 
-    assertThat(ugiResult.getUserName(), is(userName));
-    assertThat(ugiResult.getRealUser(), is(currentUserUgi));
-    assertThat(
-            ugiResult.getAuthenticationMethod(),
-            is(UserGroupInformation.AuthenticationMethod.PROXY));
+    assertThat(ugiResult.getUserName()).isEqualTo(userName);
+    assertThat(ugiResult.getRealUser()).isEqualTo(currentUserUgi);
+    assertThat(ugiResult.getAuthenticationMethod()).isEqualTo(
+        UserGroupInformation.AuthenticationMethod.PROXY);
   }
 
   @Test
@@ -90,11 +98,28 @@ public class TestDFSClientCache {
     UserGroupInformation ugiResult
             = cache.getUserGroupInformation(userName, currentUserUgi);
 
-    assertThat(ugiResult.getUserName(), is(userName));
-    assertThat(ugiResult.getRealUser(), is(currentUserUgi));
-    assertThat(
-            ugiResult.getAuthenticationMethod(),
-            is(UserGroupInformation.AuthenticationMethod.PROXY));
+    assertThat(ugiResult.getUserName()).isEqualTo(userName);
+    assertThat(ugiResult.getRealUser()).isEqualTo(currentUserUgi);
+    assertThat(ugiResult.getAuthenticationMethod()).isEqualTo(
+        UserGroupInformation.AuthenticationMethod.PROXY);
+  }
+
+  /**
+   * HDFS-17844: Multiple export paths pointing to the same namenode should
+   * not trigger a false namenode ID collision error.  Before the fix,
+   * prepareAddressMap() threw FileSystemException whenever the same namenodeId
+   * was seen a second time, even if both paths resolved to the same namenode
+   * authority.
+   */
+  @Test
+  public void testMultipleExportPointsSameNamenode() throws IOException {
+    NfsConfiguration conf = new NfsConfiguration();
+    conf.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://localhost");
+    // Two export paths on the same namenode produce the same namenodeId
+    // because getNamenodeId() is based solely on the host:port address.
+    // The cache constructor must not throw a FileSystemException.
+    conf.setStrings(NfsConfigKeys.DFS_NFS_EXPORT_POINT_KEY, "/path1", "/path2");
+    new DFSClientCache(conf);
   }
 
   private static boolean isDfsClientClose(DFSClient c) {

@@ -104,12 +104,12 @@ public class JobInfo {
     this.mapsCompleted = job.getCompletedMaps();
     this.mapProgress = report.getMapProgress() * 100;
     this.mapProgressPercent =
-        StringUtils.formatPercent(report.getMapProgress(), 2);
+        StringUtils.format("%.2f", getMapProgress());
     this.reducesTotal = job.getTotalReduces();
     this.reducesCompleted = job.getCompletedReduces();
     this.reduceProgress = report.getReduceProgress() * 100;
     this.reduceProgressPercent =
-        StringUtils.formatPercent(report.getReduceProgress(), 2);
+        StringUtils.format("%.2f", getReduceProgress());
 
     this.acls = new ArrayList<ConfEntryInfo>();
     if (hasAccess) {
@@ -120,7 +120,7 @@ public class JobInfo {
 
       List<String> diagnostics = job.getDiagnostics();
       if (diagnostics != null && !diagnostics.isEmpty()) {
-        StringBuffer b = new StringBuffer();
+        StringBuilder b = new StringBuilder();
         for (String diag : diagnostics) {
           b.append(diag);
         }

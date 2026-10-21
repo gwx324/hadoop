@@ -23,8 +23,6 @@ import java.io.File;
 import java.io.IOException;
 import java.util.Iterator;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.CustomOutputCommitter;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -42,11 +40,14 @@ import org.apache.hadoop.mapred.RunningJob;
 import org.apache.hadoop.mapred.TextInputFormat;
 import org.apache.hadoop.mapred.lib.IdentityMapper;
 import org.apache.hadoop.mapred.lib.IdentityReducer;
-import org.apache.hadoop.mapreduce.filecache.DistributedCache;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.mapreduce.Job;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.fail;
 
 @SuppressWarnings("deprecation")
 public class TestMRAppWithCombiner {
@@ -54,7 +55,8 @@ public class TestMRAppWithCombiner {
   protected static MiniMRYarnCluster mrCluster;
   private static Configuration conf = new Configuration();
   private static FileSystem localFs;
-  private static final Log LOG = LogFactory.getLog(TestMRAppWithCombiner.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestMRAppWithCombiner.class);
 
   static {
     try {
@@ -64,7 +66,7 @@ public class TestMRAppWithCombiner {
     }
   }
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws IOException {
 
     if (!(new File(MiniMRYarnCluster.APPJAR)).exists()) {
@@ -87,7 +89,7 @@ public class TestMRAppWithCombiner {
     localFs.setPermission(TestMRJobs.APP_JAR, new FsPermission("700"));
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     if (mrCluster != null) {
       mrCluster.stop();
@@ -110,7 +112,7 @@ public class TestMRAppWithCombiner {
     conf.setCombinerClass(MyCombinerToCheckReporter.class);
     //conf.setJarByClass(MyCombinerToCheckReporter.class);
     conf.setReducerClass(IdentityReducer.class);
-    DistributedCache.addFileToClassPath(TestMRJobs.APP_JAR, conf);
+    Job.addFileToClassPath(TestMRJobs.APP_JAR, conf, TestMRJobs.APP_JAR.getFileSystem(conf));
     conf.setOutputCommitter(CustomOutputCommitter.class);
     conf.setInputFormat(TextInputFormat.class);
     conf.setOutputKeyClass(LongWritable.class);
@@ -152,7 +154,7 @@ public class TestMRAppWithCombiner {
     public void reduce(K key, Iterator<V> values, OutputCollector<K, V> output,
         Reporter reporter) throws IOException {
       if (Reporter.NULL == reporter) {
-        Assert.fail("A valid Reporter should have been used but, Reporter.NULL is used");
+        fail("A valid Reporter should have been used but, Reporter.NULL is used");
       }
     }
   }

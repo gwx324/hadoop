@@ -131,7 +131,7 @@ public class LocatedBlocks {
   public int findBlock(long offset) {
     // create fake block of size 0 as a key
     LocatedBlock key = new LocatedBlock(
-        new ExtendedBlock(), new DatanodeInfo[0]);
+        new ExtendedBlock(), DatanodeInfo.EMPTY_ARRAY);
     key.setStartOffset(offset);
     key.getBlock().setNumBytes(1);
     Comparator<LocatedBlock> comp =
@@ -188,10 +188,11 @@ public class LocatedBlocks {
 
   @Override
   public String toString() {
-    return getClass().getSimpleName() + "{" + "\n  fileLength=" + fileLength
-        + "\n  underConstruction=" + underConstruction
-        + "\n  blocks=" + blocks
-        + "\n  lastLocatedBlock=" + lastLocatedBlock
-        + "\n  isLastBlockComplete=" + isLastBlockComplete + "}";
+    return getClass().getSimpleName() + "{" + ";  fileLength=" + fileLength
+        + ";  underConstruction=" + underConstruction
+        + ";  blocks=" + blocks
+        + ";  lastLocatedBlock=" + lastLocatedBlock
+        + ";  isLastBlockComplete=" + isLastBlockComplete
+        + ";  ecPolicy=" + ecPolicy + "}";
   }
 }

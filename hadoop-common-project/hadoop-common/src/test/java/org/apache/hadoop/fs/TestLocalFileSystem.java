@@ -17,34 +17,56 @@
  */
 package org.apache.hadoop.fs;
 
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem.Statistics;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.LambdaTestUtils;
 import org.apache.hadoop.util.StringUtils;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_DEFAULT;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_KEY;
 import static org.apache.hadoop.fs.FileSystemTestHelper.*;
 
 import java.io.*;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.EnumSet;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Random;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
 import static org.apache.hadoop.test.PlatformAssumptions.assumeWindows;
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
 
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import javax.annotation.Nonnull;
 
 /**
  * This class tests the local file system via the FileSystem abstraction.
  */
+@Timeout(60)
 public class TestLocalFileSystem {
   private static final File base =
       GenericTestUtils.getTestDir("work-dir/localfs");
@@ -60,7 +82,7 @@ public class TestLocalFileSystem {
     assertTrue(!fs.exists(name));
   }
   
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     conf = new Configuration(false);
     conf.set("fs.file.impl", LocalFileSystem.class.getName());
@@ -68,7 +90,7 @@ public class TestLocalFileSystem {
     fileSys.delete(new Path(TEST_ROOT_DIR), true);
   }
   
-  @After
+  @AfterEach
   public void after() throws IOException {
     FileUtil.setWritable(base, true);
     FileUtil.fullyDelete(base);
@@ -79,7 +101,7 @@ public class TestLocalFileSystem {
   /**
    * Test the capability of setting the working directory.
    */
-  @Test(timeout = 10000)
+  @Test
   public void testWorkingDirectory() throws IOException {
     Path origDir = fileSys.getWorkingDirectory();
     Path subdir = new Path(TEST_ROOT_DIR, "new");
@@ -133,11 +155,11 @@ public class TestLocalFileSystem {
    * test Syncable interface on raw local file system
    * @throws IOException
    */
-  @Test(timeout = 1000)
+  @Test
   public void testSyncable() throws IOException {
     FileSystem fs = fileSys.getRawFileSystem();
     Path file = new Path(TEST_ROOT_DIR, "syncable");
-    FSDataOutputStream out = fs.create(file);;
+    FSDataOutputStream out = fs.create(file);
     final int bytesWritten = 1;
     byte[] expectedBuf = new byte[] {'0', '1', '2', '3'};
     try {
@@ -166,7 +188,7 @@ public class TestLocalFileSystem {
     }
   }
   
-  @Test(timeout = 10000)
+  @Test
   public void testCopy() throws IOException {
     Path src = new Path(TEST_ROOT_DIR, "dingo");
     Path dst = new Path(TEST_ROOT_DIR, "yak");
@@ -192,24 +214,24 @@ public class TestLocalFileSystem {
     }
   }
 
-  @Test(timeout = 1000)
+  @Test
   public void testHomeDirectory() throws IOException {
-    Path home = new Path(System.getProperty("user.home"))
-      .makeQualified(fileSys);
+    Path home = fileSys.makeQualified(
+        new Path(System.getProperty("user.home")));
     Path fsHome = fileSys.getHomeDirectory();
     assertEquals(home, fsHome);
   }
 
-  @Test(timeout = 1000)
+  @Test
   public void testPathEscapes() throws IOException {
     Path path = new Path(TEST_ROOT_DIR, "foo%bar");
     writeFile(fileSys, path, 1);
     FileStatus status = fileSys.getFileStatus(path);
-    assertEquals(path.makeQualified(fileSys), status.getPath());
+    assertEquals(fileSys.makeQualified(path), status.getPath());
     cleanupFile(fileSys, path);
   }
   
-  @Test(timeout = 1000)
+  @Test
   public void testCreateFileAndMkdirs() throws IOException {
     Path test_dir = new Path(TEST_ROOT_DIR, "test_dir");
     Path test_file = new Path(test_dir, "file1");
@@ -221,9 +243,9 @@ public class TestLocalFileSystem {
     {
       //check FileStatus and ContentSummary 
       final FileStatus status = fileSys.getFileStatus(test_file);
-      Assert.assertEquals(fileSize, status.getLen());
+      assertEquals(fileSize, status.getLen());
       final ContentSummary summary = fileSys.getContentSummary(test_dir);
-      Assert.assertEquals(fileSize, summary.getLength());
+      assertEquals(fileSize, summary.getLength());
     }
     
     // creating dir over a file
@@ -245,7 +267,7 @@ public class TestLocalFileSystem {
   }
 
   /** Test deleting a file, directory, and non-existent path */
-  @Test(timeout = 1000)
+  @Test
   public void testBasicDelete() throws IOException {
     Path dir1 = new Path(TEST_ROOT_DIR, "dir1");
     Path file1 = new Path(TEST_ROOT_DIR, "file1");
@@ -254,13 +276,12 @@ public class TestLocalFileSystem {
     assertTrue(fileSys.mkdirs(dir1));
     writeFile(fileSys, file1, 1);
     writeFile(fileSys, file2, 1);
-    assertFalse("Returned true deleting non-existant path", 
-            fileSys.delete(file3));
-    assertTrue("Did not delete file", fileSys.delete(file1));
-    assertTrue("Did not delete non-empty dir", fileSys.delete(dir1));
+    assertFalse(fileSys.delete(file3), "Returned true deleting non-existant path");
+    assertTrue(fileSys.delete(file1), "Did not delete file");
+    assertTrue(fileSys.delete(dir1), "Did not delete non-empty dir");
   }
   
-  @Test(timeout = 1000)
+  @Test
   public void testStatistics() throws Exception {
     int fileSchemeCount = 0;
     for (Statistics stats : FileSystem.getAllStatistics()) {
@@ -271,7 +292,7 @@ public class TestLocalFileSystem {
     assertEquals(1, fileSchemeCount);
   }
 
-  @Test(timeout = 1000)
+  @Test
   public void testHasFileDescriptor() throws IOException {
     Path path = new Path(TEST_ROOT_DIR, "test-file");
     writeFile(fileSys, path, 1);
@@ -281,19 +302,19 @@ public class TestLocalFileSystem {
         .new LocalFSFileInputStream(path), 1024);
       assertNotNull(bis.getFileDescriptor());
     } finally {
-      IOUtils.cleanup(null, bis);
+      IOUtils.cleanupWithLogger(null, bis);
     }
   }
 
-  @Test(timeout = 1000)
+  @Test
   public void testListStatusWithColons() throws IOException {
     assumeNotWindows();
     File colonFile = new File(TEST_ROOT_DIR, "foo:bar");
     colonFile.mkdirs();
     FileStatus[] stats = fileSys.listStatus(new Path(TEST_ROOT_DIR));
-    assertEquals("Unexpected number of stats", 1, stats.length);
-    assertEquals("Bad path from stat", colonFile.getAbsolutePath(),
-        stats[0].getPath().toUri().getPath());
+    assertEquals(1, stats.length, "Unexpected number of stats");
+    assertEquals(colonFile.getAbsolutePath(),
+        stats[0].getPath().toUri().getPath(), "Bad path from stat");
   }
   
   @Test
@@ -306,12 +327,12 @@ public class TestLocalFileSystem {
     File file = new File(dirNoDriveSpec, "foo");
     file.mkdirs();
     FileStatus[] stats = fileSys.listStatus(new Path(dirNoDriveSpec));
-    assertEquals("Unexpected number of stats", 1, stats.length);
-    assertEquals("Bad path from stat", new Path(file.getPath()).toUri().getPath(),
-        stats[0].getPath().toUri().getPath());
+    assertEquals(1, stats.length, "Unexpected number of stats");
+    assertEquals(new Path(file.getPath()).toUri().getPath(),
+        stats[0].getPath().toUri().getPath(), "Bad path from stat");
   }
   
-  @Test(timeout = 10000)
+  @Test
   public void testReportChecksumFailure() throws IOException {
     base.mkdirs();
     assertTrue(base.exists() && base.isDirectory());
@@ -391,7 +412,7 @@ public class TestLocalFileSystem {
     assertEquals(expectedAccTime, status.getAccessTime());
   }
 
-  @Test(timeout = 1000)
+  @Test
   public void testSetTimes() throws Exception {
     Path path = new Path(TEST_ROOT_DIR, "set-times");
     writeFile(fileSys, path, 1);
@@ -402,8 +423,9 @@ public class TestLocalFileSystem {
     long newAccTime = 23456000;
 
     FileStatus status = fileSys.getFileStatus(path);
-    assertTrue("check we're actually changing something", newModTime != status.getModificationTime());
-    assertTrue("check we're actually changing something", newAccTime != status.getAccessTime());
+    assertTrue(newModTime != status.getModificationTime(),
+        "check we're actually changing something");
+    assertTrue(newAccTime != status.getAccessTime(), "check we're actually changing something");
 
     fileSys.setTimes(path, newModTime, newAccTime);
     checkTimesStatus(path, newModTime, newAccTime);
@@ -579,8 +601,8 @@ public class TestLocalFileSystem {
     // Create test file with fragment
     FileSystemTestHelper.createFile(fs, pathWithFragment);
     Path resolved = fs.resolvePath(pathWithFragment);
-    assertEquals("resolvePath did not strip fragment from Path", pathQualified,
-        resolved);
+    assertEquals(pathQualified,
+        resolved, "resolvePath did not strip fragment from Path");
   }
 
   @Test
@@ -623,7 +645,8 @@ public class TestLocalFileSystem {
     RawLocalFileSystem fs = spy(origFs);
     Configuration conf = mock(Configuration.class);
     fs.setConf(conf);
-    Whitebox.setInternalState(fs, "useDeprecatedFileStatus", false);
+
+    RawLocalFileSystem.setUseDeprecatedFileStatus(false);
     Path path = new Path("/foo");
     File pipe = mock(File.class);
     when(pipe.isFile()).thenReturn(false);
@@ -635,5 +658,350 @@ public class TestLocalFileSystem {
     doReturn(stat).when(fs).getFileStatus(path);
     FileStatus[] stats = fs.listStatus(path);
     assertTrue(stats != null && stats.length == 1 && stats[0] == stat);
+  }
+
+  @Test
+  public void testFSOutputStreamBuilder() throws Exception {
+    Path path = new Path(TEST_ROOT_DIR, "testBuilder");
+
+    try {
+      FSDataOutputStreamBuilder builder =
+          fileSys.createFile(path).recursive();
+      FSDataOutputStream out = builder.build();
+      String content = "Create with a generic type of createFile!";
+      byte[] contentOrigin = content.getBytes(StandardCharsets.UTF_8);
+      out.write(contentOrigin);
+      out.close();
+
+      FSDataInputStream input = fileSys.open(path);
+      byte[] buffer =
+          new byte[(int) (fileSys.getFileStatus(path).getLen())];
+      input.readFully(0, buffer);
+      input.close();
+      assertArrayEquals(contentOrigin, buffer, "The data be read should equals with the "
+          + "data written.");
+    } catch (IOException e) {
+      throw e;
+    }
+
+    // Test value not being set for replication, block size, buffer size
+    // and permission
+    FSDataOutputStreamBuilder builder =
+        fileSys.createFile(path);
+    try (FSDataOutputStream stream = builder.build()) {
+      assertThat(builder.getBlockSize())
+          .withFailMessage("Should be default block size")
+          .isEqualTo(fileSys.getDefaultBlockSize());
+      assertThat(builder.getReplication())
+          .withFailMessage("Should be default replication factor")
+          .isEqualTo(fileSys.getDefaultReplication());
+      assertThat(builder.getBufferSize())
+          .withFailMessage("Should be default buffer size")
+          .isEqualTo(fileSys.getConf().getInt(IO_FILE_BUFFER_SIZE_KEY,
+              IO_FILE_BUFFER_SIZE_DEFAULT));
+      assertThat(builder.getPermission())
+          .withFailMessage("Should be default permission")
+          .isEqualTo(FsPermission.getFileDefault());
+    }
+
+    // Test set 0 to replication, block size and buffer size
+    builder = fileSys.createFile(path);
+    builder.bufferSize(0).blockSize(0).replication((short) 0);
+    assertThat(builder.getBlockSize())
+        .withFailMessage("Block size should be 0")
+        .isZero();
+    assertThat(builder.getReplication())
+        .withFailMessage("Replication factor should be 0")
+        .isZero();
+    assertThat(builder.getBufferSize())
+        .withFailMessage("Buffer size should be 0")
+        .isZero();
+  }
+
+  /**
+   * A builder to verify configuration keys are supported.
+   */
+  private static class BuilderWithSupportedKeys
+      extends FSDataOutputStreamBuilder<FSDataOutputStream,
+      BuilderWithSupportedKeys> {
+
+    private final Set<String> supportedKeys = new HashSet<>();
+
+    BuilderWithSupportedKeys(@Nonnull final Collection<String> supportedKeys,
+        @Nonnull FileSystem fileSystem, @Nonnull Path p) {
+      super(fileSystem, p);
+      this.supportedKeys.addAll(supportedKeys);
+    }
+
+    @Override
+    public BuilderWithSupportedKeys getThisBuilder() {
+      return this;
+    }
+
+    @Override
+    public FSDataOutputStream build()
+        throws IllegalArgumentException, IOException {
+      Set<String> unsupported = new HashSet<>(getMandatoryKeys());
+      unsupported.removeAll(supportedKeys);
+      Preconditions.checkArgument(unsupported.isEmpty(),
+          "unsupported key found: " + supportedKeys);
+      return getFS().create(
+          getPath(), getPermission(), getFlags(), getBufferSize(),
+          getReplication(), getBlockSize(), getProgress(), getChecksumOpt());
+    }
+  }
+
+  @Test
+  public void testFSOutputStreamBuilderOptions() throws Exception {
+    Path path = new Path(TEST_ROOT_DIR, "testBuilderOpt");
+    final List<String> supportedKeys = Arrays.asList("strM");
+
+    FSDataOutputStreamBuilder<?, ?> builder =
+        new BuilderWithSupportedKeys(supportedKeys, fileSys, path);
+    builder.opt("strKey", "value");
+    builder.opt("intKey", 123);
+    builder.opt("strM", "ignored");
+    // Over-write an optional value with a mandatory value.
+    builder.must("strM", "value");
+    builder.must("unsupported", 12.34);
+
+    assertEquals("value", builder.getOptions().get("strM"),
+        "Optional value should be overwrite by a mandatory value");
+
+    Set<String> mandatoryKeys = builder.getMandatoryKeys();
+    Set<String> expectedKeys = new HashSet<>();
+    expectedKeys.add("strM");
+    expectedKeys.add("unsupported");
+    assertEquals(expectedKeys, mandatoryKeys);
+    assertEquals(2, mandatoryKeys.size());
+
+    LambdaTestUtils.intercept(IllegalArgumentException.class,
+        "unsupported key found", builder::build
+    );
+  }
+
+  private static final int CRC_SIZE = 12;
+
+  private static final byte[] DATA = "1234567890".getBytes();
+
+  /**
+   * Get the statistics for the file schema. Contains assertions
+   * @return the statistics on all file:// IO.
+   */
+  protected Statistics getFileStatistics() {
+    final List<Statistics> all = FileSystem.getAllStatistics();
+    final List<Statistics> fileStats = all
+        .stream()
+        .filter(s -> s.getScheme().equals("file"))
+        .collect(Collectors.toList());
+    assertEquals(1, fileStats.size(),
+        "Number of statistics counters for file://");
+    // this should be used for local and rawLocal, as they share the
+    // same schema (although their class is different)
+    return fileStats.get(0);
+  }
+
+  /**
+   * Write the byte array {@link #DATA} to the given output stream.
+   * @param s stream to write to.
+   * @throws IOException failure to write/close the file
+   */
+  private void writeData(FSDataOutputStream s) throws IOException {
+    s.write(DATA);
+    s.close();
+  }
+
+  /**
+   * Evaluate the closure while counting bytes written during
+   * its execution, and verify that the count included the CRC
+   * write as well as the data.
+   * After the operation, the file is deleted.
+   * @param operation operation for assertion method.
+   * @param path path to write
+   * @param callable expression evaluated
+   * @param delete should the file be deleted after?
+   */
+  private void assertWritesCRC(String operation, Path path,
+      LambdaTestUtils.VoidCallable callable, boolean delete) throws Exception {
+    final Statistics stats = getFileStatistics();
+    final long bytesOut0 = stats.getBytesWritten();
+    try {
+      callable.call();
+      assertEquals(CRC_SIZE + DATA.length, stats.getBytesWritten() - bytesOut0,
+          "Bytes written in " + operation + "; stats=" + stats);
+    } finally {
+      if (delete) {
+        // clean up
+        try {
+          fileSys.delete(path, false);
+        } catch (IOException ignored) {
+          // ignore this cleanup failure
+        }
+      }
+    }
+  }
+
+  /**
+   * Verify that File IO through the classic non-builder APIs generate
+   * statistics which imply that CRCs were read and written.
+   */
+  @Test
+  public void testCRCwithClassicAPIs() throws Throwable {
+    final Path file = new Path(TEST_ROOT_DIR, "testByteCountersClassicAPIs");
+    assertWritesCRC("create()",
+        file,
+        () -> writeData(fileSys.create(file, true)),
+        false);
+
+    final Statistics stats = getFileStatistics();
+    final long bytesRead0 = stats.getBytesRead();
+    fileSys.open(file).close();
+    final long bytesRead1 = stats.getBytesRead();
+    assertEquals(CRC_SIZE, bytesRead1 - bytesRead0,
+        "Bytes read in open() call with stats " + stats);
+  }
+
+  /**
+   * create/7 to use write the CRC.
+   */
+  @Test
+  public void testCRCwithCreate7() throws Throwable {
+    final Path file = new Path(TEST_ROOT_DIR, "testCRCwithCreate7");
+    assertWritesCRC("create/7",
+        file,
+        () -> writeData(
+            fileSys.create(file,
+                FsPermission.getFileDefault(),
+                true,
+                8192,
+                (short)1,
+                16384,
+                null)),
+        true);
+  }
+
+  /**
+   * Create with ChecksumOpt to create checksums.
+   * If the LocalFS ever interpreted the flag, this test may fail.
+   */
+  @Test
+  public void testCRCwithCreateChecksumOpt() throws Throwable {
+    final Path file = new Path(TEST_ROOT_DIR, "testCRCwithCreateChecksumOpt");
+    assertWritesCRC("create with checksum opt",
+        file,
+        () -> writeData(
+            fileSys.create(file,
+                FsPermission.getFileDefault(),
+                EnumSet.of(CreateFlag.CREATE),
+                8192,
+                (short)1,
+                16384,
+                null,
+                Options.ChecksumOpt.createDisabled())),
+        true);
+  }
+
+  /**
+   * Create createNonRecursive/6.
+   */
+  @Test
+  public void testCRCwithCreateNonRecursive6() throws Throwable {
+    fileSys.mkdirs(TEST_PATH);
+    final Path file = new Path(TEST_ROOT_DIR,
+        "testCRCwithCreateNonRecursive6");
+    assertWritesCRC("create with checksum opt",
+        file,
+        () -> writeData(
+            fileSys.createNonRecursive(file,
+                FsPermission.getFileDefault(),
+                true,
+                8192,
+                (short)1,
+                16384,
+                null)),
+        true);
+  }
+
+  /**
+   * Create createNonRecursive with CreateFlags.
+   */
+  @Test
+  public void testCRCwithCreateNonRecursiveCreateFlags() throws Throwable {
+    fileSys.mkdirs(TEST_PATH);
+    final Path file = new Path(TEST_ROOT_DIR,
+        "testCRCwithCreateNonRecursiveCreateFlags");
+    assertWritesCRC("create with checksum opt",
+        file,
+        () -> writeData(
+            fileSys.createNonRecursive(file,
+                FsPermission.getFileDefault(),
+                EnumSet.of(CreateFlag.CREATE),
+                8192,
+                (short)1,
+                16384,
+                null)),
+        true);
+  }
+
+
+  /**
+   * This relates to MAPREDUCE-7184, where the openFile() call's
+   * CRC count wasn't making into the statistics for the current thread.
+   * If the evaluation was in a separate thread you'd expect that,
+   * but if the completable future is in fact being synchronously completed
+   * it should not happen.
+   */
+  @Test
+  public void testReadIncludesCRCwithBuilders() throws Throwable {
+
+    final Path file = new Path(TEST_ROOT_DIR,
+        "testReadIncludesCRCwithBuilders");
+    Statistics stats = getFileStatistics();
+    // write the file using the builder API
+    assertWritesCRC("createFile()",
+        file,
+        () -> writeData(
+            fileSys.createFile(file)
+                .overwrite(true).recursive()
+                .build()),
+        false);
+
+    // now read back the data, again with the builder API
+    final long bytesRead0 = stats.getBytesRead();
+    fileSys.openFile(file).build().get().close();
+    assertEquals(CRC_SIZE, stats.getBytesRead() - bytesRead0,
+        "Bytes read in openFile() call with stats " + stats);
+    // now write with overwrite = true
+    assertWritesCRC("createFileNonRecursive()",
+        file,
+        () -> {
+          try (FSDataOutputStream s = fileSys.createFile(file)
+              .overwrite(true)
+              .build()) {
+            s.write(DATA);
+          }
+        },
+        true);
+  }
+
+  /**
+   * Write with the builder, using the normal recursive create
+   * with create flags containing the overwrite option.
+   */
+  @Test
+  public void testWriteWithBuildersRecursive() throws Throwable {
+
+    final Path file = new Path(TEST_ROOT_DIR,
+        "testWriteWithBuildersRecursive");
+    Statistics stats = getFileStatistics();
+    // write the file using the builder API
+    assertWritesCRC("createFile()",
+        file,
+        () -> writeData(
+            fileSys.createFile(file)
+                .overwrite(false)
+                .recursive()
+                .build()),
+        true);
   }
 }

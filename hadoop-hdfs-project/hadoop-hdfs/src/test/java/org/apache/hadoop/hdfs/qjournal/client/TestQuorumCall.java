@@ -17,21 +17,24 @@
  */
 package org.apache.hadoop.hdfs.qjournal.client;
 
-import static org.junit.Assert.*;
-
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.hadoop.hdfs.qjournal.client.QuorumCall;
-import org.junit.Test;
+import org.apache.hadoop.util.FakeTimer;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import com.google.common.base.Joiner;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.util.concurrent.SettableFuture;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.SettableFuture;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestQuorumCall {
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testQuorums() throws Exception {
     Map<String, SettableFuture<String>> futures = ImmutableMap.of(
         "f1", SettableFuture.<String>create(),
@@ -66,4 +69,52 @@ public class TestQuorumCall {
       // expected
     }
   }
+  @Test
+  @Timeout(value = 10)
+  public void testQuorumFailsWithoutResponse() throws Exception {
+    Map<String, SettableFuture<String>> futures = ImmutableMap.of(
+        "f1", SettableFuture.<String>create());
+
+    QuorumCall<String, String> q = QuorumCall.create(futures);
+    assertEquals(0, q.countResponses(), "The number of quorum calls for which a response has been"
+            + " received should be 0");
+
+    try {
+      q.waitFor(0, 1, 100, 10, "test");
+      fail("Didn't time out waiting for more responses than came back");
+    } catch (TimeoutException te) {
+      // expected
+    }
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testQuorumSucceedsWithLongPause() throws Exception {
+    final Map<String, SettableFuture<String>> futures = ImmutableMap.of(
+        "f1", SettableFuture.<String>create());
+
+    FakeTimer timer = new FakeTimer() {
+      private int callCount = 0;
+      @Override
+      public long monotonicNowNanos() {
+        callCount++;
+        if (callCount == 1) {
+          long old = super.monotonicNowNanos();
+          advance(1000000);
+          return old;
+        } else if (callCount == 10) {
+          futures.get("f1").set("first future");
+          return super.monotonicNowNanos();
+        } else {
+          return super.monotonicNowNanos();
+        }
+      }
+    };
+
+    QuorumCall<String, String> q = QuorumCall.create(futures, timer);
+    assertEquals(0, q.countResponses());
+
+    q.waitFor(1, 0, 0, 3000, "test"); // wait for 1 response
+  }
+
 }

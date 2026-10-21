@@ -18,8 +18,6 @@
 
 package org.apache.hadoop.mapreduce.lib.db;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -33,9 +31,11 @@ import org.apache.hadoop.mapreduce.TaskCounter;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.StringUtils;
 import org.hsqldb.server.Server;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -48,8 +48,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 //import org.apache.hadoop.examples.DBCountPageView;
 
@@ -58,7 +58,7 @@ import static org.junit.Assert.assertTrue;
  */
 public class TestDataDrivenDBInputFormat extends HadoopTestCase {
 
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       TestDataDrivenDBInputFormat.class);
 
   private static final String DB_NAME = "dddbif";
@@ -124,13 +124,13 @@ public class TestDataDrivenDBInputFormat extends HadoopTestCase {
     createConnection(driverClassName, url);
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     initialize(DRIVER_CLASS, DB_URL);
     super.setUp();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     super.tearDown();
     shutdown();
@@ -230,11 +230,11 @@ public class TestDataDrivenDBInputFormat extends HadoopTestCase {
         COL, COL);
 
     boolean ret = job.waitForCompletion(true);
-    assertTrue("job failed", ret);
+    assertTrue(ret, "job failed");
 
     // Check to see that we imported as much as we thought we did.
-    assertEquals("Did not get all the records", 4,
+    assertEquals(4,
         job.getCounters().findCounter(TaskCounter.REDUCE_OUTPUT_RECORDS)
-        .getValue());
+        .getValue(), "Did not get all the records");
   }
 }

@@ -23,8 +23,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -34,6 +32,8 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobID;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** 
  *  This class encapsulates a MapReduce job and its dependency. It monitors 
@@ -49,10 +49,11 @@ import org.apache.hadoop.util.StringUtils;
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
 public class ControlledJob {
-  private static final Log LOG = LogFactory.getLog(ControlledJob.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ControlledJob.class);
 
   // A job will be in one of the following states
-  public static enum State {SUCCESS, WAITING, RUNNING, READY, FAILED,
+  public enum State {SUCCESS, WAITING, RUNNING, READY, FAILED,
                             DEPENDENT_FAILED}; 
   public static final String CREATE_DIR = "mapreduce.jobcontrol.createdir.ifnotexist";
   private State state;
@@ -89,7 +90,7 @@ public class ControlledJob {
 	
   @Override
   public String toString() {
-    StringBuffer sb = new StringBuffer();
+    StringBuilder sb = new StringBuilder();
     sb.append("job name:\t").append(this.job.getJobName()).append("\n");
     sb.append("job id:\t").append(this.controlID).append("\n");
     sb.append("job state:\t").append(this.state).append("\n");
@@ -204,7 +205,7 @@ public class ControlledJob {
    * is waiting to run, not during or afterwards.
    * 
    * @param dependingJob Job that this Job depends on.
-   * @return <tt>true</tt> if the Job was added.
+   * @return <code>true</code> if the Job was added.
    */
   public synchronized boolean addDependingJob(ControlledJob dependingJob) {
     if (this.state == State.WAITING) { //only allowed to add jobs when waiting

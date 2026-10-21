@@ -18,13 +18,13 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.timelineservice;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
-import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.timelineservice.collector.TimelineCollector;
 import org.apache.hadoop.yarn.server.timelineservice.collector.TimelineCollectorContext;
@@ -38,19 +38,19 @@ import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 public class RMTimelineCollectorManager extends TimelineCollectorManager {
-  private static final Log LOG =
-      LogFactory.getLog(RMTimelineCollectorManager.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(RMTimelineCollectorManager.class);
 
-  private RMContext rmContext;
+  private ResourceManager rm;
 
-  public RMTimelineCollectorManager(RMContext rmContext) {
+  public RMTimelineCollectorManager(ResourceManager resourceManager) {
     super(RMTimelineCollectorManager.class.getName());
-    this.rmContext = rmContext;
+    this.rm = resourceManager;
   }
 
   @Override
   protected void doPostPut(ApplicationId appId, TimelineCollector collector) {
-    RMApp app = rmContext.getRMApps().get(appId);
+    RMApp app = rm.getRMContext().getRMApps().get(appId);
     if (app == null) {
       throw new YarnRuntimeException(
           "Unable to get the timeline collector context info for a " +
@@ -79,21 +79,15 @@ public class RMTimelineCollectorManager extends TimelineCollectorManager {
       }
       switch (parts[0].toUpperCase()) {
       case TimelineUtils.FLOW_NAME_TAG_PREFIX:
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Setting the flow name: " + parts[1]);
-        }
+        LOG.debug("Setting the flow name: {}", parts[1]);
         context.setFlowName(parts[1]);
         break;
       case TimelineUtils.FLOW_VERSION_TAG_PREFIX:
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Setting the flow version: " + parts[1]);
-        }
+        LOG.debug("Setting the flow version: {}", parts[1]);
         context.setFlowVersion(parts[1]);
         break;
       case TimelineUtils.FLOW_RUN_ID_TAG_PREFIX:
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Setting the flow run id: " + parts[1]);
-        }
+        LOG.debug("Setting the flow run id: {}", parts[1]);
         context.setFlowRunId(Long.parseLong(parts[1]));
         break;
       default:

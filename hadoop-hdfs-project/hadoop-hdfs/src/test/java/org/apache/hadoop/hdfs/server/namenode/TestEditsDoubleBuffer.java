@@ -17,15 +17,16 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 
 import org.apache.hadoop.io.DataOutputBuffer;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.Test;
 
 public class TestEditsDoubleBuffer {
   @Test
@@ -35,16 +36,14 @@ public class TestEditsDoubleBuffer {
     assertTrue(buf.isFlushed());
     byte[] data = new byte[100];
     buf.writeRaw(data, 0, data.length);
-    assertEquals("Should count new data correctly",
-        data.length, buf.countBufferedBytes());
+    assertEquals(data.length, buf.countBufferedBytes(), "Should count new data correctly");
 
-    assertTrue("Writing to current buffer should not affect flush state",
-        buf.isFlushed());
+    assertTrue(buf.isFlushed(), "Writing to current buffer should not affect flush state");
 
     // Swap the buffers
     buf.setReadyToFlush();
-    assertEquals("Swapping buffers should still count buffered bytes",
-        data.length, buf.countBufferedBytes());
+    assertEquals(data.length, buf.countBufferedBytes(),
+        "Swapping buffers should still count buffered bytes");
     assertFalse(buf.isFlushed());
  
     // Flush to a stream
@@ -56,8 +55,7 @@ public class TestEditsDoubleBuffer {
     
     // Write some more
     buf.writeRaw(data, 0, data.length);
-    assertEquals("Should count new data correctly",
-        data.length, buf.countBufferedBytes());
+    assertEquals(data.length, buf.countBufferedBytes(), "Should count new data correctly");
     buf.setReadyToFlush();
     buf.flushTo(outBuf);
     
@@ -80,5 +78,60 @@ public class TestEditsDoubleBuffer {
         throw ioe;
       }
     }
+  }
+
+  @Test
+  public void testDumpEdits() throws IOException {
+    final int defaultBufferSize = 256;
+    final int fakeLogVersion =
+        NameNodeLayoutVersion.Feature.ROLLING_UPGRADE
+            .getInfo().getLayoutVersion();
+    EditsDoubleBuffer buffer = new EditsDoubleBuffer(defaultBufferSize);
+    FSEditLogOp.OpInstanceCache cache = new FSEditLogOp.OpInstanceCache();
+
+    String src = "/testdumpedits";
+    short replication = 1;
+
+    FSEditLogOp.SetReplicationOp op =
+        FSEditLogOp.SetReplicationOp.getInstance(cache.get())
+        .setPath(src)
+        .setReplication(replication);
+    op.setTransactionId(1);
+    buffer.writeOp(op, fakeLogVersion);
+
+    src = "/testdumpedits2";
+
+    FSEditLogOp.DeleteOp op2 =
+        FSEditLogOp.DeleteOp.getInstance(cache.get())
+            .setPath(src)
+            .setTimestamp(0);
+    op2.setTransactionId(2);
+    buffer.writeOp(op2, fakeLogVersion);
+
+    FSEditLogOp.AllocateBlockIdOp op3 =
+        FSEditLogOp.AllocateBlockIdOp.getInstance(cache.get())
+            .setBlockId(0);
+    op3.setTransactionId(3);
+    buffer.writeOp(op3, fakeLogVersion);
+
+    GenericTestUtils.LogCapturer logs =
+        GenericTestUtils.LogCapturer.captureLogs(EditsDoubleBuffer.LOG);
+    try {
+      buffer.close();
+      fail();
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains(
+          "bytes still to be flushed and cannot be closed.",
+          ioe);
+      EditsDoubleBuffer.LOG.info("Exception expected: ", ioe);
+    }
+    logs.stopCapturing();
+    // Make sure ops are dumped into log in human readable format.
+    assertTrue(logs.getOutput().contains(op.toString()),
+        "expected " + op.toString() + " in the log");
+    assertTrue(logs.getOutput().contains(op2.toString()),
+        "expected " + op2.toString() + " in the log");
+    assertTrue(logs.getOutput().contains(op3.toString()),
+        "expected " + op3.toString() + " in the log");
   }
 }

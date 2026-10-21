@@ -17,11 +17,14 @@
  */
 package org.apache.hadoop.hdfs;
 
+import java.io.IOException;
 import java.util.concurrent.atomic.AtomicLong;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.security.token.block.InvalidBlockTokenException;
 
 /**
  * Used for injecting faults in DFSClient and DFSOutputStream tests.
@@ -57,4 +60,18 @@ public class DFSClientFaultInjector {
   public void fetchFromDatanodeException() {}
 
   public void readFromDatanodeDelay() {}
+
+  public boolean skipRollingRestartWait() {
+    return false;
+  }
+
+  public void sleepBeforeHedgedGet() {}
+
+  public void delayWhenRenewLeaseTimeout() {}
+
+  public void onCreateBlockReader(LocatedBlock block, int chunkIndex, long offset, long length) {}
+
+  public void failCreateBlockReader() throws InvalidBlockTokenException {}
+
+  public void failWhenReadWithStrategy(boolean isRetryRead) throws IOException {};
 }

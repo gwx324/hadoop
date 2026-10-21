@@ -18,7 +18,6 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import java.lang.reflect.Method;
-import java.text.SimpleDateFormat;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -32,20 +31,25 @@ import org.apache.hadoop.hdfs.MiniDFSCluster.DataNodeProperties;
 import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-import org.mockito.internal.util.reflection.Whitebox;
+import org.slf4j.event.Level;
+
+
+import java.util.function.Supplier;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test if we can correctly delay the deletion of blocks.
  */
 public class TestPendingInvalidateBlock {
   {
-    GenericTestUtils.setLogLevel(BlockManager.LOG, Level.DEBUG);
+    GenericTestUtils.setLogLevel(BlockManager.LOG, Level.TRACE);
   }
 
   private static final int BLOCKSIZE = 1024;
@@ -55,7 +59,7 @@ public class TestPendingInvalidateBlock {
   private MiniDFSCluster cluster;
   private DistributedFileSystem dfs;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new Configuration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCKSIZE);
@@ -64,7 +68,7 @@ public class TestPendingInvalidateBlock {
     // set the block report interval to 2s
     conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 2000);
     conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
     // disable the RPC timeout for debug
     conf.setLong(CommonConfigurationKeys.IPC_PING_INTERVAL_KEY, 0);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(REPLICATION)
@@ -73,7 +77,7 @@ public class TestPendingInvalidateBlock {
     dfs = cluster.getFileSystem();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
@@ -85,24 +89,38 @@ public class TestPendingInvalidateBlock {
   public void testPendingDeletion() throws Exception {
     final Path foo = new Path("/foo");
     DFSTestUtil.createFile(dfs, foo, BLOCKSIZE, REPLICATION, 0);
+    DFSTestUtil.waitForReplication(dfs, foo, REPLICATION, 10000);
+
     // restart NN
     cluster.restartNameNode(true);
+    InvalidateBlocks invalidateBlocks =
+        (InvalidateBlocks) Whitebox.getInternalState(cluster.getNamesystem()
+            .getBlockManager(), "invalidateBlocks");
+    InvalidateBlocks mockIb = Mockito.spy(invalidateBlocks);
+    // Return invalidation delay to delay the block's deletion
+    Mockito.doReturn(1L).when(mockIb).getInvalidationDelay();
+    Whitebox.setInternalState(cluster.getNamesystem().getBlockManager(),
+        "invalidateBlocks", mockIb);
     dfs.delete(foo, true);
-    Assert.assertEquals(0, cluster.getNamesystem().getBlocksTotal());
-    Assert.assertEquals(REPLICATION, cluster.getNamesystem()
+
+    waitForNumPendingDeletionBlocks(REPLICATION);
+    assertEquals(0, cluster.getNamesystem().getBlocksTotal());
+    assertEquals(REPLICATION, cluster.getNamesystem()
         .getPendingDeletionBlocks());
-    Assert.assertEquals(REPLICATION,
+    assertEquals(REPLICATION,
         dfs.getPendingDeletionBlocksCount());
-    Thread.sleep(6000);
-    Assert.assertEquals(0, cluster.getNamesystem().getBlocksTotal());
-    Assert.assertEquals(0, cluster.getNamesystem().getPendingDeletionBlocks());
-    Assert.assertEquals(0, dfs.getPendingDeletionBlocksCount());
+    Mockito.doReturn(0L).when(mockIb).getInvalidationDelay();
+
+    waitForNumPendingDeletionBlocks(0);
+    assertEquals(0, cluster.getNamesystem().getBlocksTotal());
+    assertEquals(0, cluster.getNamesystem().getPendingDeletionBlocks());
+    assertEquals(0, dfs.getPendingDeletionBlocksCount());
     long nnStarted = cluster.getNamesystem().getNNStartedTimeInMillis();
     long blockDeletionStartTime = cluster.getNamesystem()
         .getBlockDeletionStartTime();
-    Assert.assertTrue(String.format(
+    assertTrue(blockDeletionStartTime > nnStarted, String.format(
         "Expect blockDeletionStartTime = %d > nnStarted = %d.",
-        blockDeletionStartTime, nnStarted), blockDeletionStartTime > nnStarted);
+        blockDeletionStartTime, nnStarted));
 
     // test client protocol compatibility
     Method method = DFSClient.class.
@@ -114,8 +132,8 @@ public class TestPendingInvalidateBlock {
     // get an out of index value
     long invalidState = (Long) method.invoke(dfs.getClient(),
         ClientProtocol.STATS_ARRAY_LENGTH);
-    Assert.assertEquals(0, validState);
-    Assert.assertEquals(-1, invalidState);
+    assertEquals(0, validState);
+    assertEquals(-1, invalidState);
   }
 
   /**
@@ -154,10 +172,10 @@ public class TestPendingInvalidateBlock {
     Whitebox.setInternalState(cluster.getNamesystem().getBlockManager(),
         "invalidateBlocks", mockIb);
 
-    Assert.assertEquals(0L, cluster.getNamesystem().getPendingDeletionBlocks());
+    assertEquals(0L, cluster.getNamesystem().getPendingDeletionBlocks());
     // restart DataNodes
     for (int i = 0; i < REPLICATION; i++) {
-      cluster.restartDataNode(dnprops[i], true);
+      cluster.restartDataNode(dnprops[i]);
     }
     cluster.waitActive();
 
@@ -166,13 +184,13 @@ public class TestPendingInvalidateBlock {
     }
     Thread.sleep(2000);
     // make sure we have received block reports by checking the total block #
-    Assert.assertEquals(3, cluster.getNamesystem().getBlocksTotal());
-    Assert.assertEquals(4, cluster.getNamesystem().getPendingDeletionBlocks());
+    assertEquals(3, cluster.getNamesystem().getBlocksTotal());
+    assertEquals(4, cluster.getNamesystem().getPendingDeletionBlocks());
 
     cluster.restartNameNode(true);
-    Thread.sleep(6000);
-    Assert.assertEquals(3, cluster.getNamesystem().getBlocksTotal());
-    Assert.assertEquals(0, cluster.getNamesystem().getPendingDeletionBlocks());
+    waitForNumPendingDeletionBlocks(0);
+    assertEquals(3, cluster.getNamesystem().getBlocksTotal());
+    assertEquals(0, cluster.getNamesystem().getPendingDeletionBlocks());
   }
 
   private long waitForReplication() throws Exception {
@@ -187,4 +205,25 @@ public class TestPendingInvalidateBlock {
     return cluster.getNamesystem().getUnderReplicatedBlocks();
   }
 
+  private void waitForNumPendingDeletionBlocks(final int numBlocks)
+      throws Exception {
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+
+      @Override
+      public Boolean get() {
+        try {
+          cluster.triggerBlockReports();
+
+          if (cluster.getNamesystem().getPendingDeletionBlocks()
+              == numBlocks) {
+            return true;
+          }
+        } catch (Exception e) {
+          // Ignore the exception
+        }
+
+        return false;
+      }
+    }, 6000, 60000);
+  }
 }

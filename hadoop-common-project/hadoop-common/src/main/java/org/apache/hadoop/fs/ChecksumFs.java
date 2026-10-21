@@ -27,20 +27,22 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.util.NoSuchElementException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.Options.ChecksumOpt;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.Progressable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Abstract Checksumed Fs.
  * It provide a basic implementation of a Checksumed Fs,
  * which creates a checksum file for each raw file.
- * It generates & verifies checksums at the client side.
+ * It generates &amp; verifies checksums at the client side.
  */
 @InterfaceAudience.Private
 @InterfaceStability.Evolving /*Evolving for a release,to be changed to Stable */
@@ -57,7 +59,7 @@ public abstract class ChecksumFs extends FilterFs {
     throws IOException, URISyntaxException {
     super(theFs);
     defaultBytesPerChecksum = 
-      getMyFs().getServerDefaults().getBytesPerChecksum();
+      getMyFs().getServerDefaults(new Path("/")).getBytesPerChecksum();
   }
   
   /**
@@ -68,37 +70,61 @@ public abstract class ChecksumFs extends FilterFs {
     this.verifyChecksum = inVerifyChecksum;
   }
 
-  /** get the raw file system. */
+  /**
+   * get the raw file system.
+   *
+   * @return abstract file system.
+   */
   public AbstractFileSystem getRawFs() {
     return getMyFs();
   }
 
-  /** Return the name of the checksum file associated with a file.*/
+  /**
+   * Return the name of the checksum file associated with a file.
+   *
+   * @param file the file path.
+   * @return the checksum file associated with a file.
+   */
   public Path getChecksumFile(Path file) {
     return new Path(file.getParent(), "." + file.getName() + ".crc");
   }
 
-  /** Return true iff file is a checksum file name.*/
+  /**
+   * Return true iff file is a checksum file name.
+   *
+   * @param file the file path.
+   * @return if is checksum file true,not false.
+   */
   public static boolean isChecksumFile(Path file) {
     String name = file.getName();
     return name.startsWith(".") && name.endsWith(".crc");
   }
 
-  /** Return the length of the checksum file given the size of the 
+  /**
+   * Return the length of the checksum file given the size of the
    * actual file.
-   **/
+   *
+   * @param file the file path.
+   * @param fileSize file size.
+   * @return check sum file length.
+   */
   public long getChecksumFileLength(Path file, long fileSize) {
     return getChecksumLength(fileSize, getBytesPerSum());
   }
 
-  /** Return the bytes Per Checksum. */
+  /**
+   * Return the bytes Per Checksum.
+   *
+   * @return bytes per sum.
+   */
   public int getBytesPerSum() {
     return defaultBytesPerChecksum;
   }
 
-  private int getSumBufferSize(int bytesPerSum, int bufferSize)
+  private int getSumBufferSize(int bytesPerSum, int bufferSize, Path file)
     throws IOException {
-    int defaultBufferSize =  getMyFs().getServerDefaults().getFileBufferSize();
+    int defaultBufferSize = getMyFs().getServerDefaults(file)
+        .getFileBufferSize();
     int proportionalBufferSize = bufferSize / bytesPerSum;
     return Math.max(bytesPerSum,
                     Math.max(proportionalBufferSize, defaultBufferSize));
@@ -109,8 +135,8 @@ public abstract class ChecksumFs extends FilterFs {
    * It verifies that data matches checksums.
    *******************************************************/
   private static class ChecksumFSInputChecker extends FSInputChecker {
-    public static final Log LOG 
-      = LogFactory.getLog(FSInputChecker.class);
+    public static final Logger LOG =
+        LoggerFactory.getLogger(FSInputChecker.class);
     private static final int HEADER_LENGTH = 8;
     
     private ChecksumFs fs;
@@ -121,7 +147,7 @@ public abstract class ChecksumFs extends FilterFs {
     
     public ChecksumFSInputChecker(ChecksumFs fs, Path file)
       throws IOException, UnresolvedLinkException {
-      this(fs, file, fs.getServerDefaults().getFileBufferSize());
+      this(fs, file, fs.getServerDefaults(file).getFileBufferSize());
     }
     
     public ChecksumFSInputChecker(ChecksumFs fs, Path file, int bufferSize)
@@ -132,7 +158,7 @@ public abstract class ChecksumFs extends FilterFs {
       Path sumFile = fs.getChecksumFile(file);
       try {
         int sumBufferSize = fs.getSumBufferSize(fs.getBytesPerSum(),
-                                                bufferSize);
+            bufferSize, file);
         sums = fs.getRawFs().open(sumFile, sumBufferSize);
 
         byte[] version = new byte[CHECKSUM_VERSION.length];
@@ -179,7 +205,6 @@ public abstract class ChecksumFs extends FilterFs {
                new ChecksumFSInputChecker(fs, file)) {
         checker.seek(position);
         nread = checker.read(b, off, len);
-        checker.close();
       }
       return nread;
     }
@@ -297,7 +322,8 @@ public abstract class ChecksumFs extends FilterFs {
 
   @Override
   public boolean truncate(Path f, long newLength) throws IOException {
-    throw new IOException("Not supported");
+    throw new UnsupportedOperationException("Truncate is not supported "
+        + "by ChecksumFs");
   }
 
   /**
@@ -353,7 +379,7 @@ public abstract class ChecksumFs extends FilterFs {
       
       // Now create the chekcsumfile; adjust the buffsize
       int bytesPerSum = fs.getBytesPerSum();
-      int sumBufferSize = fs.getSumBufferSize(bytesPerSum, bufferSize);
+      int sumBufferSize = fs.getSumBufferSize(bytesPerSum, bufferSize, file);
       this.sums = fs.getRawFs().createInternal(fs.getChecksumFile(file),
           EnumSet.of(CreateFlag.CREATE, CreateFlag.OVERWRITE),
           absolutePermission, sumBufferSize, replication, blockSize, progress,
@@ -427,10 +453,10 @@ public abstract class ChecksumFs extends FilterFs {
   }
   /**
    * Set replication for an existing file.
-   * Implement the abstract <tt>setReplication</tt> of <tt>FileSystem</tt>
+   * Implement the abstract <code>setReplication</code> of <code>FileSystem</code>
    * @param src file name
    * @param replication new replication
-   * @throws IOException
+   * @throws IOException if an I/O error occurs.
    * @return true if successful;
    *         false if file does not exist or is a directory
    */
@@ -465,6 +491,32 @@ public abstract class ChecksumFs extends FilterFs {
           getMyFs().rename(checkFile, dst);
         } else {
           getMyFs().rename(checkFile, getChecksumFile(dst));
+        }
+      }
+    }
+  }
+
+  @Override
+  public void renameInternal(Path src, Path dst, boolean overwrite)
+      throws AccessControlException, FileAlreadyExistsException,
+      FileNotFoundException, ParentNotDirectoryException,
+      UnresolvedLinkException, IOException {
+    Options.Rename renameOpt = Options.Rename.NONE;
+    if (overwrite) {
+      renameOpt = Options.Rename.OVERWRITE;
+    }
+
+    if (isDirectory(src)) {
+      getMyFs().rename(src, dst, renameOpt);
+    } else {
+      getMyFs().rename(src, dst, renameOpt);
+
+      Path checkFile = getChecksumFile(src);
+      if (exists(checkFile)) { //try to rename checksum
+        if (isDirectory(dst)) {
+          getMyFs().rename(checkFile, dst, renameOpt);
+        } else {
+          getMyFs().rename(checkFile, getChecksumFile(dst), renameOpt);
         }
       }
     }
@@ -526,4 +578,39 @@ public abstract class ChecksumFs extends FilterFs {
     }
     return results.toArray(new FileStatus[results.size()]);
   }
+
+  @Override
+  public RemoteIterator<LocatedFileStatus> listLocatedStatus(final Path f)
+      throws AccessControlException, FileNotFoundException,
+             UnresolvedLinkException, IOException {
+    final RemoteIterator<LocatedFileStatus> iter =
+        getMyFs().listLocatedStatus(f);
+    return new RemoteIterator<LocatedFileStatus>() {
+
+      private LocatedFileStatus next = null;
+
+      @Override
+      public boolean hasNext() throws IOException {
+        while (next == null && iter.hasNext()) {
+          LocatedFileStatus unfilteredNext = iter.next();
+          if (!isChecksumFile(unfilteredNext.getPath())) {
+            next = unfilteredNext;
+          }
+        }
+        return next != null;
+      }
+
+      @Override
+      public LocatedFileStatus next() throws IOException {
+        if (!hasNext()) {
+          throw new NoSuchElementException();
+        }
+        LocatedFileStatus tmp = next;
+        next = null;
+        return tmp;
+      }
+
+    };
+  }
+
 }

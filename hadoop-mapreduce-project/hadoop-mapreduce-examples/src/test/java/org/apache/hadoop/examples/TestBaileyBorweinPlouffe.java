@@ -18,29 +18,36 @@
 package org.apache.hadoop.examples;
 
 import java.math.BigInteger;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** Tests for BaileyBorweinPlouffe */
-public class TestBaileyBorweinPlouffe extends junit.framework.TestCase {
+public class TestBaileyBorweinPlouffe {
 
-  public void testMod() {
+  @Test
+  void testMod() {
     final BigInteger TWO = BigInteger.ONE.add(BigInteger.ONE);
-    for(long n = 3; n < 100; n++) {
+    for (long n = 3; n < 100; n++) {
       for (long e = 1; e < 100; e++) {
         final long r = TWO.modPow(
             BigInteger.valueOf(e), BigInteger.valueOf(n)).longValue();
-        assertEquals("e=" + e + ", n=" + n, r, BaileyBorweinPlouffe.mod(e, n));
+        assertEquals(r, BaileyBorweinPlouffe
+            .mod(e, n), "e=" + e + ", n=" + n);
       }
     }
   }
 
-  public void testHexDigit() {
+  @Test
+  void testHexDigit() {
     final long[] answers = {0x43F6, 0xA308, 0x29B7, 0x49F1, 0x8AC8, 0x35EA};
     long d = 1;
-    for(int i = 0; i < answers.length; i++) {
-      assertEquals("d=" + d, answers[i], BaileyBorweinPlouffe.hexDigits(d));
+    for (int i = 0; i < answers.length; i++) {
+      assertEquals(answers[i], BaileyBorweinPlouffe
+          .hexDigits(d), "d=" + d);
       d *= 10;
     }
 
     assertEquals(0x243FL, BaileyBorweinPlouffe.hexDigits(0));
- }
+  }
 }

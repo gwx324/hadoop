@@ -22,13 +22,16 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.ServiceLoader;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.fs.PathIOException;
 
 /**
  * A factory to create a list of CredentialProvider based on the path given in a
@@ -49,19 +52,51 @@ public abstract class CredentialProviderFactory {
       ServiceLoader.load(CredentialProviderFactory.class,
           CredentialProviderFactory.class.getClassLoader());
 
+  // Iterate through the serviceLoader to avoid lazy loading.
+  // Lazy loading would require synchronization in concurrent use cases.
+  static {
+    Iterator<CredentialProviderFactory> iterServices = serviceLoader.iterator();
+    while (iterServices.hasNext()) {
+      iterServices.next();
+    }
+  }
+
+  /**
+   * Fail fast on any recursive load of credential providers, which can
+   * happen if the FS itself triggers the load.
+   * A simple boolean could be used here, as the synchronized block ensures
+   * that only one thread can be active at a time. An atomic is used
+   * for rigorousness.
+   */
+  private static final AtomicBoolean SERVICE_LOADER_LOCKED = new AtomicBoolean(false);
+
   public static List<CredentialProvider> getProviders(Configuration conf
                                                ) throws IOException {
-    List<CredentialProvider> result = new ArrayList<CredentialProvider>();
+    List<CredentialProvider> result = new ArrayList<>();
     for(String path: conf.getStringCollection(CREDENTIAL_PROVIDER_PATH)) {
       try {
         URI uri = new URI(path);
         boolean found = false;
-        for(CredentialProviderFactory factory: serviceLoader) {
-          CredentialProvider kp = factory.createProvider(uri, conf);
-          if (kp != null) {
-            result.add(kp);
-            found = true;
-            break;
+        // Iterate serviceLoader in a synchronized block since
+        // serviceLoader iterator is not thread-safe.
+        synchronized (serviceLoader) {
+          try {
+            if (SERVICE_LOADER_LOCKED.getAndSet(true)) {
+              throw new PathIOException(path,
+                  "Recursive load of credential provider; " +
+                      "if loading a JCEKS file, this means that the filesystem connector is " +
+                      "trying to load the same file");
+            }
+            for (CredentialProviderFactory factory : serviceLoader) {
+              CredentialProvider kp = factory.createProvider(uri, conf);
+              if (kp != null) {
+                result.add(kp);
+                found = true;
+                break;
+              }
+            }
+          } finally {
+            SERVICE_LOADER_LOCKED.set(false);
           }
         }
         if (!found) {

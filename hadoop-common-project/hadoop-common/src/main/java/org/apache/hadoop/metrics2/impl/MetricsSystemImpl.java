@@ -30,15 +30,11 @@ import java.util.Timer;
 import java.util.TimerTask;
 import javax.management.ObjectName;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.annotations.VisibleForTesting;
-import java.util.Locale;
-import static com.google.common.base.Preconditions.*;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.classification.VisibleForTesting;
+import static org.apache.hadoop.util.Preconditions.*;
 
-import org.apache.commons.configuration.PropertiesConfiguration;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.configuration2.PropertiesConfiguration;
 import org.apache.commons.math3.util.ArithmeticUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.metrics2.MetricsInfo;
@@ -61,8 +57,11 @@ import org.apache.hadoop.metrics2.lib.MetricsRegistry;
 import org.apache.hadoop.metrics2.lib.MetricsSourceBuilder;
 import org.apache.hadoop.metrics2.lib.MutableStat;
 import org.apache.hadoop.metrics2.util.MBeans;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A base class for metrics system singletons
@@ -71,7 +70,7 @@ import org.apache.hadoop.util.Time;
 @Metrics(context="metricssystem")
 public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
 
-  static final Log LOG = LogFactory.getLog(MetricsSystemImpl.class);
+  static final Logger LOG = LoggerFactory.getLogger(MetricsSystemImpl.class);
   static final String MS_NAME = "MetricsSystem";
   static final String MS_STATS_NAME = MS_NAME +",sub=Stats";
   static final String MS_STATS_DESC = "Metrics system metrics";
@@ -156,7 +155,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
     ++refCount;
     if (monitoring) {
       // in mini cluster mode
-      LOG.info(this.prefix +" metrics system started (again)");
+      LOG.debug("{} metrics system started (again)", prefix);
       return this;
     }
     switch (initMode()) {
@@ -170,7 +169,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
         }
         break;
       case STANDBY:
-        LOG.info(prefix +" metrics system started in standby mode");
+        LOG.debug("{} metrics system started in standby mode", prefix);
     }
     initSystemMBean();
     return this;
@@ -189,7 +188,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
     configure(prefix);
     startTimer();
     monitoring = true;
-    LOG.info(prefix +" metrics system started");
+    LOG.debug("{} metrics system started", prefix);
     for (Callback cb : callbacks) cb.postStart();
     for (Callback cb : namedCallbacks.values()) cb.postStart();
   }
@@ -203,18 +202,18 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
     }
     if (!monitoring) {
       // in mini cluster mode
-      LOG.info(prefix +" metrics system stopped (again)");
+      LOG.debug("{} metrics system stopped (again)", prefix);
       return;
     }
     for (Callback cb : callbacks) cb.preStop();
     for (Callback cb : namedCallbacks.values()) cb.preStop();
-    LOG.info("Stopping "+ prefix +" metrics system...");
+    LOG.debug("Stopping {} metrics system...", prefix);
     stopTimer();
     stopSources();
     stopSinks();
     clearConfigs();
     monitoring = false;
-    LOG.info(prefix +" metrics system stopped.");
+    LOG.debug("{} metrics system stopped.", prefix);
     for (Callback cb : callbacks) cb.postStop();
     for (Callback cb : namedCallbacks.values()) cb.postStop();
   }
@@ -274,10 +273,13 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
   T register(final String name, final String description, final T sink) {
     LOG.debug(name +", "+ description);
     if (allSinks.containsKey(name)) {
-      LOG.warn("Sink "+ name +" already exists!");
+      if(sinks.get(name) == null) {
+        registerSink(name, description, sink);
+      } else {
+        LOG.warn("Sink "+ name +" already exists!");
+      }
       return sink;
     }
-    allSinks.put(name, sink);
     if (config != null) {
       registerSink(name, description, sink);
     }
@@ -298,8 +300,9 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
         ? newSink(name, desc, sink, conf)
         : newSink(name, desc, sink, config.subset(SINK_KEY));
     sinks.put(name, sa);
+    allSinks.put(name, sink);
     sa.start();
-    LOG.info("Registered sink "+ name);
+    LOG.debug("Registered sink {}", name);
   }
 
   @Override
@@ -347,7 +350,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
     PropertiesConfiguration saver = new PropertiesConfiguration();
     StringWriter writer = new StringWriter();
     saver.copy(config);
-    try { saver.save(writer); }
+    try { saver.write(writer); }
     catch (Exception e) {
       throw new MetricsConfigException("Error stringify config", e);
     }
@@ -372,7 +375,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
             }
           }
         }, millis, millis);
-    LOG.info("Scheduled snapshot period at "+ (period/1000) +" second(s).");
+    LOG.debug("Scheduled Metric snapshot period at {} second(s).", period / 1000);
   }
 
   synchronized void onTimerEvent() {
@@ -415,10 +418,10 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
 
   private void snapshotMetrics(MetricsSourceAdapter sa,
                                MetricsBufferBuilder bufferBuilder) {
-    long startTime = Time.now();
+    long startTime = Time.monotonicNow();
     bufferBuilder.add(sa.name(), sa.getMetrics(collector, true));
     collector.clear();
-    snapshotStat.add(Time.now() - startTime);
+    snapshotStat.add(Time.monotonicNow() - startTime);
     LOG.debug("Snapshotted source "+ sa.name());
   }
 
@@ -431,7 +434,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
   synchronized void publishMetrics(MetricsBuffer buffer, boolean immediate) {
     int dropped = 0;
     for (MetricsSinkAdapter sa : sinks.values()) {
-      long startTime = Time.now();
+      long startTime = Time.monotonicNow();
       boolean result;
       if (immediate) {
         result = sa.putMetricsImmediate(buffer); 
@@ -439,7 +442,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
         result = sa.putMetrics(buffer, logicalTime);
       }
       dropped += result ? 0 : 1;
-      publishStat.add(Time.now() - startTime);
+      publishStat.add(Time.monotonicNow() - startTime);
     }
     droppedPubAll.incr(dropped);
   }
@@ -504,6 +507,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
             conf.getString(DESC_KEY, sinkName), conf);
         sa.start();
         sinks.put(sinkName, sa);
+        allSinks.put(sinkName, sa.sink());
       } catch (Exception e) {
         LOG.warn("Error creating sink '"+ sinkName +"'", e);
       }
@@ -519,7 +523,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
         conf.getFilter(SOURCE_FILTER_KEY),
         conf.getFilter(RECORD_FILTER_KEY),
         conf.getFilter(METRIC_FILTER_KEY),
-        conf.getInt(PERIOD_KEY, PERIOD_DEFAULT),
+        conf.getInt(PERIOD_KEY, PERIOD_DEFAULT) * 1000,
         conf.getInt(QUEUE_CAPACITY_KEY, QUEUE_CAPACITY_DEFAULT),
         conf.getInt(RETRY_DELAY_KEY, RETRY_DELAY_DEFAULT),
         conf.getFloat(RETRY_BACKOFF_KEY, RETRY_BACKOFF_DEFAULT),
@@ -604,7 +608,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
       MBeans.unregister(mbeanName);
       mbeanName = null;
     }
-    LOG.info(prefix +" metrics system shutdown complete.");
+    LOG.debug("{} metrics system shutdown complete.", prefix);
     return true;
   }
 
@@ -616,6 +620,11 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
   @VisibleForTesting
   MetricsSourceAdapter getSourceAdapter(String name) {
     return sources.get(name);
+  }
+
+  @VisibleForTesting
+  public MetricsSinkAdapter getSinkAdapter(String name) {
+    return sinks.get(name);
   }
 
   private InitMode initMode() {
